@@ -61,38 +61,57 @@ def read_yaml_config(file_path):
         return {}
 
 def find_table_xml_file(root_path, table_name):
-    """Find the XML file for a given table in src-db directories."""
-    xml_filename = f"{table_name.upper()}.XML"
-    print(f"Searching for XML file: {xml_filename}")
+    """Find the XML file for a given table in src-db directories, handling both .XML and .xml extensions."""
+    table_name_upper = table_name.upper()
+    possible_extensions = ['.XML', '.xml']
+    found_files = []
+
+    print(f"Searching for XML file for table: {table_name_upper}")
     print(f"Root path: {root_path}")
 
     if not Path(root_path).is_dir():
         print(f"Error: Root path {root_path} is not a valid directory")
         return None
 
-    base_path = Path(root_path) / 'src-db' / 'database' / 'model' / 'tables' / xml_filename
-    if base_path.exists():
-        print(f"Found XML file: {base_path}")
-        return base_path
+    # Check src-db path first
+    for ext in possible_extensions:
+        xml_filename = f"{table_name_upper}{ext}"
+        base_path = Path(root_path) / 'src-db' / 'database' / 'model' / 'tables' / xml_filename
+        if base_path.exists():
+            print(f"Found XML file: {base_path}")
+            found_files.append(base_path)
 
-    modules_path = Path(root_path) / 'modules'
-    try:
-        for xml_file in modules_path.rglob(f"*/src-db/database/model/tables/{xml_filename}"):
-            if xml_file.exists():
-                print(f"Found XML file: {xml_file}")
-                return xml_file
-    except Exception as e:
-        print(f"Error searching recursively in {modules_path}: {e}")
+    # If not found in src-db, check modules
+    if not found_files:
+        modules_path = Path(root_path) / 'modules'
+        try:
+            for ext in possible_extensions:
+                xml_filename = f"{table_name_upper}{ext}"
+                for xml_file in modules_path.rglob(f"*/src-db/database/model/tables/{xml_filename}"):
+                    if xml_file.exists():
+                        print(f"Found XML file: {xml_file}")
+                        found_files.append(xml_file)
+        except Exception as e:
+            print(f"Error searching recursively in {modules_path}: {e}")
 
-    print(f"XML file {xml_filename} not found")
-    return None
+    if not found_files:
+        print(f"XML file for table {table_name_upper} not found")
+        return None
+
+    if len(found_files) > 1:
+        print(f"Warning: Multiple XML files found for table {table_name_upper}: {found_files}. Using the first one: {found_files[0]}")
+
+    return found_files[0]
 
 def rename_table_xml_file(xml_file, dry_run=False):
     """Rename the XML file to append _PARTITIONED."""
     if not xml_file:
         return False
     try:
-        new_name = xml_file.with_name(f"{xml_file.stem}_PARTITIONED.XML")
+        new_name = xml_file.with_name(f"{xml_file.name}_PARTITIONED")
+        if new_name.exists():
+            print(f"Cannot rename {xml_file} to {new_name}: Target file already exists")
+            return False
         if dry_run:
             print(f"[Dry Run] Would rename {xml_file} to {new_name}")
             return True
@@ -644,7 +663,7 @@ def execute_partition_steps(conn, table_name, partition_field, schema='public', 
         # Step 13: Check dependencies before dropping
         dependencies = get_all_dependencies(conn, f"{table_name}_tmp" if dry_run else table_name, schema)
         if dependencies:
-            non_valid_deps = [dep for dep in dependencies if dep[2] not in ('v', 'i', 't')]
+            non_valid_deps = [dep for dep in dependencies if dep[2] not in ('v', 'i', 't', 'r')]
             if non_valid_deps:
                 print(f"Cannot drop {schema}.{table_name}_tmp: non-valid dependencies found:")
                 for dep in non_valid_deps:
