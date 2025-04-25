@@ -9,6 +9,7 @@ import re
 import uuid
 import xml.etree.ElementTree as ET
 from xml.dom import minidom
+import argparse
 
 def read_properties_file(file_path):
     """Read a .properties file and return a dictionary of properties."""
@@ -44,8 +45,8 @@ def parse_db_params(properties):
         'host': host,
         'port': port,
         'database': properties['bbdd.sid'],
-        'user': properties['bbdd.user'],
-        'password': properties['bbdd.password']
+        'user': properties.get('bbdd.user'),
+        'password': properties.get('bbdd.password')
     }
 
 def read_yaml_config(file_path):
@@ -69,13 +70,11 @@ def find_table_xml_file(root_path, table_name):
         print(f"Error: Root path {root_path} is not a valid directory")
         return None
 
-    # Search in src-db/database/model/tables
     base_path = Path(root_path) / 'src-db' / 'database' / 'model' / 'tables' / xml_filename
     if base_path.exists():
         print(f"Found XML file: {base_path}")
         return base_path
 
-    # Search recursively in modules
     modules_path = Path(root_path) / 'modules'
     try:
         for xml_file in modules_path.rglob(f"*/src-db/database/model/tables/{xml_filename}"):
@@ -88,12 +87,15 @@ def find_table_xml_file(root_path, table_name):
     print(f"XML file {xml_filename} not found")
     return None
 
-def rename_table_xml_file(xml_file):
+def rename_table_xml_file(xml_file, dry_run=False):
     """Rename the XML file to append _PARTITIONED."""
     if not xml_file:
         return False
     try:
         new_name = xml_file.with_name(f"{xml_file.stem}_PARTITIONED.XML")
+        if dry_run:
+            print(f"[Dry Run] Would rename {xml_file} to {new_name}")
+            return True
         xml_file.rename(new_name)
         print(f"Renamed {xml_file} to {new_name}")
         return True
@@ -105,44 +107,47 @@ def find_module_for_table(root_path, table_name):
     """Find the module containing the table in its archiving.yaml."""
     modules_path = Path(root_path) / 'modules'
     if not modules_path.exists() or not modules_path.is_dir():
+        print(f"Error: 'modules' directory not found at {modules_path}")
         return None
 
     for yaml_file in modules_path.rglob('archiving.yaml'):
+        if not yaml_file.exists():
+            continue
         table_fields = read_yaml_config(yaml_file)
         if table_name in table_fields:
+            print(f"Found module for table {table_name} at {yaml_file.parent}")
             return yaml_file.parent
+    print(f"No module found for table {table_name}")
     return None
 
-def update_exclude_tables_xml(module_path, table_name):
+def update_exclude_tables_xml(module_path, table_name, dry_run=False):
     """Update or create excludeTables.xml to include the table."""
     exclude_file = module_path / 'src-db' / 'database' / 'model' / 'excludeFilter.xml'
     table_name_upper = table_name.upper()
 
     try:
-        # Ensure the directory exists
-        exclude_file.parent.mkdir(parents=True, exist_ok=True)
-
-        # Check if the file exists
+        # Prepare XML content
         if exclude_file.exists():
             tree = ET.parse(exclude_file)
             root = tree.getroot()
         else:
             root = ET.Element('vector')
 
-        # Check if the table is already excluded
         for excluded_table in root.findall('excludedTable'):
             if excluded_table.get('name') == table_name_upper:
                 print(f"Table {table_name_upper} already in {exclude_file}, no update needed")
                 return True
 
-        # Add new excludedTable entry
         excluded_table = ET.SubElement(root, 'excludedTable')
         excluded_table.set('name', table_name_upper)
-
-        # Write the updated XML with proper formatting
         xmlstr = minidom.parseString(ET.tostring(root)).toprettyxml(indent="  ")
-        # Remove the XML declaration added by minidom
         xmlstr = '\n'.join(line for line in xmlstr.splitlines() if not line.strip().startswith('<?xml'))
+
+        if dry_run:
+            print(f"[Dry Run] Would update {exclude_file} with content:\n{xmlstr}")
+            return True
+
+        exclude_file.parent.mkdir(parents=True, exist_ok=True)
         with open(exclude_file, 'w', encoding='utf-8') as f:
             f.write(xmlstr)
         print(f"Updated {exclude_file} with excluded table {table_name_upper}")
@@ -162,6 +167,7 @@ def get_all_tables_and_fields(root_path):
 
     for yaml_file in modules_path.rglob('archiving.yaml'):
         table_fields = read_yaml_config(yaml_file)
+        print(f"Read {yaml_file}: {table_fields}")
         for table, fields in table_fields.items():
             all_table_fields[table].update(fields)
 
@@ -251,7 +257,7 @@ def get_dependent_views(conn, table_name, schema):
                 AND t.relname = %s
                 AND nt.nspname = %s
             """, (table_name, schema))
-            return cur.fetchall()  # Returns list of (schema_name, view_name, view_definition)
+            return cur.fetchall()
     except Exception as e:
         print(f"Error finding dependent views for {schema}.{table_name}: {e}")
         return []
@@ -260,7 +266,6 @@ def get_all_dependencies(conn, table_name, schema):
     """Check all dependencies on a table and return their types and names."""
     try:
         with conn.cursor() as cur:
-            # Check views, indexes, and tables
             cur.execute("""
                 SELECT DISTINCT n.nspname AS schema_name, c.relname AS object_name, c.relkind AS object_type
                 FROM pg_depend d
@@ -274,7 +279,6 @@ def get_all_dependencies(conn, table_name, schema):
             """, (table_name, schema))
             dependencies = cur.fetchall()
 
-            # Check triggers
             cur.execute("""
                 SELECT n.nspname AS schema_name, tg.tgname AS object_name, 't' AS object_type
                 FROM pg_trigger tg
@@ -292,7 +296,7 @@ def get_all_dependencies(conn, table_name, schema):
             for dep in all_deps:
                 object_type = {'v': 'view', 'r': 'table', 'i': 'index', 't': 'trigger'}.get(dep[2], dep[2])
                 print(f"  {dep[0]}.{dep[1]} ({object_type})")
-            return all_deps  # Returns list of (schema_name, object_name, object_type)
+            return all_deps
     except Exception as e:
         print(f"Error checking dependencies for {schema}.{table_name}: {e}")
         return []
@@ -309,31 +313,129 @@ def get_triggers(conn, table_name, schema):
                 WHERE t.relname = %s
                 AND n.nspname = %s
             """, (table_name, schema))
-            return cur.fetchall()  # Returns list of (schema_name, trigger_name)
+            return cur.fetchall()
     except Exception as e:
         print(f"Error finding triggers for {schema}.{table_name}: {e}")
         return []
 
-def drop_triggers(conn, table_name, schema):
+def get_foreign_key_constraints(conn, table_name, schema):
+    """Retrieve foreign key constraints for a table."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    tc.constraint_name,
+                    tc.table_name,
+                    kcu.column_name,
+                    ccu.table_name AS referenced_table,
+                    ccu.column_name AS referenced_column
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name
+                    AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                    AND tc.table_schema = ccu.table_schema
+                WHERE tc.table_schema = %s
+                    AND tc.table_name = %s
+                    AND tc.constraint_type = 'FOREIGN KEY'
+            """, (schema, table_name))
+            constraints = cur.fetchall()
+            return [
+                {
+                    'constraint_name': row[0],
+                    'table_name': row[1],
+                    'column_name': row[2],
+                    'referenced_table': row[3],
+                    'referenced_column': row[4]
+                }
+                for row in constraints
+            ]
+    except Exception as e:
+        print(f"Error retrieving foreign key constraints for {schema}.{table_name}: {e}")
+        return []
+
+def drop_foreign_key_constraints(conn, table_name, schema, dry_run=False):
+    """Drop all foreign key constraints on a table."""
+    try:
+        constraints = get_foreign_key_constraints(conn, table_name, schema)
+        if not constraints:
+            print(f"No foreign key constraints found on {schema}.{table_name}")
+            return []
+
+        dropped_constraints = []
+        for constraint in constraints:
+            constraint_name = constraint['constraint_name']
+            sql_stmt = sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT {}").format(
+                sql.Identifier(schema),
+                sql.Identifier(table_name),
+                sql.Identifier(constraint_name)
+            )
+            if dry_run:
+                print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+                dropped_constraints.append(constraint)
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(sql_stmt)
+                    print(f"Dropped foreign key constraint {constraint_name} on {schema}.{table_name}")
+                    dropped_constraints.append(constraint)
+        return dropped_constraints
+    except Exception as e:
+        print(f"Error dropping foreign key constraints for {schema}.{table_name}: {e}")
+        raise
+
+def recreate_foreign_key_constraints(conn, table_name, schema, constraints, dry_run=False):
+    """Recreate foreign key constraints on a table."""
+    try:
+        for constraint in constraints:
+            constraint_name = constraint['constraint_name']
+            column_name = constraint['column_name']
+            referenced_table = constraint['referenced_table']
+            referenced_column = constraint['referenced_column']
+            sql_stmt = sql.SQL("""
+                ALTER TABLE {}.{}
+                ADD CONSTRAINT {} FOREIGN KEY ({})
+                REFERENCES {}.{} ({})
+            """).format(
+                sql.Identifier(schema),
+                sql.Identifier(table_name),
+                sql.Identifier(constraint_name),
+                sql.Identifier(column_name),
+                sql.Identifier(schema),
+                sql.Identifier(referenced_table),
+                sql.Identifier(referenced_column)
+            )
+            if dry_run:
+                print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(sql_stmt)
+                    print(f"Recreated foreign key constraint {constraint_name} on {schema}.{table_name}")
+    except Exception as e:
+        print(f"Error recreating foreign key constraints for {schema}.{table_name}: {e}")
+        raise
+
+def drop_triggers(conn, table_name, schema, dry_run=False):
     """Drop all non-system triggers on a table."""
     try:
         triggers = get_triggers(conn, table_name, schema)
-        with conn.cursor() as cur:
-            dropped_count = 0
-            for trigger_schema, trigger_name in triggers:
-                # Skip system-generated referential integrity triggers
-                if trigger_name.startswith('RI_ConstraintTrigger'):
-                    print(f"Skipping system trigger {trigger_schema}.{trigger_name} on {schema}.{table_name}")
-                    continue
-                cur.execute(
-                    sql.SQL("DROP TRIGGER {} ON {}.{}").format(
-                        sql.Identifier(trigger_name),
-                        sql.Identifier(schema),
-                        sql.Identifier(table_name)
-                    )
-                )
-                print(f"Dropped trigger {trigger_schema}.{trigger_name} on {schema}.{table_name}")
-                dropped_count += 1
+        dropped_count = 0
+        for trigger_schema, trigger_name in triggers:
+            if trigger_name.startswith('RI_ConstraintTrigger'):
+                print(f"Skipping system trigger {trigger_schema}.{trigger_name} on {schema}.{table_name}")
+                continue
+            sql_stmt = sql.SQL("DROP TRIGGER {} ON {}.{}").format(
+                sql.Identifier(trigger_name),
+                sql.Identifier(schema),
+                sql.Identifier(table_name)
+            )
+            if dry_run:
+                print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(sql_stmt)
+                    print(f"Dropped trigger {trigger_schema}.{trigger_name} on {schema}.{table_name}")
+                    dropped_count += 1
         return dropped_count
     except Exception as e:
         print(f"Error dropping triggers for {schema}.{table_name}: {e}")
@@ -409,100 +511,7 @@ def get_primary_key_info(conn, table_name, schema):
         print(f"Error retrieving primary key info for {schema}.{table_name}: {e}")
         return {'name': None, 'columns': []}
 
-def recreate_foreign_key_constraints(conn, table_name, schema, constraints):
-    """Recreate foreign key constraints on a table."""
-    try:
-        with conn.cursor() as cur:
-            for constraint in constraints:
-                constraint_name = constraint['constraint_name']
-                column_name = constraint['column_name']
-                referenced_table = constraint['referenced_table']
-                referenced_column = constraint['referenced_column']
-                cur.execute(
-                    sql.SQL("""
-                        ALTER TABLE {}.{}
-                        ADD CONSTRAINT {} FOREIGN KEY ({})
-                        REFERENCES {}.{} ({})
-                    """).format(
-                        sql.Identifier(schema),
-                        sql.Identifier(table_name),
-                        sql.Identifier(constraint_name),
-                        sql.Identifier(column_name),
-                        sql.Identifier(schema),
-                        sql.Identifier(referenced_table),
-                        sql.Identifier(referenced_column)
-                    )
-                )
-                print(f"Recreated foreign key constraint {constraint_name} on {schema}.{table_name}")
-    except Exception as e:
-        print(f"Error recreating foreign key constraints for {schema}.{table_name}: {e}")
-        raise
-
-def get_foreign_key_constraints(conn, table_name, schema):
-    """Retrieve foreign key constraints for a table."""
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT
-                    tc.constraint_name,
-                    tc.table_name,
-                    kcu.column_name,
-                    ccu.table_name AS referenced_table,
-                    ccu.column_name AS referenced_column
-                FROM information_schema.table_constraints tc
-                JOIN information_schema.key_column_usage kcu
-                    ON tc.constraint_name = kcu.constraint_name
-                    AND tc.table_schema = kcu.table_schema
-                JOIN information_schema.constraint_column_usage ccu
-                    ON tc.constraint_name = ccu.constraint_name
-                    AND tc.table_schema = ccu.table_schema
-                WHERE tc.table_schema = %s
-                    AND tc.table_name = %s
-                    AND tc.constraint_type = 'FOREIGN KEY'
-            """, (schema, table_name))
-            constraints = cur.fetchall()
-            return [
-                {
-                    'constraint_name': row[0],
-                    'table_name': row[1],
-                    'column_name': row[2],
-                    'referenced_table': row[3],
-                    'referenced_column': row[4]
-                }
-                for row in constraints
-            ]
-    except Exception as e:
-        print(f"Error retrieving foreign key constraints for {schema}.{table_name}: {e}")
-        return []
-
-def drop_foreign_key_constraints(conn, table_name, schema):
-    """Drop all foreign key constraints on a table."""
-    try:
-        constraints = get_foreign_key_constraints(conn, table_name, schema)
-        if not constraints:
-            print(f"No foreign key constraints found on {schema}.{table_name}")
-            return []
-
-        dropped_constraints = []
-        with conn.cursor() as cur:
-            for constraint in constraints:
-                constraint_name = constraint['constraint_name']
-                cur.execute(
-                    sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT {}").format(
-                        sql.Identifier(schema),
-                        sql.Identifier(table_name),
-                        sql.Identifier(constraint_name)
-                    )
-                )
-                print(f"Dropped foreign key constraint {constraint_name} on {schema}.{table_name}")
-                dropped_constraints.append(constraint)
-        return dropped_constraints
-    except Exception as e:
-        print(f"Error dropping foreign key constraints for {schema}.{table_name}: {e}")
-        raise
-
-
-def execute_partition_steps(conn, table_name, partition_field, schema='public', root_path=None):
+def execute_partition_steps(conn, table_name, partition_field, schema='public', root_path=None, dry_run=False):
     """Execute the partitioning steps for the given table and field in the specified schema."""
     try:
         # Step 0: Check if the table is already partitioned
@@ -519,193 +528,226 @@ def execute_partition_steps(conn, table_name, partition_field, schema='public', 
             print(f"Table {schema}.{table_name} is already partitioned, skipping partitioning steps")
             return
 
-        with conn.cursor() as cur:
-            # Step 1: Log schema for debugging
-            get_table_schema(conn, table_name, schema)
+        # Step 1: Log schema for debugging
+        get_table_schema(conn, table_name, schema)
 
-            # Step 2: Validate partition field
-            validate_partition_field(conn, table_name, schema, partition_field)
+        # Step 2: Validate partition field
+        validate_partition_field(conn, table_name, schema, partition_field)
 
-            # Step 3: Get primary key information
-            pk_info = get_primary_key_info(conn, table_name, schema)
-            original_pk_name = pk_info['name']
-            original_pk_columns = pk_info['columns']
-            print(f"Original primary key: {original_pk_name} on columns {original_pk_columns} (type: {type(original_pk_columns)})")
+        # Step 3: Get primary key information
+        pk_info = get_primary_key_info(conn, table_name, schema)
+        original_pk_name = pk_info['name']
+        original_pk_columns = pk_info['columns']
+        print(f"Original primary key: {original_pk_name} on columns {original_pk_columns} (type: {type(original_pk_columns)})")
 
-            # Step 4: Get and drop dependent views before renaming
-            dependent_views = get_dependent_views(conn, table_name, schema)
-            for view_schema, view_name, _ in dependent_views:
-                print(f"Found dependent view {view_schema}.{view_name}")
-                cur.execute(
-                    sql.SQL("DROP VIEW {}.{}").format(
-                        sql.Identifier(view_schema),
-                        sql.Identifier(view_name)
-                    )
-                )
-                print(f"Dropped view {view_schema}.{view_name}")
+        # Step 4: Get and drop dependent views before renaming
+        dependent_views = get_dependent_views(conn, table_name, schema)
+        for view_schema, view_name, _ in dependent_views:
+            print(f"Found dependent view {view_schema}.{view_name}")
+            sql_stmt = sql.SQL("DROP VIEW {}.{}").format(
+                sql.Identifier(view_schema),
+                sql.Identifier(view_name)
+            )
+            if dry_run:
+                print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(sql_stmt)
+                    print(f"Dropped view {view_schema}.{view_name}")
 
-            # Step 5: Drop foreign key constraints
-            dropped_constraints = drop_foreign_key_constraints(conn, table_name, schema)
+        # Step 5: Drop foreign key constraints
+        dropped_constraints = drop_foreign_key_constraints(conn, table_name, schema, dry_run)
 
-            # Step 6: Drop non-system triggers before renaming
-            drop_triggers(conn, table_name, schema)
+        # Step 6: Drop non-system triggers before renaming
+        drop_triggers(conn, table_name, schema, dry_run)
 
-            # Step 7: Rename table to tmp
-            cur.execute(
-                sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(
+        # Step 7: Rename table to tmp
+        sql_stmt = sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(
+            sql.Identifier(schema),
+            sql.Identifier(table_name),
+            sql.Identifier(f"{table_name}_tmp")
+        )
+        if dry_run:
+            print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+        else:
+            with conn.cursor() as cur:
+                cur.execute(sql_stmt)
+                print(f"Renamed {schema}.{table_name} to {schema}.{table_name}_tmp")
+
+        # Step 8: Create the new partitioned table
+        sql_stmt = sql.SQL("""
+            CREATE TABLE {}.{} (
+                LIKE {}.{} INCLUDING DEFAULTS
+            ) PARTITION BY RANGE ({})
+        """).format(
+            sql.Identifier(schema),
+            sql.Identifier(table_name),
+            sql.Identifier(schema),
+            sql.Identifier(f"{table_name}_tmp"),
+            sql.Identifier(partition_field)
+        )
+        if dry_run:
+            print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+        else:
+            with conn.cursor() as cur:
+                cur.execute(sql_stmt)
+                print(f"Created partitioned table {schema}.{table_name} with schema from {schema}.{table_name}_tmp")
+
+        # Step 9: Create schema if not exists
+        sql_stmt = sql.SQL("CREATE SCHEMA IF NOT EXISTS partitions")
+        if dry_run:
+            print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+        else:
+            with conn.cursor() as cur:
+                cur.execute(sql_stmt)
+                print("Created schema 'partitions' if it did not exist")
+
+        # Step 10: Determine dynamic year range
+        start_year, end_year = get_year_range(conn, f"{table_name}_tmp" if dry_run else table_name, schema, partition_field)
+        print(f"Partitioning for years {start_year} to {end_year}")
+
+        # Step 11: Create partitions for each year
+        for year in range(start_year, end_year + 1):
+            partition_name = f"{table_name}_y{year}"
+            sql_stmt = sql.SQL("""
+                CREATE TABLE {}.{} PARTITION OF {}.{}
+                FOR VALUES FROM (%s) TO (%s)
+            """).format(
+                sql.Identifier("partitions"),
+                sql.Identifier(partition_name),
+                sql.Identifier(schema),
+                sql.Identifier(table_name),
+            )
+            if dry_run:
+                print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)} with values ({year}-01-01, {year + 1}-01-01)")
+            else:
+                with conn.cursor() as cur:
+                    cur.execute(sql_stmt, (f"{year}-01-01", f"{year + 1}-01-01"))
+                    print(f"Created partition partitions.{partition_name} for year {year}")
+
+        # Step 12: Copy data
+        sql_stmt = sql.SQL("""
+            INSERT INTO {}.{} SELECT * FROM {}.{}
+        """).format(
+            sql.Identifier(schema),
+            sql.Identifier(table_name),
+            sql.Identifier(schema),
+            sql.Identifier(f"{table_name}_tmp")
+        )
+        if dry_run:
+            print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+        else:
+            with conn.cursor() as cur:
+                cur.execute(sql_stmt)
+                print(f"Copied data from {schema}.{table_name}_tmp to {schema}.{table_name}")
+
+        # Step 13: Check dependencies before dropping
+        dependencies = get_all_dependencies(conn, f"{table_name}_tmp" if dry_run else table_name, schema)
+        if dependencies:
+            non_valid_deps = [dep for dep in dependencies if dep[2] not in ('v', 'i', 't')]
+            if non_valid_deps:
+                print(f"Cannot drop {schema}.{table_name}_tmp: non-valid dependencies found:")
+                for dep in non_valid_deps:
+                    print(f"  {dep[0]}.{dep[1]} ({dep[2]})")
+                raise Exception(f"Non-valid dependencies prevent dropping {schema}.{table_name}_tmp")
+            else:
+                print(f"Only views, indexes, or triggers found, proceeding with DROP TABLE ... CASCADE")
+                sql_stmt = sql.SQL("DROP TABLE {}.{} CASCADE").format(
                     sql.Identifier(schema),
-                    sql.Identifier(table_name),
                     sql.Identifier(f"{table_name}_tmp")
                 )
-            )
-            print(f"Renamed {schema}.{table_name} to {schema}.{table_name}_tmp")
-
-            # Step 8: Create the new partitioned table
-            cur.execute(
-                sql.SQL("""
-                    CREATE TABLE {}.{} (
-                        LIKE {}.{} INCLUDING DEFAULTS
-                    ) PARTITION BY RANGE ({})
-                """).format(
-                    sql.Identifier(schema),
-                    sql.Identifier(table_name),
-                    sql.Identifier(schema),
-                    sql.Identifier(f"{table_name}_tmp"),
-                    sql.Identifier(partition_field)
-                )
-            )
-            print(f"Created partitioned table {schema}.{table_name} with schema from {schema}.{table_name}_tmp")
-
-            # Step 9: Create schema if not exists
-            cur.execute("CREATE SCHEMA IF NOT EXISTS partitions")
-            print("Created schema 'partitions' if it did not exist")
-
-            # Step 10: Determine dynamic year range
-            start_year, end_year = get_year_range(conn, f"{table_name}_tmp", schema, partition_field)
-            print(f"Partitioning for years {start_year} to {end_year}")
-
-            # Step 11: Create partitions for each year
-            for year in range(start_year, end_year + 1):
-                partition_name = f"{table_name}_y{year}"
-                cur.execute(
-                    sql.SQL("""
-                        CREATE TABLE {}.{} PARTITION OF {}.{}
-                        FOR VALUES FROM (%s) TO (%s)
-                    """).format(
-                        sql.Identifier("partitions"),
-                        sql.Identifier(partition_name),
-                        sql.Identifier(schema),
-                        sql.Identifier(table_name),
-                    ),
-                    (f"{year}-01-01", f"{year + 1}-01-01")
-                )
-                print(f"Created partition partitions.{partition_name} for year {year}")
-
-            # Step 12: Copy data
-            cur.execute(
-                sql.SQL("""
-                    INSERT INTO {}.{} SELECT * FROM {}.{}
-                """).format(
-                    sql.Identifier(schema),
-                    sql.Identifier(table_name),
-                    sql.Identifier(schema),
-                    sql.Identifier(f"{table_name}_tmp")
-                )
-            )
-            print(f"Copied data from {schema}.{table_name}_tmp to {schema}.{table_name}")
-
-            # Step 13: Check dependencies before dropping
-            dependencies = get_all_dependencies(conn, f"{table_name}_tmp", schema)
-            if dependencies:
-                non_valid_deps = [dep for dep in dependencies if dep[2] not in ('v', 'i', 't')]
-                if non_valid_deps:
-                    print(f"Cannot drop {schema}.{table_name}_tmp: non-valid dependencies found:")
-                    for dep in non_valid_deps:
-                        print(f"  {dep[0]}.{dep[1]} ({dep[2]})")
-                    raise Exception(f"Non-valid dependencies prevent dropping {schema}.{table_name}_tmp")
-                else:
-                    print(f"Only views, indexes, or triggers found, proceeding with DROP TABLE ... CASCADE")
-                    cur.execute(
-                        sql.SQL("DROP TABLE {}.{} CASCADE").format(
-                            sql.Identifier(schema),
-                            sql.Identifier(f"{table_name}_tmp")
-                        )
-                    )
-                    print(f"Dropped temporary table {schema}.{table_name}_tmp with CASCADE")
+                if dry_run:
+                    print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
                     for dep in dependencies:
                         object_type = {'v': 'view', 'i': 'index', 't': 'trigger'}.get(dep[2], dep[2])
-                        print(f"Dropped dependent {object_type} {dep[0]}.{dep[1]}")
+                        print(f"[Dry Run] Would drop dependent {object_type} {dep[0]}.{dep[1]}")
+                else:
+                    with conn.cursor() as cur:
+                        cur.execute(sql_stmt)
+                        print(f"Dropped temporary table {schema}.{table_name}_tmp with CASCADE")
+                        for dep in dependencies:
+                            object_type = {'v': 'view', 'i': 'index', 't': 'trigger'}.get(dep[2], dep[2])
+                            print(f"Dropped dependent {object_type} {dep[0]}.{dep[1]}")
+        else:
+            sql_stmt = sql.SQL("DROP TABLE {}.{}").format(
+                sql.Identifier(schema),
+                sql.Identifier(f"{table_name}_tmp")
+            )
+            if dry_run:
+                print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
             else:
-                cur.execute(
-                    sql.SQL("DROP TABLE {}.{}").format(
+                with conn.cursor() as cur:
+                    cur.execute(sql_stmt)
+                    print(f"Dropped temporary table {schema}.{table_name}_tmp (no dependencies)")
+
+        # Step 14: Create the new primary key
+        if original_pk_columns:
+            new_pk_columns = original_pk_columns + [partition_field]
+            print(f"Preparing to create primary key with columns: {new_pk_columns} (type: {type(new_pk_columns)})")
+            try:
+                if original_pk_name:
+                    sql_stmt = sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})").format(
                         sql.Identifier(schema),
-                        sql.Identifier(f"{table_name}_tmp")
+                        sql.Identifier(table_name),
+                        sql.Identifier(original_pk_name),
+                        sql.SQL(', ').join(sql.Identifier(col) for col in new_pk_columns)
                     )
-                )
-                print(f"Dropped temporary table {schema}.{table_name}_tmp (no dependencies)")
+                else:
+                    new_pk_name = f"{table_name}_pkey_{uuid.uuid4().hex[:8]}"
+                    sql_stmt = sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})").format(
+                        sql.Identifier(schema),
+                        sql.Identifier(table_name),
+                        sql.Identifier(new_pk_name),
+                        sql.SQL(', ').join(sql.Identifier(col) for col in new_pk_columns)
+                    )
+                if dry_run:
+                    print(f"[Dry Run] Would execute: {sql_stmt.as_string(conn)}")
+                else:
+                    with conn.cursor() as cur:
+                        cur.execute(sql_stmt)
+                        print(f"Created primary key {original_pk_name or new_pk_name} on {schema}.{table_name} with columns {new_pk_columns}")
+            except Exception as e:
+                print(f"Failed to create primary key on {schema}.{table_name}: {e}")
+                raise
 
-            # Step 14: Create the new primary key
-            if original_pk_columns:
-                new_pk_columns = original_pk_columns + [partition_field]
-                print(f"Preparing to create primary key with columns: {new_pk_columns} (type: {type(new_pk_columns)})")
-                try:
-                    if original_pk_name:
-                        cur.execute(
-                            sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})").format(
-                                sql.Identifier(schema),
-                                sql.Identifier(table_name),
-                                sql.Identifier(original_pk_name),
-                                sql.SQL(', ').join(sql.Identifier(col) for col in new_pk_columns)
-                            )
-                        )
-                        print(f"Created primary key {original_pk_name} on {schema}.{table_name} with columns {new_pk_columns}")
-                    else:
-                        new_pk_name = f"{table_name}_pkey_{uuid.uuid4().hex[:8]}"
-                        cur.execute(
-                            sql.SQL("ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})").format(
-                                sql.Identifier(schema),
-                                sql.Identifier(table_name),
-                                sql.Identifier(new_pk_name),
-                                sql.SQL(', ').join(sql.Identifier(col) for col in new_pk_columns)
-                            )
-                        )
-                        print(f"Created primary key {new_pk_name} on {schema}.{table_name} with columns {new_pk_columns}")
-                except Exception as e:
-                    print(f"Failed to create primary key on {schema}.{table_name}: {e}")
-                    raise
+        # Step 15: Recreate foreign key constraints
+        if dropped_constraints:
+            recreate_foreign_key_constraints(conn, table_name, schema, dropped_constraints, dry_run)
 
-            # Step 15: Recreate foreign key constraints
-            if dropped_constraints:
-                recreate_foreign_key_constraints(conn, table_name, schema, dropped_constraints)
+        # Step 16: Rename the table's XML file
+        if root_path:
+            try:
+                xml_file = find_table_xml_file(root_path, table_name)
+                if xml_file:
+                    rename_table_xml_file(xml_file, dry_run)
+                else:
+                    print(f"Warning: XML file for table {table_name} not found in src-db directories")
+            except Exception as e:
+                print(f"Warning: Failed to process XML file for {table_name}: {e}")
 
-            # Step 16: Rename the table's XML file
-            if root_path:
-                try:
-                    xml_file = find_table_xml_file(root_path, table_name)
-                    if xml_file:
-                        rename_table_xml_file(xml_file)
-                    else:
-                        print(f"Warning: XML file for table {table_name} not found in src-db directories")
-                except Exception as e:
-                    print(f"Warning: Failed to process XML file for {table_name}: {e}")
+        # Step 17: Update excludeTables.xml in the module
+        if root_path:
+            try:
+                module_path = find_module_for_table(root_path, table_name)
+                if module_path:
+                    update_exclude_tables_xml(module_path, table_name, dry_run)
+                else:
+                    print(f"Warning: Module containing {table_name} in archiving.yaml not found")
+            except Exception as e:
+                print(f"Warning: Failed to update excludeTables.xml for {table_name}: {e}")
 
-            # Step 17: Update excludeTables.xml in the module
-            if root_path:
-                try:
-                    module_path = find_module_for_table(root_path, table_name)
-                    if module_path:
-                        update_exclude_tables_xml(module_path, table_name)
-                    else:
-                        print(f"Warning: Module containing {table_name} in archiving.yaml not found")
-                except Exception as e:
-                    print(f"Warning: Failed to update excludeTables.xml for {table_name}: {e}")
-
+        if not dry_run:
             conn.commit()
+        else:
+            print(f"[Dry Run] Skipped committing changes for {schema}.{table_name}")
     except Exception as e:
         print(f"Error executing partition steps: {e}")
-        conn.rollback()
+        if not dry_run:
+            conn.rollback()
+        else:
+            print(f"[Dry Run] Skipped rolling back changes for {schema}.{table_name}")
 
-def main():
+def main(dry_run=False):
     properties_file = "config/Openbravo.properties"
 
     try:
@@ -727,27 +769,33 @@ def main():
         with psycopg2.connect(**db_params) as conn:
             with conn.cursor() as cur:
                 if properties['bbdd.sessionConfig']:
-                    cur.execute(properties['bbdd.sessionConfig'])
-                    print("Applied session configuration")
-                conn.commit()
+                    if dry_run:
+                        print(f"[Dry Run] Would execute session configuration: {properties['bbdd.sessionConfig']}")
+                    else:
+                        cur.execute(properties['bbdd.sessionConfig'])
+                        print("Applied session configuration")
+                if not dry_run:
+                    conn.commit()
 
-            # Process each table in the configuration
             for table_name, fields in table_fields.items():
-                # Use the first field as the partition field
                 if not fields:
                     print(f"Skipping table {table_name}: No partition fields defined")
                     continue
-                partition_field = next(iter(fields))  # Get the first field from the set
+                partition_field = next(iter(fields))
                 print(f"Processing table {table_name} with partition field {partition_field}")
                 execute_partition_steps(
                     conn,
                     table_name,
                     partition_field,
-                    root_path=properties['source.path']
+                    root_path=properties['source.path'],
+                    dry_run=dry_run
                 )
 
     except Exception as e:
         print(f"Error: {e}")
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Partition tables based on configuration.")
+    parser.add_argument('--dry-run', action='store_true', help="Run in dry-run mode without making changes")
+    args = parser.parse_args()
+    main(dry_run=args.dry_run)
