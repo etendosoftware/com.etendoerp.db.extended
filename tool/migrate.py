@@ -142,31 +142,48 @@ def parse_db_params(properties):
     return {'host': host, 'port': port, 'database': properties['bbdd.sid'],
             'user': properties.get('bbdd.user'), 'password': properties.get('bbdd.password')}
 
-def read_yaml_config(file_path):
-    try:
-        with open(file_path, 'r', encoding='utf-8') as f:
-            config = yaml.safe_load(f) or {}
-            tables = config.get('tables', {})
-            return {table: set(fields) for table, fields in tables.items()}
-    except Exception as e:
-        print_message(f"Error reading YAML configuration from {file_path}: {e}", "ERROR")
-        return {}
+def get_tables_and_fields_from_database(conn):
+    """
+    Obtiene las tablas y campos de partición desde la base de datos usando la query SQL proporcionada.
+    Retorna un diccionario con formato: {tabla: {campo}}
+    """
+    table_fields_config = defaultdict(set)
 
-def get_all_tables_and_fields(root_path):
-    all_table_fields = defaultdict(set)
-    if not root_path:
-        print_message("Warning: 'source.path' is undefined. Cannot get tables and fields from YAML files.", "WARNING")
+    try:
+        print_message("Executing query to get table and partition field configuration from database...", "CONFIG_LOAD")
+
+        query = """
+        SELECT
+            LOWER(TBL.TABLENAME) TABLENAME,
+            LOWER(COL.COLUMNNAME) COLUMNNAME
+        FROM
+            ETARC_TABLE_CONFIG CFG
+        JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID
+        JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID
+        """
+
+        with conn.cursor() as cur:
+            cur.execute(query)
+            results = cur.fetchall()
+
+            for table_name, column_name in results:
+                table_fields_config[table_name].add(column_name)
+                print_message(f"Found configuration: Table={table_name}, Partition Field={column_name}", "CONFIG_LOAD")
+
+        if not table_fields_config:
+            print_message("No table configuration found in database tables ETARC_TABLE_CONFIG, AD_TABLE, AD_COLUMN.", "WARNING")
+        else:
+            print_message(f"Successfully loaded configuration for {len(table_fields_config)} table(s) from database.", "SUCCESS")
+
+        return dict(table_fields_config)
+
+    except psycopg2.Error as db_err:
+        print_message(f"Database error while fetching table configuration: {db_err}", "ERROR")
+        print_message("Please ensure tables ETARC_TABLE_CONFIG, AD_TABLE, and AD_COLUMN exist and are accessible.", "ERROR")
         return {}
-    modules_path = Path(root_path) / 'modules'
-    if not modules_path.exists() or not modules_path.is_dir():
-        print_message(f"Warning: 'modules' directory not found at {modules_path}. Cannot read archiving.yaml files.", "WARNING")
+    except Exception as e:
+        print_message(f"Error fetching table configuration from database: {e}", "ERROR")
         return {}
-    for yaml_file in modules_path.rglob('archiving.yaml'):
-        print_message(f"Reading archiving config from: {yaml_file}", "CONFIG_LOAD")
-        table_fields = read_yaml_config(yaml_file)
-        for table, fields in table_fields.items():
-            all_table_fields[table].update(fields)
-    return dict(all_table_fields)
 
 def get_table_schema(conn, table_name, schema='public'):
     try:
@@ -623,24 +640,11 @@ def main(dry_run=False):
             print_message("Failed to read properties file or file is empty. Exiting.", "FAILURE")
             return
 
-        source_path = properties.get('source.path')
-        print_message(f"Source path from properties: {source_path if source_path else 'Not defined'}", "INFO")
-
         if properties.get('bbdd.rdbms') != 'POSTGRE':
             raise ValueError(f"Unsupported RDBMS: {properties.get('bbdd.rdbms')}. Only POSTGRE is supported.")
 
         print_message("Parsing database connection parameters...", "CONFIG_LOAD")
         db_params = parse_db_params(properties)
-
-        print_message("Attempting to load table configurations from YAML files (archiving.yaml)...", "CONFIG_LOAD")
-        table_fields_config = get_all_tables_and_fields(source_path)
-        if not table_fields_config:
-            if source_path:
-                print_message("Warning: No tables or partition fields found in any 'archiving.yaml' files...", "WARNING")
-            else:
-                print_message("Warning: 'source.path' not set in properties. Skipping YAML configuration loading.", "WARNING")
-        else:
-            print_message(f"Found {len(table_fields_config)} table(s) configured in YAML files for potential partitioning.", "INFO")
 
         conn = None
         try:
@@ -657,8 +661,11 @@ def main(dry_run=False):
                         cur.execute(session_config); conn.commit()
                         print_message("Session configuration applied.", "SUCCESS")
 
+            # Obtener configuración de tablas desde la base de datos
+            table_fields_config = get_tables_and_fields_from_database(conn)
+
             if not table_fields_config:
-                print_message("No tables configured for processing from YAML. Script will exit.", "INFO")
+                print_message("No tables configured for processing from database configuration. Script will exit.", "INFO")
                 return
 
             for table_name, fields in table_fields_config.items():
@@ -673,7 +680,7 @@ def main(dry_run=False):
                 print_message(f"=== Processing table: {Style.BOLD}{table_name}{Style.RESET} (Partition field: {Style.UNDERLINE}{partition_field}{Style.RESET}) ===", "TABLE_PROCESS")
                 print_message(header_line, "TABLE_PROCESS")
                 try:
-                    execute_partition_steps(conn, table_name, partition_field, source_path, dry_run)
+                    execute_partition_steps(conn, table_name, partition_field, dry_run)
                     migration_summary.append({'table_name': table_name, 'status': 'SUCCESS', 'message': ''})
                 except Exception as e_table:
                     error_msg = str(e_table).replace('\n', ' ') # Limpiar mensaje para el resumen
@@ -709,6 +716,7 @@ if __name__ == "__main__":
         description="Automated script to migrate PostgreSQL tables to a range-partitioned structure based on a date/timestamp field. "
                     "This version modifies the Primary Key to include the partition field, drops dependencies without CASCADE, "
                     "migrates data to the new partitioned table, and then drops the temporary original table. "
+                    "Table configuration is obtained from database tables ETARC_TABLE_CONFIG, AD_TABLE, and AD_COLUMN. "
                     "Other indexes (non-PK) are NOT copied from the original table."
     )
     parser.add_argument(
@@ -726,7 +734,7 @@ if __name__ == "__main__":
 
     _use_ansi_output = not args.plain_output # Configurar la variable global
 
-    script_version_message = f"Script version: PK Modified, No CASCADE, Data Migrated, Temp Table Dropped, No Index Copy. Output: {'Enhanced' if _use_ansi_output else 'Plain'}"
+    script_version_message = f"Script version: PK Modified, No CASCADE, Data Migrated, Temp Table Dropped, No Index Copy, DB Config Source. Output: {'Enhanced' if _use_ansi_output else 'Plain'}"
     print_message(script_version_message, "SCRIPT_INFO")
     print_message(f"Execution Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}", "SCRIPT_INFO")
 
