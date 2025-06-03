@@ -259,6 +259,538 @@ def get_foreign_keys_on_table(conn, table_name, schema):
     except Exception as e: print_message(f"Error retrieving FKs defined ON {schema}.{table_name}: {e}", "ERROR"); return []
 
 
+def process_related_tables_for_partitioning(conn, source_table_name, source_schema, partition_field, dry_run=False):
+    """
+    Main orchestration function to process all related tables for partitioning.
+    
+    Args:
+        conn: Database connection
+        source_table_name: Name of the source table being partitioned
+        source_schema: Schema of the source table
+        partition_field: Name of the partition field
+        dry_run: If True, only simulate operations
+        
+    Returns:
+        Dictionary with processing results:
+        {
+            'success': True/False,
+            'total_related_tables': int,
+            'processed_tables': int,
+            'failed_tables': int,
+            'total_records_updated': int,
+            'details': [...]  # List of per-table results
+        }
+    """
+    result = {
+        'success': True,
+        'total_related_tables': 0,
+        'processed_tables': 0,
+        'failed_tables': 0,
+        'total_records_updated': 0,
+        'details': []
+    }
+
+    try:
+        print_message(f"\n--- Processing Related Tables for {source_schema}.{source_table_name} ---", "SUBHEADER")
+
+        # Step 1: Get partition field type information
+        try:
+            field_type_info = get_partition_field_type(conn, source_table_name, source_schema, partition_field)
+        except Exception as e:
+            print_message(f"Failed to get partition field type: {e}", "ERROR")
+            result['success'] = False
+            return result
+
+        # Step 2: Discover related tables
+        related_tables = get_related_tables(conn, source_table_name, source_schema)
+        result['total_related_tables'] = len(related_tables)
+
+        if not related_tables:
+            print_message("No related tables found. Skipping related table processing.", "INFO")
+            return result
+
+        print_message(f"Found {len(related_tables)} related table(s) to process.", "INFO")
+
+        # Step 3: Process each related table
+        for i, related_table_info in enumerate(related_tables, 1):
+            table_schema = related_table_info['table_schema']
+            table_name = related_table_info['table_name']
+            table_detail = {
+                'table_schema': table_schema,
+                'table_name': table_name,
+                'constraint_name': related_table_info['constraint_name'],
+                'success': False,
+                'records_updated': 0,
+                'validation_result': None,
+                'error_message': None
+            }
+
+            try:
+                print_message(f"\n[{i}/{len(related_tables)}] Processing {table_schema}.{table_name}...", "STEP")
+
+                # Step 3a: Add partition field to related table
+                if add_partition_field_to_related_table(conn, related_table_info, partition_field, field_type_info, dry_run):
+                    print_message(f"  ✓ Field addition successful for {table_schema}.{table_name}", "STEP_INFO")
+
+                    # Step 3b: Populate the field with data
+                    records_updated = populate_partition_field_in_related_table(
+                        conn, source_table_name, source_schema, related_table_info, partition_field, dry_run
+                    )
+
+                    if records_updated >= 0:
+                        table_detail['records_updated'] = records_updated
+                        result['total_records_updated'] += records_updated
+                        print_message(f"  ✓ Data population successful for {table_schema}.{table_name}", "STEP_INFO")
+
+                        # Step 3c: Validate population (only in live mode)
+                        if not dry_run:
+                            validation_result = validate_partition_field_population(conn, related_table_info, partition_field)
+                            table_detail['validation_result'] = validation_result
+
+                            if validation_result['success']:
+                                print_message(f"  ✓ Validation successful for {table_schema}.{table_name}", "STEP_INFO")
+                                table_detail['success'] = True
+                                result['processed_tables'] += 1
+                            else:
+                                print_message(f"  ⚠ Validation failed for {table_schema}.{table_name}: {validation_result['message']}", "WARNING")
+                                table_detail['error_message'] = f"Validation failed: {validation_result['message']}"
+                                result['failed_tables'] += 1
+                        else:
+                            # In dry run mode, consider it successful if we got this far
+                            table_detail['success'] = True
+                            result['processed_tables'] += 1
+                            print_message(f"  ✓ [Dry Run] Processing simulation successful for {table_schema}.{table_name}", "STEP_INFO")
+                    else:
+                        table_detail['error_message'] = "Data population failed"
+                        result['failed_tables'] += 1
+                        print_message(f"  ❌ Data population failed for {table_schema}.{table_name}", "FAILURE")
+                else:
+                    table_detail['error_message'] = "Field addition failed"
+                    result['failed_tables'] += 1
+                    print_message(f"  ❌ Field addition failed for {table_schema}.{table_name}", "FAILURE")
+
+            except Exception as e:
+                table_detail['error_message'] = str(e)
+                result['failed_tables'] += 1
+                print_message(f"  ❌ Error processing {table_schema}.{table_name}: {e}", "ERROR")
+
+            result['details'].append(table_detail)
+
+        # Final status
+        if result['failed_tables'] > 0:
+            result['success'] = False
+            print_message(f"\n⚠ Related table processing completed with {result['failed_tables']} failure(s)", "WARNING")
+        else:
+            print_message(f"\n✓ All related tables processed successfully", "SUCCESS")
+
+        print_message(f"Summary: {result['processed_tables']} successful, {result['failed_tables']} failed, {result['total_records_updated']} total records updated", "INFO")
+
+        return result
+
+    except Exception as e:
+        print_message(f"Fatal error in related table processing: {e}", "ERROR")
+        result['success'] = False
+        result['details'].append({
+            'error_message': f"Fatal error: {e}",
+            'success': False
+        })
+        return result
+
+def validate_partition_field_population(conn, related_table_info, partition_field):
+    """
+    Validate that partition field population was successful.
+    
+    Args:
+        conn: Database connection
+        related_table_info: Dictionary with related table details
+        partition_field: Name of the partition field
+        
+    Returns:
+        Dictionary with validation results:
+        {
+            'success': True/False,
+            'total_records': int,
+            'null_records': int,
+            'populated_records': int,
+            'message': str
+        }
+    """
+    try:
+        table_schema = related_table_info['table_schema']
+        table_name = related_table_info['table_name']
+        new_field_name = f"etarc_{partition_field}"
+
+        print_message(f"Validating {new_field_name} population in {table_schema}.{table_name}...", "STEP_INFO")
+
+        with conn.cursor() as cur:
+            # Count total records
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    sql.Identifier(table_schema),
+                    sql.Identifier(table_name)
+                )
+            )
+            total_records = cur.fetchone()[0]
+
+            # Count NULL records in the partition field
+            cur.execute(
+                sql.SQL("SELECT COUNT(*) FROM {}.{} WHERE {} IS NULL").format(
+                    sql.Identifier(table_schema),
+                    sql.Identifier(table_name),
+                    sql.Identifier(new_field_name)
+                )
+            )
+            null_records = cur.fetchone()[0]
+
+            populated_records = total_records - null_records
+
+            if null_records == 0:
+                success = True
+                message = f"All {total_records} record(s) successfully populated"
+                print_message(f"✓ {message} in {table_schema}.{table_name}", "SUCCESS")
+            else:
+                success = False
+                message = f"{null_records} record(s) remain NULL out of {total_records} total"
+                print_message(f"⚠ {message} in {table_schema}.{table_name}", "WARNING")
+
+            return {
+                'success': success,
+                'total_records': total_records,
+                'null_records': null_records,
+                'populated_records': populated_records,
+                'message': message
+            }
+
+    except psycopg2.Error as db_err:
+        error_msg = f"Database error validating {table_schema}.{table_name}: {db_err}"
+        print_message(error_msg, "ERROR")
+        return {
+            'success': False,
+            'total_records': 0,
+            'null_records': 0,
+            'populated_records': 0,
+            'message': error_msg
+        }
+    except Exception as e:
+        error_msg = f"Error validating {table_schema}.{table_name}: {e}"
+        print_message(error_msg, "ERROR")
+        return {
+            'success': False,
+            'total_records': 0,
+            'null_records': 0,
+            'populated_records': 0,
+            'message': error_msg
+        }
+
+def populate_partition_field_in_related_table(conn, source_table, source_schema, related_table_info, partition_field, dry_run=False):
+    """
+    Populate the partition field in related tables with data from source table.
+    
+    Args:
+        conn: Database connection
+        source_table: Name of the source partitioned table
+        source_schema: Schema of the source table
+        related_table_info: Dictionary with related table details
+        partition_field: Name of the partition field
+        dry_run: If True, only simulate the operation
+        
+    Returns:
+        int: Number of records updated, -1 if error
+    """
+    try:
+        table_schema = related_table_info['table_schema']
+        table_name = related_table_info['table_name']
+        new_field_name = f"etarc_{partition_field}"
+        fk_columns = related_table_info['fk_columns']
+        referenced_columns = related_table_info['referenced_columns']
+
+        print_message(f"Populating {new_field_name} in {table_schema}.{table_name}...", "STEP_INFO")
+
+        # Build the JOIN conditions for the UPDATE statement
+        join_conditions = []
+        for fk_col, ref_col in zip(fk_columns, referenced_columns):
+            join_conditions.append(
+                sql.SQL("r.{} = s.{}").format(
+                    sql.Identifier(fk_col),
+                    sql.Identifier(ref_col)
+                )
+            )
+
+        join_condition = sql.SQL(" AND ").join(join_conditions)
+
+        # Build UPDATE statement with JOIN
+        update_stmt = sql.SQL("""
+            UPDATE {}.{} AS r 
+            SET {} = s.{}
+            FROM {}.{} AS s
+            WHERE {}
+        """).format(
+            sql.Identifier(table_schema),
+            sql.Identifier(table_name),
+            sql.Identifier(new_field_name),
+            sql.Identifier(partition_field),
+            sql.Identifier(source_schema),
+            sql.Identifier(source_table),
+            join_condition
+        )
+
+        if dry_run:
+            print_message(f"[Dry Run] Would execute: {update_stmt.as_string(conn)}", "STEP_INFO")
+
+            # In dry run, count how many records would be updated
+            count_stmt = sql.SQL("""
+                SELECT COUNT(*)
+                FROM {}.{} AS r 
+                JOIN {}.{} AS s ON {}
+                WHERE r.{} IS NULL
+            """).format(
+                sql.Identifier(table_schema),
+                sql.Identifier(table_name),
+                sql.Identifier(source_schema),
+                sql.Identifier(source_table),
+                join_condition,
+                sql.Identifier(new_field_name)
+            )
+
+            with conn.cursor() as cur:
+                cur.execute(count_stmt)
+                count = cur.fetchone()[0]
+                print_message(f"[Dry Run] Would update {count} record(s) in {table_schema}.{table_name}", "STEP_INFO")
+                return count
+        else:
+            with conn.cursor() as cur:
+                cur.execute(update_stmt)
+                updated_count = cur.rowcount
+                print_message(f"Updated {updated_count} record(s) in {table_schema}.{table_name}", "SUCCESS")
+                return updated_count
+
+    except psycopg2.Error as db_err:
+        print_message(f"Database error populating field in {table_schema}.{table_name}: {db_err}", "ERROR")
+        return -1
+    except Exception as e:
+        print_message(f"Error populating field in {table_schema}.{table_name}: {e}", "ERROR")
+        return -1
+
+def add_partition_field_to_related_table(conn, related_table_info, partition_field, field_type_info, dry_run=False):
+    """
+    Add the etarc_ partition field to a related table.
+    
+    Args:
+        conn: Database connection
+        related_table_info: Dictionary with related table details
+        partition_field: Name of the original partition field
+        field_type_info: Dictionary with field type information from get_partition_field_type
+        dry_run: If True, only simulate the operation
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        table_schema = related_table_info['table_schema']
+        table_name = related_table_info['table_name']
+        new_field_name = f"etarc_{partition_field}"
+
+        print_message(f"Adding field {new_field_name} to {table_schema}.{table_name}...", "STEP_INFO")
+
+        # Check if field already exists
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT column_name 
+                FROM information_schema.columns 
+                WHERE table_schema = %s AND table_name = %s AND column_name = %s
+            """, (table_schema, table_name, new_field_name))
+
+            if cur.fetchone():
+                print_message(f"Field {new_field_name} already exists in {table_schema}.{table_name}, skipping...", "WARNING")
+                return True
+
+        # Build the data type string
+        data_type = field_type_info['data_type']
+
+        # Handle data types that need precision/scale
+        if field_type_info['character_maximum_length']:
+            data_type += f"({field_type_info['character_maximum_length']})"
+        elif field_type_info['numeric_precision'] and field_type_info['numeric_scale'] is not None:
+            data_type += f"({field_type_info['numeric_precision']},{field_type_info['numeric_scale']})"
+        elif field_type_info['datetime_precision']:
+            data_type += f"({field_type_info['datetime_precision']})"
+
+        # Create ALTER TABLE statement
+        alter_stmt = sql.SQL("ALTER TABLE {}.{} ADD COLUMN {} {} NULL").format(
+            sql.Identifier(table_schema),
+            sql.Identifier(table_name),
+            sql.Identifier(new_field_name),
+            sql.SQL(data_type)
+        )
+
+        if dry_run:
+            print_message(f"[Dry Run] Would execute: {alter_stmt.as_string(conn)}", "STEP_INFO")
+        else:
+            with conn.cursor() as cur:
+                cur.execute(alter_stmt)
+            print_message(f"Successfully added field {new_field_name} to {table_schema}.{table_name}", "SUCCESS")
+
+        return True
+
+    except psycopg2.Error as db_err:
+        print_message(f"Database error adding field to {table_schema}.{table_name}: {db_err}", "ERROR")
+        return False
+    except Exception as e:
+        print_message(f"Error adding field to {table_schema}.{table_name}: {e}", "ERROR")
+        return False
+
+def get_partition_field_type(conn, table_name, schema, field_name):
+    """
+    Get the exact data type of the partition field from the source table.
+    
+    Args:
+        conn: Database connection
+        table_name: Name of the source table
+        schema: Schema of the source table  
+        field_name: Name of the partition field
+        
+    Returns:
+        Dictionary with type information:
+        {
+            'data_type': 'timestamp without time zone',
+            'is_nullable': 'NO',
+            'column_default': None,
+            'character_maximum_length': None,
+            'numeric_precision': None,
+            'numeric_scale': None
+        }
+    """
+    try:
+        print_message(f"Getting data type for field {field_name} in {schema}.{table_name}...", "CONFIG_LOAD")
+
+        with conn.cursor() as cur:
+            query = """
+                SELECT 
+                    data_type,
+                    is_nullable,
+                    column_default,
+                    character_maximum_length,
+                    numeric_precision,
+                    numeric_scale,
+                    datetime_precision
+                FROM information_schema.columns 
+                WHERE table_schema = %s 
+                    AND table_name = %s 
+                    AND column_name = %s
+            """
+
+            cur.execute(query, (schema, table_name, field_name))
+            result = cur.fetchone()
+
+            if not result:
+                raise Exception(f"Partition field '{field_name}' not found in {schema}.{table_name}")
+
+            field_type_info = {
+                'data_type': result[0],
+                'is_nullable': result[1],
+                'column_default': result[2],
+                'character_maximum_length': result[3],
+                'numeric_precision': result[4],
+                'numeric_scale': result[5],
+                'datetime_precision': result[6]
+            }
+
+            print_message(
+                f"Partition field type: {field_type_info['data_type']} "
+                f"(nullable: {field_type_info['is_nullable']})",
+                "CONFIG_LOAD"
+            )
+
+            return field_type_info
+
+    except psycopg2.Error as db_err:
+        print_message(f"Database error getting field type for {schema}.{table_name}.{field_name}: {db_err}", "ERROR")
+        raise
+    except Exception as e:
+        print_message(f"Error getting field type for {schema}.{table_name}.{field_name}: {e}", "ERROR")
+        raise
+
+def get_related_tables(conn, table_name, schema):
+    """
+    Discover all tables that have foreign key relationships pointing to the source table.
+    
+    Args:
+        conn: Database connection
+        table_name: Name of the source table being partitioned
+        schema: Schema of the source table
+        
+    Returns:
+        List of dictionaries with related table information:
+        [
+            {
+                'table_name': 'related_table_name',
+                'table_schema': 'related_table_schema', 
+                'constraint_name': 'fk_constraint_name',
+                'fk_columns': ['col1', 'col2'],  # columns in related table
+                'referenced_columns': ['ref_col1', 'ref_col2']  # columns in source table
+            }
+        ]
+    """
+    related_tables = []
+
+    try:
+        print_message(f"Discovering tables related to {schema}.{table_name}...", "CONFIG_LOAD")
+
+        with conn.cursor() as cur:
+            # Query to find all foreign keys that reference the source table
+            query = """
+                SELECT 
+                    tc.table_schema AS referencing_schema,
+                    tc.table_name AS referencing_table,
+                    tc.constraint_name,
+                    ARRAY_AGG(kcu.column_name ORDER BY kcu.ordinal_position) AS fk_columns,
+                    ARRAY_AGG(ccu.column_name ORDER BY kcu.ordinal_position) AS referenced_columns
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu 
+                    ON tc.constraint_name = kcu.constraint_name 
+                    AND tc.table_schema = kcu.table_schema
+                JOIN information_schema.constraint_column_usage ccu
+                    ON tc.constraint_name = ccu.constraint_name
+                WHERE tc.constraint_type = 'FOREIGN KEY'
+                    AND ccu.table_schema = %s 
+                    AND ccu.table_name = %s
+                GROUP BY tc.table_schema, tc.table_name, tc.constraint_name
+                ORDER BY tc.table_schema, tc.table_name
+            """
+
+            cur.execute(query, (schema, table_name))
+            results = cur.fetchall()
+
+            for row in results:
+                related_table_info = {
+                    'table_schema': row[0],
+                    'table_name': row[1],
+                    'constraint_name': row[2],
+                    'fk_columns': list(row[3]),
+                    'referenced_columns': list(row[4])
+                }
+                related_tables.append(related_table_info)
+
+                print_message(
+                    f"Found related table: {row[0]}.{row[1]} "
+                    f"(FK: {row[2]}, Columns: {list(row[3])} -> {list(row[4])})",
+                    "CONFIG_LOAD"
+                )
+
+        if not related_tables:
+            print_message(f"No related tables found for {schema}.{table_name}", "INFO")
+        else:
+            print_message(f"Found {len(related_tables)} related table(s) for {schema}.{table_name}", "SUCCESS")
+
+        return related_tables
+
+    except psycopg2.Error as db_err:
+        print_message(f"Database error while finding related tables for {schema}.{table_name}: {db_err}", "ERROR")
+        return []
+    except Exception as e:
+        print_message(f"Error finding related tables for {schema}.{table_name}: {e}", "ERROR")
+        return []
+
 def get_foreign_keys_referencing_table(conn, referenced_table_name, referenced_schema_name):
     fks_referencing = []
     try:
@@ -368,11 +900,12 @@ def get_year_range(conn, table_name_for_range, schema_for_range, partition_by_fi
         return current_year, current_year + 1
 
 # --- Main Execution Function ---
-def execute_partition_steps(conn, table_to_partition_name, partition_by_field, root_path=None, dry_run=False):
+def execute_partition_steps(conn, table_to_partition_name, partition_by_field, dry_run=False):
     new_partitioned_table_name = table_to_partition_name
     tmp_table_name = f"{table_to_partition_name}_tmp"
     partitions_schema_name = "partitions"
     dropped_referencing_fks_info = []
+    related_tables_result = None
 
     try:
         actual_schema = table_exists(conn, table_to_partition_name)
@@ -560,13 +1093,44 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, r
 
         print_message(f"\n{Style.SUCCESS} Full partitioning process for {actual_schema}.{new_partitioned_table_name} {'simulated.' if dry_run else 'completed successfully.'}", "SUCCESS")
 
+        print_message(f"\n[Step 14] Processing related tables for partition field propagation...", "STEP")
+        try:
+            related_tables_result = process_related_tables_for_partitioning(
+                conn, table_to_partition_name, actual_schema, partition_by_field, dry_run
+            )
+
+            if related_tables_result['success']:
+                print_message(f"Related tables processing completed successfully", "SUCCESS")
+                print_message(f"  - Tables processed: {related_tables_result['processed_tables']}", "STEP_INFO")
+                print_message(f"  - Records updated: {related_tables_result['total_records_updated']}", "STEP_INFO")
+            else:
+                print_message(f"Related tables processing completed with errors", "WARNING")
+                print_message(f"  - Tables processed: {related_tables_result['processed_tables']}", "STEP_INFO")
+                print_message(f"  - Tables failed: {related_tables_result['failed_tables']}", "STEP_INFO")
+                print_message(f"  - Records updated: {related_tables_result['total_records_updated']}", "STEP_INFO")
+
+        except Exception as e_related:
+            print_message(f"Error in related tables processing: {e_related}", "ERROR")
+            print_message("Main partitioning was successful, but related table processing failed", "WARNING")
+            related_tables_result = {
+                'success': False,
+                'total_related_tables': 0,
+                'processed_tables': 0,
+                'failed_tables': 1,
+                'total_records_updated': 0,
+                'details': [{'error_message': str(e_related)}]
+            }
+
+        # Return the related tables result for summary reporting
+        return related_tables_result
+
     except Exception as e:
         print_message(f"\n{Style.ERROR_ICON} ERROR processing table {table_to_partition_name if 'table_to_partition_name' in locals() else 'UNKNOWN'}: {e}", "ERROR")
         traceback.print_exc() # Esto imprimirá a stderr, lo cual está bien.
         if conn and not conn.closed:
             try: conn.rollback()
             except Exception as rb_e: print_message(f"Rollback error: {rb_e}", "ERROR")
-        raise
+        return None
 
 def print_final_summary(summary_data):
     """Imprime el resumen final de la migración."""
@@ -578,29 +1142,42 @@ def print_final_summary(summary_data):
     print_message(section_line, "HEADER")
 
     # Encabezados de la tabla del resumen
-    table_header_plain = f"{'Tabla':<35} | {'Estado':<10} | {'Mensaje'}"
-    table_header_ansi = f"{Style.BOLD}{'Tabla':<35}{Style.RESET} | {Style.BOLD}{'Estado':<18}{Style.RESET} | {Style.BOLD}{'Mensaje'}{Style.RESET}"
+    table_header_plain = f"{'Tabla':<35} | {'Estado':<10} | {'Rel. Tables':<10} | {'Mensaje'}"
+    table_header_ansi = f"{Style.BOLD}{'Tabla':<35}{Style.RESET} | {Style.BOLD}{'Estado':<18}{Style.RESET} | {Style.BOLD}{'Rel. Tables':<10}{Style.RESET} | {Style.BOLD}{'Mensaje'}{Style.RESET}"
 
     if _use_ansi_output:
         print_message(table_header_ansi, "IMPORTANT")
-        # La longitud del separador debe considerar que los códigos ANSI no son visibles
-        # Esta es una aproximación; puede necesitar ajustes finos.
         separator_len = len(table_header_plain) + 5 # Ajuste por emojis/colores en "Estado"
         print_message("-" * separator_len, "IMPORTANT")
-
     else:
         print_message(table_header_plain, "IMPORTANT")
         print_message("-" * len(table_header_plain), "IMPORTANT")
 
-
     success_count = 0
     failure_count = 0
+    total_related_tables_processed = 0
+    total_records_updated = 0
 
     for item in summary_data:
         table_name = item['table_name']
         status = item['status']
-        message = item['message'][:100] + '...' if len(item['message']) > 100 else item['message']
+        message = item['message'][:80] + '...' if len(item['message']) > 80 else item['message']
         message = message.replace('\n', ' ') # Evitar saltos de línea en el mensaje del resumen
+
+        # Information about related tables
+        related_tables_info = item.get('related_tables_result', {})
+        related_tables_str = "N/A"
+
+        if related_tables_info:
+            processed = related_tables_info.get('processed_tables', 0)
+            failed = related_tables_info.get('failed_tables', 0)
+            total_related_tables_processed += processed
+            total_records_updated += related_tables_info.get('total_records_updated', 0)
+
+            if failed > 0:
+                related_tables_str = f"{processed}✓/{failed}✗"
+            else:
+                related_tables_str = f"{processed}✓" if processed > 0 else "0"
 
         if status == 'SUCCESS':
             status_str_plain = "SUCCESS"
@@ -612,10 +1189,9 @@ def print_final_summary(summary_data):
             failure_count += 1
 
         if _use_ansi_output:
-            # El padding para status_str_ansi (<18) intenta compensar los caracteres no visibles de ANSI.
-            print(f"  {table_name:<35} | {status_str_ansi:<{len(status_str_ansi) + (10 - len(status_str_plain))}} | {message}")
+            print(f"  {table_name:<35} | {status_str_ansi:<{len(status_str_ansi) + (10 - len(status_str_plain))}} | {related_tables_str:<10} | {message}")
         else:
-            print(f"  {table_name:<35} | {status_str_plain:<10} | {message}")
+            print(f"  {table_name:<35} | {status_str_plain:<10} | {related_tables_str:<10} | {message}")
 
     if _use_ansi_output:
         print_message("-" * separator_len, "IMPORTANT")
@@ -625,6 +1201,12 @@ def print_final_summary(summary_data):
     print_message(f"Total Tablas Procesadas: {len(summary_data)}", "INFO")
     print_message(f"Exitosas: {success_count}", "SUCCESS")
     print_message(f"Fallidas: {failure_count}", "FAILURE" if failure_count > 0 else "INFO")
+
+    # Related tables summary
+    if total_related_tables_processed > 0:
+        print_message(f"Total Tablas Relacionadas Procesadas: {total_related_tables_processed}", "INFO")
+        print_message(f"Total Registros Actualizados en Tablas Relacionadas: {total_records_updated}", "INFO")
+
     print_message(section_line, "HEADER")
 
 
@@ -671,7 +1253,12 @@ def main(dry_run=False):
             for table_name, fields in table_fields_config.items():
                 if not fields:
                     print_message(f"\n--- Skipping table: {table_name} (No partition fields.) ---", "WARNING")
-                    migration_summary.append({'table_name': table_name, 'status': 'SKIPPED', 'message': 'No partition fields specified.'})
+                    migration_summary.append({
+                        'table_name': table_name,
+                        'status': 'SKIPPED',
+                        'message': 'No partition fields specified.',
+                        'related_tables_result': None
+                    })
                     continue
 
                 partition_field = next(iter(fields))
@@ -680,11 +1267,21 @@ def main(dry_run=False):
                 print_message(f"=== Processing table: {Style.BOLD}{table_name}{Style.RESET} (Partition field: {Style.UNDERLINE}{partition_field}{Style.RESET}) ===", "TABLE_PROCESS")
                 print_message(header_line, "TABLE_PROCESS")
                 try:
-                    execute_partition_steps(conn, table_name, partition_field, dry_run)
-                    migration_summary.append({'table_name': table_name, 'status': 'SUCCESS', 'message': ''})
+                    related_tables_result = execute_partition_steps(conn, table_name, partition_field, dry_run)
+                    migration_summary.append({
+                        'table_name': table_name,
+                        'status': 'SUCCESS',
+                        'message': '',
+                        'related_tables_result': related_tables_result
+                    })
                 except Exception as e_table:
                     error_msg = str(e_table).replace('\n', ' ') # Limpiar mensaje para el resumen
-                    migration_summary.append({'table_name': table_name, 'status': 'FAILURE', 'message': error_msg[:200]}) # Truncar mensaje largo
+                    migration_summary.append({
+                        'table_name': table_name,
+                        'status': 'FAILURE',
+                        'message': error_msg[:200],  # Truncar mensaje largo
+                        'related_tables_result': None
+                    })
                     print_message(f"!!!!!!!! FAILED to process table {table_name}: {e_table} !!!!!!!!", "FAILURE")
                     print_message(f"Continuing with next table if any...", "INFO")
                     if conn.closed:
