@@ -189,7 +189,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
     String updateColumnSQL = "UPDATE %s SET %s = F.%s FROM %s F " + "WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
 
-    String addPartitionedForeignKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) " + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE " + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
+    String addPartitionedForeignKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) " + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE " + "ON UPDATE CASCADE ON DELETE NO ACTION;\n";
 
     String addSimpleForeignKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s FOREIGN KEY (%s) " + "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE " + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
 
