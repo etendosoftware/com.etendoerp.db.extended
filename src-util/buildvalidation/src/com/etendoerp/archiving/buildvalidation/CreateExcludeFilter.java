@@ -6,6 +6,7 @@ import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.apache.commons.lang3.StringUtils;
 
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -13,8 +14,10 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.util.*;
 import java.io.File;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 /**
  * Generates the excludeFilter.xml by collecting constraint names
@@ -32,10 +35,9 @@ public class CreateExcludeFilter extends BuildValidation {
 
       // 1) Retrieve all base tables configured in ETARC_Table_Config
       String baseTablesQuery =
-          "SELECT tablename " +
-              "FROM ad_table " +
-              "WHERE ad_table_id IN ( " +
-              "  SELECT ad_table_id FROM ETARC_Table_Config" +
+          "SELECT LOWER(tablename) FROM ad_table t " +
+              "WHERE EXISTS ( " +
+              "  SELECT 1 FROM ETARC_Table_Config tc WHERE tc.ad_table_id=t.ad_table_id" +
               ")";
       logger.info("Executing query to retrieve base tables");
       PreparedStatement baseTablesStmt = connectionProvider.getPreparedStatement(baseTablesQuery);
@@ -43,17 +45,16 @@ public class CreateExcludeFilter extends BuildValidation {
 
       while (baseTablesResult.next()) {
         String baseTableName = baseTablesResult.getString("tablename");
-        if (baseTableName == null || baseTableName.trim().isEmpty()) {
+        if (StringUtils.isBlank(baseTableName)) {
           logger.warn("Received an empty or null base table name; skipping.");
           continue;
         }
-        baseTableName = baseTableName.toLowerCase();
         logger.info("Processing base table: {}", baseTableName);
 
         // 2) Extract the PRIMARY KEY (PK) from the XML files of that base table
         List<File> baseTableXmlFiles = ArchivingPreBuildUtils.findTableXmlFiles(baseTableName);
         String primaryKeyName = ArchivingPreBuildUtils.findPrimaryKey(baseTableXmlFiles);
-        if (primaryKeyName != null && !primaryKeyName.trim().isEmpty()) {
+        if (!StringUtils.isBlank(primaryKeyName)) {
           String primaryKeyUpper = primaryKeyName.toUpperCase();
           constraintsToExclude.add(primaryKeyUpper);
           logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);

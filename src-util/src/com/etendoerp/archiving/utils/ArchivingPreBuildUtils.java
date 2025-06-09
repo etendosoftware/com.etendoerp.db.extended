@@ -1,11 +1,6 @@
 package com.etendoerp.archiving.utils;
 
-import java.io.File;
-import java.io.IOException;
-import java.sql.PreparedStatement;
-import java.util.*;
-import java.util.stream.Stream;
-
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.base.exception.OBException;
@@ -22,11 +17,22 @@ import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
+import java.io.File;
+import java.io.IOException;
+import java.sql.PreparedStatement;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Objects;
+import java.util.Set;
+import java.util.stream.Stream;
 
 public class ArchivingPreBuildUtils {
 
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final Logger log4j = LogManager.getLogger();
+  public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
 
   private ArchivingPreBuildUtils() {
     throw new IllegalStateException("Utility class. It shouldn't be instantiated");
@@ -150,86 +156,6 @@ public class ArchivingPreBuildUtils {
     return dirs.stream().filter(File::isDirectory).toList();
   }
 
-//  public static List<File> findAllTableXmlFiles() {
-//    List<File> allTableFiles = new ArrayList<>();
-//    File projectRootDir = new File(ModulesUtil.getProjectRootDir());
-//    List<String> modules = Arrays.stream(ModulesUtil.moduleDirs).toList();
-//
-//    for (String modulePath : modules) {
-//      File moduleBase = new File(projectRootDir, modulePath);
-//      if (!moduleBase.exists() || !moduleBase.isDirectory()) {
-//        continue;
-//      }
-//
-//      File directXmlDir = new File(moduleBase, ArchivingPreBuildUtils.SRC_DB_DATABASE_MODEL_TABLES);
-//      if (directXmlDir.exists() && directXmlDir.isDirectory()) {
-//        File[] files = directXmlDir.listFiles(f -> f.isFile() && f.getName().toLowerCase().endsWith(".xml"));
-//        if (files != null) {
-//          allTableFiles.addAll(Arrays.asList(files));
-//        }
-//      }
-//
-//      File[] subDirs = moduleBase.listFiles(File::isDirectory);
-//      if (subDirs != null) {
-//        for (File subDir : subDirs) {
-//          File xmlInSubDir = new File(subDir, ArchivingPreBuildUtils.SRC_DB_DATABASE_MODEL_TABLES);
-//          if (xmlInSubDir.exists() && xmlInSubDir.isDirectory()) {
-//            File[] files = xmlInSubDir.listFiles(f -> f.isFile() && f.getName().toLowerCase().endsWith(".xml"));
-//            if (files != null) {
-//              allTableFiles.addAll(Arrays.asList(files));
-//            }
-//          }
-//        }
-//      }
-//    }
-//
-//    // 3) Check the project’s root folder for table XMLs
-//    File rootXmlDir = new File(projectRootDir, ArchivingPreBuildUtils.SRC_DB_DATABASE_MODEL_TABLES);
-//    if (rootXmlDir.exists() && rootXmlDir.isDirectory()) {
-//      File[] files = rootXmlDir.listFiles(f -> f.isFile() && f.getName().toLowerCase().endsWith(".xml"));
-//      if (files != null) {
-//        allTableFiles.addAll(Arrays.asList(files));
-//      }
-//    }
-//
-//    return allTableFiles;
-//  }
-//
-//  public static List<File> findTableXmlFiles(String tableName) {
-//    List<File> foundFiles = new ArrayList<>();
-//    File projectDir = new File(ModulesUtil.getProjectRootDir());
-//    List<String> modules = new ArrayList<>(Arrays.stream(ModulesUtil.moduleDirs).toList());
-//    List<String> moduleDirsToCheck = new ArrayList<>();
-//
-//    for (String modulePath : modules) {
-//      File moduleDir = new File(projectDir, modulePath);
-//      if (moduleDir.exists() && moduleDir.isDirectory()) {
-//        File[] subDirs = moduleDir.listFiles(File::isDirectory);
-//        if (subDirs != null) {
-//          for (File subDir : subDirs) {
-//            moduleDirsToCheck.add(subDir.getAbsolutePath());
-//          }
-//        }
-//      }
-//    }
-//    moduleDirsToCheck.add(ModulesUtil.getProjectRootDir() + "/");
-//
-//    for (String dir : moduleDirsToCheck) {
-//      File xmlDir = new File(dir + SRC_DB_DATABASE_MODEL_TABLES);
-//      if (xmlDir.exists() && xmlDir.isDirectory()) {
-//        File[] files = xmlDir.listFiles();
-//        if (files != null) {
-//          for (File file : files) {
-//            if (file.isFile() && file.getName().equalsIgnoreCase(tableName + ".xml")) {
-//              foundFiles.add(file);
-//            }
-//          }
-//        }
-//      }
-//    }
-//    return foundFiles;
-//
-
   /**
    * Searches the supplied XML files for a <foreign-key> element that references
    * the specified target table and column, and returns its "name" attribute.
@@ -260,12 +186,11 @@ public class ArchivingPreBuildUtils {
 
         for (int i = 0; i < fkList.getLength(); i++) {
           Element fkEl = (Element) fkList.item(i);
-          if (targetTable.equalsIgnoreCase(fkEl.getAttribute("foreignTable"))) {
+          if (StringUtils.equalsIgnoreCase(targetTable, fkEl.getAttribute("foreignTable"))) {
             NodeList refList = fkEl.getElementsByTagName("reference");
             for (int j = 0; j < refList.getLength(); j++) {
               Element refEl = (Element) refList.item(j);
-              if (targetColumn != null && targetColumn.equalsIgnoreCase(
-                  refEl.getAttribute("local"))) {
+              if (StringUtils.equalsIgnoreCase(targetColumn, refEl.getAttribute("local"))) {
                 return fkEl.getAttribute("name");
               }
             }
@@ -344,7 +269,7 @@ public class ArchivingPreBuildUtils {
   public static String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
                                           String partitionField) throws Exception {
     // Check if table is partitioned
-    String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = ? ::regclass";
+    String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";
     PreparedStatement psCheck = cp.getPreparedStatement(checkPartition);
     psCheck.setString(1, tableName);
     boolean isPartitioned = psCheck.executeQuery().next();
@@ -356,11 +281,11 @@ public class ArchivingPreBuildUtils {
     String pkName = findPrimaryKey(tableXmlFiles);
 
     // SQL templates for primary table
-    String dropPrimaryKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
+    String dropPrimaryKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
 
-    String addPartitionedPrimaryKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
+    String addPartitionedPrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
 
-    String addSimplePrimaryKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
+    String addSimplePrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
 
     // Build SQL script for primary table
     StringBuilder sql = new StringBuilder();
@@ -374,15 +299,29 @@ public class ArchivingPreBuildUtils {
     }
 
     // SQL templates for foreign key constraints
-    String dropForeignKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "DROP CONSTRAINT IF EXISTS %s;\n";
+    StringBuilder dropForeignKeySQL = new StringBuilder()
+        .append(ALTER_TABLE)
+        .append("DROP CONSTRAINT IF EXISTS %s;\n");
 
-    String addColumnSQL = "ALTER TABLE %s\n" + "ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
+    StringBuilder addColumnSQL = new StringBuilder()
+        .append("ALTER TABLE %s\n")
+        .append("ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n");
 
-    String updateColumnSQL = "UPDATE %s SET %s = F.%s FROM %s F " + "WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
+    StringBuilder updateColumnSQL = new StringBuilder()
+        .append("UPDATE %s SET %s = F.%s FROM %s F ")
+        .append("WHERE F.%s = %s.%s AND %s.%s IS NULL;\n");
 
-    String addPartitionedForeignKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) " + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE " + "ON UPDATE CASCADE ON DELETE NO ACTION;\n";
+    StringBuilder addPartitionedForeignKeySQL = new StringBuilder()
+        .append(ALTER_TABLE)
+        .append("ADD CONSTRAINT %s FOREIGN KEY (%s, %s) ")
+        .append("REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ")
+        .append("ON UPDATE CASCADE ON DELETE NO ACTION;\n");
 
-    String addSimpleForeignKeySQL = "ALTER TABLE IF EXISTS PUBLIC.%s\n" + "ADD CONSTRAINT %s FOREIGN KEY (%s) " + "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE " + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
+    StringBuilder addSimpleForeignKeySQL = new StringBuilder()
+        .append(ALTER_TABLE)
+        .append("ADD CONSTRAINT %s FOREIGN KEY (%s) ")
+        .append("REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ")
+        .append("ON UPDATE NO ACTION ON DELETE NO ACTION;\n");
 
     Entity targetEntity = null;
     for (Entity entity : entities) {
@@ -414,20 +353,20 @@ public class ArchivingPreBuildUtils {
             return;
           }
 
-          sql.append(String.format(dropForeignKeySQL, relatedTableName, foreignKey));
+          sql.append(String.format(dropForeignKeySQL.toString(), relatedTableName, foreignKey));
 
           if (isPartitioned) {
             String partitionColumn = "etarc_" + partitionField + "__" + foreignKey;
-            sql.append(String.format(addColumnSQL, relatedTableName, partitionColumn));
+            sql.append(String.format(addColumnSQL.toString(), relatedTableName, partitionColumn));
             sql.append(
-                String.format(updateColumnSQL, relatedTableName, partitionColumn, partitionField,
+                String.format(updateColumnSQL.toString(), relatedTableName, partitionColumn, partitionField,
                     tableName, pkField, relatedTableName, relationColumn, relatedTableName,
                     partitionColumn));
-            sql.append(String.format(addPartitionedForeignKeySQL, relatedTableName, foreignKey,
+            sql.append(String.format(addPartitionedForeignKeySQL.toString(), relatedTableName, foreignKey,
                 relationColumn, partitionColumn, tableName, pkField, partitionField));
           } else {
             sql.append(
-                String.format(addSimpleForeignKeySQL, relatedTableName, foreignKey, relationColumn,
+                String.format(addSimpleForeignKeySQL.toString(), relatedTableName, foreignKey, relationColumn,
                     tableName, pkField));
           }
         }
