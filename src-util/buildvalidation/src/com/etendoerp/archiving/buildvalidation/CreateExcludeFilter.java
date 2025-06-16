@@ -39,26 +39,29 @@ import java.util.stream.Stream;
 public class CreateExcludeFilter extends BuildValidation {
   private static final Logger logger = LogManager.getLogger();
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
+  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   @Override
   public List<String> execute() {
     Set<String> constraintsToExclude = new HashSet<>();
+    Set<String> columnsToExclude = new HashSet<>();
 
     try {
       ConnectionProvider connectionProvider = getConnectionProvider();
 
       // 1) Retrieve all base tables configured in ETARC_Table_Config
       String baseTablesQuery =
-          "SELECT LOWER(tablename) FROM ad_table t " +
-              "WHERE EXISTS ( " +
-              "  SELECT 1 FROM ETARC_Table_Config tc WHERE tc.ad_table_id=t.ad_table_id" +
-              ")";
+          "SELECT LOWER(T.TABLENAME) TABLENAME, LOWER(C.COLUMNNAME) COLUMNNAME " +
+              "FROM ETARC_TABLE_CONFIG TC " +
+              "JOIN AD_TABLE T ON TC.AD_TABLE_ID = T.AD_TABLE_ID " +
+              "JOIN AD_COLUMN C ON C.AD_COLUMN_ID = TC.AD_COLUMN_ID";
       logger.info("Executing query to retrieve base tables");
       PreparedStatement baseTablesStmt = connectionProvider.getPreparedStatement(baseTablesQuery);
       ResultSet baseTablesResult = baseTablesStmt.executeQuery();
 
       while (baseTablesResult.next()) {
         String baseTableName = baseTablesResult.getString("tablename");
+        String partitionColumnName = baseTablesResult.getString("columnname");
         if (StringUtils.isBlank(baseTableName)) {
           logger.warn("Received an empty or null base table name; skipping.");
           continue;
@@ -81,6 +84,14 @@ public class CreateExcludeFilter extends BuildValidation {
         if (!referencingFks.isEmpty()) {
           logger.info("Found {} FKs referencing '{}'", referencingFks.size(), baseTableName);
           constraintsToExclude.addAll(referencingFks);
+          logger.info("Partition column for '{}': {}", baseTableName, partitionColumnName);
+          if (!StringUtils.isBlank(partitionColumnName)) {
+            referencingFks.forEach(fk -> {
+              String columnToExclude = "ETARC_" + partitionColumnName.toUpperCase() + "__" + fk.toUpperCase();
+              columnsToExclude.add(columnToExclude);
+              logger.info("Adding column to exclude: {}", columnToExclude);
+            });
+          }
         } else {
           logger.info("No FKs found referencing '{}'", baseTableName);
         }
@@ -113,6 +124,12 @@ public class CreateExcludeFilter extends BuildValidation {
         xmlBuilder
             .append("  <excludedConstraint name=\"")
             .append(constraintName)
+            .append("\"/>\n");
+      }
+      for (String columnName : columnsToExclude) {
+        xmlBuilder
+            .append("  <excludedColumn name=\"")
+            .append(columnName)
             .append("\"/>\n");
       }
       xmlBuilder.append("</vector>\n");
@@ -288,6 +305,10 @@ public class CreateExcludeFilter extends BuildValidation {
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
       for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
         dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
+      }
+      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+      for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
+        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
       }
     }
     dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));

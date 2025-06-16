@@ -21,15 +21,13 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
 import java.sql.PreparedStatement;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.List;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Stream;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
 
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
+  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   private static final Logger log4j = LogManager.getLogger();
 
@@ -41,10 +39,26 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       java.sql.ResultSet rs = configPs.executeQuery();
       StringBuilder sql = new StringBuilder();
 
+      List<Map<String, String>> tableConfigs = new ArrayList<>();
       while (rs.next()) {
         String tableName = rs.getString("TABLENAME");
         String columnName = rs.getString("COLUMNNAME");
         String pkColumnName = rs.getString("PK_COLUMNNAME");
+        Map<String, String> config = new HashMap<>();
+        config.put("tableName", tableName);
+        config.put("columnName", columnName);
+        config.put("pkColumnName", pkColumnName);
+        tableConfigs.add(config);
+      }
+
+      for( Map<String, String> config : tableConfigs) {
+        String tableName = config.get("tableName");
+        String columnName = config.get("columnName");
+        String pkColumnName = config.get("pkColumnName");
+        if (StringUtils.isBlank(tableName) || StringUtils.isBlank(columnName) || StringUtils.isBlank(pkColumnName)) {
+          log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}", tableName, columnName, pkColumnName);
+          continue;
+        }
         sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
       }
 
@@ -220,6 +234,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
         dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
       }
+      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+      for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
+        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+      }
     }
     dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
     return dirs.stream().filter(File::isDirectory).toList();
@@ -253,11 +271,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * <p>
    * Steps performed:
    * <ol>
-   *   <li>Checks whether {@code tableName} is partitioned.</li>
-   *   <li>Loads the table’s XML to determine the primary key name.</li>
-   *   <li>Drops existing PK and re-adds it (with or without partition column).</li>
-   *   <li>Iterates the Openbravo model to find any properties referencing
-   *       {@code tableName}, drops and re-adds those FKs (partitioned if needed).</li>
+   * <li>Checks whether {@code tableName} is partitioned.</li>
+   * <li>Loads the table’s XML to determine the primary key name.</li>
+   * <li>Drops existing PK and re-adds it (with or without partition column).</li>
+   * <li>Iterates all table XML definition files to find any foreign keys referencing
+   * {@code tableName}, then drops and re-adds those FKs (partitioned if needed).</li>
    * </ol>
    *
    * @param tableName      the name of the table to modify
@@ -268,7 +286,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @throws Exception if any database or XML processing error occurs
    */
   public static String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
-                                          String partitionField) throws Exception {
+      String partitionField) throws Exception {
     // Check if table is partitioned
     String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";
     PreparedStatement psCheck = cp.getPreparedStatement(checkPartition);
@@ -276,16 +294,19 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     boolean isPartitioned = psCheck.executeQuery().next();
     psCheck.close();
 
-    // Get required information
-    List<Entity> entities = ModelProvider.getInstance().getModel();
+    // Get required information from the primary table's XML
     List<File> tableXmlFiles = findTableXmlFiles(tableName);
+    if (tableXmlFiles.isEmpty()) {
+      throw new OBException("Entity XML file for " + tableName + " not found.");
+    }
     String pkName = findPrimaryKey(tableXmlFiles);
+    if (pkName == null) {
+      throw new OBException("Primary Key for entity " + tableName + " not found in XML.");
+    }
 
     // SQL templates for primary table
     String dropPrimaryKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
-
     String addPartitionedPrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
-
     String addSimplePrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
 
     // Build SQL script for primary table
@@ -300,83 +321,83 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
 
     // SQL templates for foreign key constraints
-    StringBuilder dropForeignKeySQL = new StringBuilder()
-        .append(ALTER_TABLE)
-        .append("DROP CONSTRAINT IF EXISTS %s;\n");
+    String dropForeignKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s;\n";
+    String addColumnSQL = "ALTER TABLE %s\n" + "ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
+    String updateColumnSQL = "UPDATE %s SET %s = F.%s FROM %s F "
+        + "WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
+    String addPartitionedForeignKeySQL = ALTER_TABLE
+        + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) "
+        + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE "
+        + "ON UPDATE CASCADE ON DELETE NO ACTION;\n";
+    String addSimpleForeignKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s FOREIGN KEY (%s) "
+        + "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE "
+        + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
 
-    StringBuilder addColumnSQL = new StringBuilder()
-        .append("ALTER TABLE %s\n")
-        .append("ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n");
-
-    StringBuilder updateColumnSQL = new StringBuilder()
-        .append("UPDATE %s SET %s = F.%s FROM %s F ")
-        .append("WHERE F.%s = %s.%s AND %s.%s IS NULL;\n");
-
-    StringBuilder addPartitionedForeignKeySQL = new StringBuilder()
-        .append(ALTER_TABLE)
-        .append("ADD CONSTRAINT %s FOREIGN KEY (%s, %s) ")
-        .append("REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ")
-        .append("ON UPDATE CASCADE ON DELETE NO ACTION;\n");
-
-    StringBuilder addSimpleForeignKeySQL = new StringBuilder()
-        .append(ALTER_TABLE)
-        .append("ADD CONSTRAINT %s FOREIGN KEY (%s) ")
-        .append("REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ")
-        .append("ON UPDATE NO ACTION ON DELETE NO ACTION;\n");
-
-    Entity targetEntity = null;
-    for (Entity entity : entities) {
-      if (entity.isView() || entity.isVirtualEntity())
+    // Iterate over all table XMLs to find references to our target table
+    for (File dir : collectTableDirs()) {
+      File[] xmlsInDir = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
+      if (xmlsInDir == null) {
         continue;
-
-      if (entity.getTableName().equalsIgnoreCase(tableName)) {
-        targetEntity = entity;
       }
 
-      entity.getProperties().forEach(property -> {
-        if (property.getTargetEntity() != null && property.getTargetEntity()
-            .getTableName()
-            .equalsIgnoreCase(tableName)) {
-
-          Entity sourceEntity = property.getEntity();
-          if (sourceEntity.isView() || sourceEntity.isVirtualEntity())
-            return;
-
-          String relatedTableName = sourceEntity.getTableName().toUpperCase();
-          List<File> xmlFolders = findTableXmlFiles(relatedTableName);
-          if (xmlFolders.isEmpty()) {
-            return;
+      for (File sourceXmlFile : xmlsInDir) {
+        try {
+          Document doc = getDocument(sourceXmlFile);
+          NodeList tableNodes = doc.getElementsByTagName("table");
+          if (tableNodes.getLength() != 1) {
+            continue;
           }
 
-          String relationColumn = property.getColumnName();
-          String foreignKey = findForeignKeyName(xmlFolders, tableName, relationColumn);
-          if (foreignKey == null) {
-            return;
+          Element tableEl = (Element) tableNodes.item(0);
+          // Skip views or the table we are already processing
+          if (Boolean.parseBoolean(tableEl.getAttribute("isView")) || tableName.equalsIgnoreCase(
+              tableEl.getAttribute("name"))) {
+            continue;
           }
 
-          sql.append(String.format(dropForeignKeySQL.toString(), relatedTableName, foreignKey));
+          String relatedTableName = tableEl.getAttribute("name").toUpperCase();
+          NodeList fkList = tableEl.getElementsByTagName("foreign-key");
 
-          if (isPartitioned) {
-            String partitionColumn = "etarc_" + partitionField + "__" + foreignKey;
-            sql.append(String.format(addColumnSQL.toString(), relatedTableName, partitionColumn));
-            sql.append(
-                String.format(updateColumnSQL.toString(), relatedTableName, partitionColumn, partitionField,
-                    tableName, pkField, relatedTableName, relationColumn, relatedTableName,
-                    partitionColumn));
-            sql.append(String.format(addPartitionedForeignKeySQL.toString(), relatedTableName, foreignKey,
-                relationColumn, partitionColumn, tableName, pkField, partitionField));
-          } else {
-            sql.append(
-                String.format(addSimpleForeignKeySQL.toString(), relatedTableName, foreignKey, relationColumn,
-                    tableName, pkField));
+          for (int i = 0; i < fkList.getLength(); i++) {
+            Element fkEl = (Element) fkList.item(i);
+            if (tableName.equalsIgnoreCase(fkEl.getAttribute("foreignTable"))) {
+              // This table has a foreign key to our target table
+              String foreignKey = fkEl.getAttribute("name");
+              NodeList refList = fkEl.getElementsByTagName("reference");
+              if (refList.getLength() == 0) {
+                continue;
+              }
+
+              // Assuming a single-column FK for this logic, like the original method
+              Element refEl = (Element) refList.item(0);
+              String relationColumn = refEl.getAttribute("local");
+
+              if (StringUtils.isBlank(foreignKey) || StringUtils.isBlank(relationColumn)) {
+                continue;
+              }
+
+              sql.append(String.format(dropForeignKeySQL, relatedTableName, foreignKey));
+
+              if (isPartitioned) {
+                String partitionColumn = "etarc_" + partitionField + "__" + foreignKey;
+                sql.append(String.format(addColumnSQL, relatedTableName, partitionColumn));
+                sql.append(String.format(updateColumnSQL, relatedTableName, partitionColumn,
+                    partitionField, tableName, pkField, relatedTableName, relationColumn,
+                    relatedTableName, partitionColumn));
+                sql.append(
+                    String.format(addPartitionedForeignKeySQL, relatedTableName, foreignKey,
+                        relationColumn, partitionColumn, tableName, pkField, partitionField));
+              } else {
+                sql.append(String.format(addSimpleForeignKeySQL, relatedTableName, foreignKey,
+                    relationColumn, tableName, pkField));
+              }
+            }
           }
+        } catch (Exception e) {
+          log4j.error("Error processing XML file: {}", sourceXmlFile.getAbsolutePath(), e);
         }
-      });
+      }
     }
-
-    if (targetEntity == null)
-      throw new OBException("Entity " + tableName + " not found in model.");
-
     return sql.toString();
   }
 }
