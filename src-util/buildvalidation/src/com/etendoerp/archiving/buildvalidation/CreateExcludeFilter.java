@@ -30,6 +30,7 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 /**
@@ -312,7 +313,7 @@ public class CreateExcludeFilter extends BuildValidation {
       }
     }
     dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
-    return dirs.stream().filter(File::isDirectory).toList();
+    return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
   }
 
   /**
@@ -334,7 +335,7 @@ public class CreateExcludeFilter extends BuildValidation {
           return files == null ? Stream.empty() : Arrays.stream(files);
         })
         .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
-        .toList();
+        .collect(Collectors.toList());
   }
 
   /**
@@ -352,6 +353,6 @@ public class CreateExcludeFilter extends BuildValidation {
           File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
           return files == null ? Stream.empty() : Arrays.stream(files);
         })
-        .toList();
+        .collect(Collectors.toList());
   }
 }

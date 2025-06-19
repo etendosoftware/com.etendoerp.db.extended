@@ -3,9 +3,6 @@ package com.etendoerp.archiving.modulescript;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.base.exception.OBException;
-import org.openbravo.base.model.Entity;
-import org.openbravo.base.model.ModelProvider;
 import org.openbravo.database.ConnectionProvider;
 import org.openbravo.ddlutils.util.ModulesUtil;
 import org.openbravo.modulescript.ModuleScript;
@@ -21,7 +18,13 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
 import java.sql.PreparedStatement;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
@@ -240,7 +243,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
     }
     dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
-    return dirs.stream().filter(File::isDirectory).toList();
+    return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
   }
 
   /**
@@ -262,7 +265,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           return files == null ? Stream.empty() : Arrays.stream(files);
         })
         .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
-        .toList();
+        .collect(Collectors.toList());
   }
 
   /**
@@ -297,11 +300,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     // Get required information from the primary table's XML
     List<File> tableXmlFiles = findTableXmlFiles(tableName);
     if (tableXmlFiles.isEmpty()) {
-      throw new OBException("Entity XML file for " + tableName + " not found.");
+      throw new Exception("Entity XML file for " + tableName + " not found.");
     }
     String pkName = findPrimaryKey(tableXmlFiles);
     if (pkName == null) {
-      throw new OBException("Primary Key for entity " + tableName + " not found in XML.");
+      throw new Exception("Primary Key for entity " + tableName + " not found in XML.");
     }
 
     // SQL templates for primary table
