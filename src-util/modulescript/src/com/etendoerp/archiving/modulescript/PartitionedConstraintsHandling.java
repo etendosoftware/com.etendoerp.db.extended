@@ -1,6 +1,5 @@
 package com.etendoerp.archiving.modulescript;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
@@ -34,6 +33,14 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   private static final Logger log4j = LogManager.getLogger();
 
+  public static boolean isBlank(String str) {
+    return str == null || str.trim().isEmpty();
+  }
+
+  public static boolean isEqualsIgnoreCase(String str1, String str2) {
+    return str1 != null && str1.equalsIgnoreCase(str2);
+  }
+
   public void execute() {
     try {
       ConnectionProvider cp = getConnectionProvider();
@@ -58,7 +65,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         String tableName = config.get("tableName");
         String columnName = config.get("columnName");
         String pkColumnName = config.get("pkColumnName");
-        if (StringUtils.isBlank(tableName) || StringUtils.isBlank(columnName) || StringUtils.isBlank(pkColumnName)) {
+        if (isBlank(tableName) || isBlank(columnName) || isBlank(pkColumnName)) {
           log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}", tableName, columnName, pkColumnName);
           continue;
         }
@@ -105,11 +112,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
         for (int i = 0; i < fkList.getLength(); i++) {
           Element fkEl = (Element) fkList.item(i);
-          if (StringUtils.equalsIgnoreCase(targetTable, fkEl.getAttribute("foreignTable"))) {
+          if (isEqualsIgnoreCase(targetTable, fkEl.getAttribute("foreignTable"))) {
             NodeList refList = fkEl.getElementsByTagName("reference");
             for (int j = 0; j < refList.getLength(); j++) {
               Element refEl = (Element) refList.item(j);
-              if (StringUtils.equalsIgnoreCase(targetColumn, refEl.getAttribute("local"))) {
+              if (isEqualsIgnoreCase(targetColumn, refEl.getAttribute("local"))) {
                 return fkEl.getAttribute("name");
               }
             }
@@ -375,7 +382,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
               Element refEl = (Element) refList.item(0);
               String relationColumn = refEl.getAttribute("local");
 
-              if (StringUtils.isBlank(foreignKey) || StringUtils.isBlank(relationColumn)) {
+              if (isBlank(foreignKey) || isBlank(relationColumn)) {
                 continue;
               }
 

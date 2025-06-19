@@ -1,11 +1,9 @@
 package com.etendoerp.archiving.buildvalidation;
 
-import org.openbravo.base.session.OBPropertiesProvider;
 import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.apache.commons.lang3.StringUtils;
 import org.openbravo.ddlutils.util.ModulesUtil;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -42,6 +40,11 @@ public class CreateExcludeFilter extends BuildValidation {
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
+
+  public static boolean isBlank(String str) {
+    return str == null || str.trim().isEmpty();
+  }
+
   @Override
   public List<String> execute() {
     Set<String> constraintsToExclude = new HashSet<>();
@@ -63,7 +66,7 @@ public class CreateExcludeFilter extends BuildValidation {
       while (baseTablesResult.next()) {
         String baseTableName = baseTablesResult.getString("tablename");
         String partitionColumnName = baseTablesResult.getString("columnname");
-        if (StringUtils.isBlank(baseTableName)) {
+        if (isBlank(baseTableName)) {
           logger.warn("Received an empty or null base table name; skipping.");
           continue;
         }
@@ -72,7 +75,7 @@ public class CreateExcludeFilter extends BuildValidation {
         // 2) Extract the PRIMARY KEY (PK) from the XML files of that base table
         List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
         String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
-        if (!StringUtils.isBlank(primaryKeyName)) {
+        if (!isBlank(primaryKeyName)) {
           String primaryKeyUpper = primaryKeyName.toUpperCase();
           constraintsToExclude.add(primaryKeyUpper);
           logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
@@ -86,7 +89,7 @@ public class CreateExcludeFilter extends BuildValidation {
           logger.info("Found {} FKs referencing '{}'", referencingFks.size(), baseTableName);
           constraintsToExclude.addAll(referencingFks);
           logger.info("Partition column for '{}': {}", baseTableName, partitionColumnName);
-          if (!StringUtils.isBlank(partitionColumnName)) {
+          if (!isBlank(partitionColumnName)) {
             referencingFks.forEach(fk -> {
               String columnToExclude = "ETARC_" + partitionColumnName.toUpperCase() + "__" + fk.toUpperCase();
               columnsToExclude.add(columnToExclude);
@@ -103,11 +106,7 @@ public class CreateExcludeFilter extends BuildValidation {
 
       // 4) Write the excludeFilter.xml with all collected constraint names
       logger.info("Generating excludeFilter.xml for {} excluded constraints", constraintsToExclude.size());
-      String sourcePath =
-          OBPropertiesProvider
-              .getInstance()
-              .getOpenbravoProperties()
-              .getProperty("source.path");
+      String sourcePath = ModulesUtil.getProjectRootDir();
       Path outputFile = Paths.get(
           sourcePath,
           "modules",
