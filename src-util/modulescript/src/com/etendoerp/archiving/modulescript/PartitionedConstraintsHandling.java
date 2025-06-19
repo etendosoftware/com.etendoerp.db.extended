@@ -3,7 +3,6 @@ package com.etendoerp.archiving.modulescript;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
-import org.openbravo.ddlutils.util.ModulesUtil;
 import org.openbravo.modulescript.ModuleScript;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -16,6 +15,7 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -32,6 +32,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   private static final Logger log4j = LogManager.getLogger();
+  public static final String MODULES_JAR  = "build/etendo/modules";
+  public static final String MODULES_BASE = "modules";
+  public static final String MODULES_CORE = "modules_core";
+  private static String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
 
   public static boolean isBlank(String str) {
     return str == null || str.trim().isEmpty();
@@ -234,10 +238,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *
    * @return a List of File objects representing each valid tables directory
    */
-  private static List<File> collectTableDirs() {
+  private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
-    File root = new File(ModulesUtil.getProjectRootDir());
-    for (String mod : ModulesUtil.moduleDirs) {
+    File root = new File(getSourcePath());
+    for (String mod : this.moduleDirs) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
@@ -264,7 +268,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @param tableName the base name of the table (without the .xml extension)
    * @return a List of matching XML files (maybe empty if none found)
    */
-  public static List<File> findTableXmlFiles(String tableName) {
+  public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
     String target = tableName.toLowerCase() + ".xml";
     return collectTableDirs().stream()
         .flatMap(dir -> {
@@ -295,7 +299,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @return the complete DDL script as a single String
    * @throws Exception if any database or XML processing error occurs
    */
-  public static String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
+  public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
       String partitionField) throws Exception {
     // Check if table is partitioned
     String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";

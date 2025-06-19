@@ -4,7 +4,6 @@ import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.ddlutils.util.ModulesUtil;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
@@ -17,6 +16,7 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.NoSuchFileException;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.PreparedStatement;
@@ -40,6 +40,10 @@ public class CreateExcludeFilter extends BuildValidation {
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
+  public static final String MODULES_JAR  = "build/etendo/modules";
+  public static final String MODULES_BASE = "modules";
+  public static final String MODULES_CORE = "modules_core";
+  private static String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
 
   public static boolean isBlank(String str) {
     return str == null || str.trim().isEmpty();
@@ -106,7 +110,7 @@ public class CreateExcludeFilter extends BuildValidation {
 
       // 4) Write the excludeFilter.xml with all collected constraint names
       logger.info("Generating excludeFilter.xml for {} excluded constraints", constraintsToExclude.size());
-      String sourcePath = ModulesUtil.getProjectRootDir();
+      String sourcePath = getSourcePath();
       Path outputFile = Paths.get(
           sourcePath,
           "modules",
@@ -204,7 +208,7 @@ public class CreateExcludeFilter extends BuildValidation {
    * @return a Set of unique, uppercased foreign-key names referencing {@code targetTable},
    *         or an empty set if none are found or errors occur
    */
-  public static Set<String> findAllForeignKeysReferencing(String targetTable) {
+  public Set<String> findAllForeignKeysReferencing(String targetTable) {
     Set<String> fkNames = new HashSet<>();
     try {
       List<File> allXmlFiles = findAllTableXmlFiles();
@@ -296,10 +300,10 @@ public class CreateExcludeFilter extends BuildValidation {
    *
    * @return a List of File objects representing each valid tables directory
    */
-  private static List<File> collectTableDirs() {
+  private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
-    File root = new File(ModulesUtil.getProjectRootDir());
-    for (String mod : ModulesUtil.moduleDirs) {
+    File root = new File(getSourcePath());
+    for (String mod : moduleDirs) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
@@ -326,7 +330,7 @@ public class CreateExcludeFilter extends BuildValidation {
    * @param tableName the base name of the table (without the .xml extension)
    * @return a List of matching XML files (maybe empty if none found)
    */
-  public static List<File> findTableXmlFiles(String tableName) {
+  public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
     String target = tableName.toLowerCase() + ".xml";
     return collectTableDirs().stream()
         .flatMap(dir -> {
@@ -346,7 +350,7 @@ public class CreateExcludeFilter extends BuildValidation {
    *
    * @return a List of all XML files found in module and root table directories
    */
-  public static List<File> findAllTableXmlFiles() {
+  public List<File> findAllTableXmlFiles() throws NoSuchFileException {
     return collectTableDirs().stream()
         .flatMap(dir -> {
           File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
