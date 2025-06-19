@@ -76,9 +76,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
       }
 
-      File outFile = new File("/tmp/PartitionedConstraintsHandling.sql");
-      outFile.createNewFile();
-      java.nio.file.Files.writeString(outFile.toPath(), sql.toString());
+      if(isBlank(sql.toString())) {
+        log4j.info("No constraints to handle for the provided configurations.");
+        return;
+      }
+
       PreparedStatement ps = cp.getPreparedStatement(sql.toString());
       ps.executeUpdate();
     } catch (Exception e) {
