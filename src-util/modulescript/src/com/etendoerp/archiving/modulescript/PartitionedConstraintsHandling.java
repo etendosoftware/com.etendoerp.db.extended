@@ -1,4 +1,4 @@
-package com.etendoerp.archiving.modulescript;
+package com.etendoerp.db.extended.modulescript;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;

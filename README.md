@@ -1,8 +1,8 @@
 ## Execute
-python3 -m venv modules/com.etendoerp.archiving/.venv
-source ./modules/com.etendoerp.archiving/.venv/bin/activate
+python3 -m venv modules/com.etendoerp.db.extended/.venv
+source ./modules/com.etendoerp.db.extended/.venv/bin/activate
 pip3 install pyyaml psycopg2-binary
 
-python3 modules/com.etendoerp.archiving/tool/migrate.py 
+python3 modules/com.etendoerp.db.extended/tool/migrate.py 
 
-# com.etendoerp.archiving
+# com.etendoerp.db.extended

@@ -1,4 +1,4 @@
-package com.etendoerp.archiving.buildvalidation;
+package com.etendoerp.db.extended.buildvalidation;
 
 import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
@@ -114,7 +114,7 @@ public class CreateExcludeFilter extends BuildValidation {
       Path outputFile = Paths.get(
           sourcePath,
           "modules",
-          "com.etendoerp.archiving",
+          "com.etendoerp.db.extended",
           "src-db",
           "database",
           "model",

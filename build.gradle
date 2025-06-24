@@ -18,7 +18,7 @@ configurations {
 
 publishing {
     publications {
-        "com.etendoerp.archiving"(MavenPublication) {
+        "com.etendoerp.db.extended"(MavenPublication) {
             from components.java
             groupId    = group
             artifactId = artifact
