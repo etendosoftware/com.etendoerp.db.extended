@@ -148,21 +148,15 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
         """, (f"{schema}.{table}",))
         existing_constraints = {row[0] for row in cur.fetchall()}
 
+        # Restaurar CHECK constraints
         for conname, contype, conkey, consrc in constraints:
+            if contype == 'p':
+                continue  # saltamos PK original
             if conname in existing_constraints:
                 print_message(f"Constraint {conname} already exists, skipping.", "SKIP")
                 continue
 
-            if contype == 'p':
-                cols = get_column_names_by_indexes(conn, schema, table, conkey)
-                if not cols:
-                    print_message(f"Columns not found for constraint {conname}, skipping.", "SKIP")
-                    continue
-                cur.execute(sql.SQL("""
-                    ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})
-                """).format(sql.Identifier(schema), sql.Identifier(table),
-                            sql.Identifier(conname), sql.SQL(', ').join(map(sql.Identifier, cols))))
-            elif contype == 'c':
+            if contype == 'c':
                 if consrc.upper().startswith('CHECK '):
                     consrc = consrc[6:].strip()
                 while consrc.startswith('(') and consrc.endswith(')'):
@@ -172,6 +166,7 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
                 """).format(sql.Identifier(schema), sql.Identifier(table),
                             sql.Identifier(conname), sql.SQL(consrc)))
 
+        # Restaurar Foreign Keys
         for conname, ref_table, conkey, refkey in foreign_keys:
             if conname in existing_constraints:
                 print_message(f"Foreign key {conname} already exists, skipping.", "SKIP")
@@ -191,6 +186,31 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
                         sql.SQL(', ').join(map(sql.Identifier, source_cols)),
                         sql.Identifier(target_schema), sql.Identifier(target_table),
                         sql.SQL(', ').join(map(sql.Identifier, target_cols))))
+
+        # Crear nueva PK basada en <table_name>_id
+        pk_column = f"{table}_id"
+        new_pk_name = f"{table}_pk"
+        cur.execute(sql.SQL("""
+            ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})
+        """).format(sql.Identifier(schema), sql.Identifier(table),
+                    sql.Identifier(new_pk_name), sql.Identifier(pk_column)))
+        print_message(f"Primary key {new_pk_name} added on column {pk_column}", "INFO")
+
+def delete_table_config_entry(conn, table_name):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT ad_table_id FROM ad_table WHERE lower(tablename) = lower(%s)
+        """, (table_name,))
+        result = cur.fetchone()
+        if not result:
+            print_message(f"Table {table_name} not found in AD_Table. Skipping deletion from etarc_table_config.", "SKIP")
+            return
+        ad_table_id = result[0]
+
+        cur.execute("""
+            DELETE FROM etarc_table_config WHERE ad_table_id = %s
+        """, (ad_table_id,))
+        print_message(f"Deleted config for {table_name} from etarc_table_config (ad_table_id={ad_table_id})", "INFO")
 
 def unpartition_table(conn, table_name):
     schema = get_schema(conn, table_name)
@@ -227,6 +247,7 @@ def unpartition_table(conn, table_name):
 
         add_constraints(conn, schema, table_name, constraints, foreign_keys)
         print_message(f"Table {schema}.{table_name} was successfully unpartitioned and constraints restored.", "SUCCESS")
+        delete_table_config_entry(conn, table_name)
     conn.commit()
 
 # ─── Main Entry ───

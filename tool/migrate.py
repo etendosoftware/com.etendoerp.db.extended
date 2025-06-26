@@ -1054,6 +1054,9 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
 
         print_message(f"\n[Step 10] Determining year range for partitions from {actual_schema}.{tmp_table_name}...", "STEP")
         start_year, end_year = get_year_range(conn, tmp_table_name, actual_schema, partition_by_field)
+        current_year = datetime.now().year
+        if current_year > end_year:
+            end_year = current_year
         print_message(f"Data year range found: {start_year} to {end_year} (inclusive). Partitions will be created up to {end_year + 1}.", "STEP_INFO")
 
         print_message(f"\n[Step 11] Creating yearly partitions for {actual_schema}.{new_partitioned_table_name}...", "STEP")
