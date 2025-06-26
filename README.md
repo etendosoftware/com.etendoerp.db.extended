@@ -13,6 +13,7 @@ This module extends the database functionalities of the Etendo ERP, providing ad
 - Python 3
 - PostgreSQL
 - Virtualenv (`python3 -m venv`)
+- DBSM Version 1.2.0 (Change this value in artifacts.list.COMPILATION.gradle file)
 
 ---
 
@@ -51,3 +52,11 @@ python3 modules/com.etendoerp.db.extended/tool/unpartition.py "etpur_archive"
 ```
 
 This will restore the table to its original (non-partitioned) structure, allowing the export to complete successfully.
+
+#### 🔁 Final Step After Unpartitioning
+To ensure consistency and proper functionality after unpartitioning a table, you must regenerate the database structure:
+
+```bash
+./gradlew update.database -Dforce=yes smartbuild
+```
+This step updates the database metadata to reflect the restored (non-partitioned) table structure, ensuring the system continues to operate correctly.
