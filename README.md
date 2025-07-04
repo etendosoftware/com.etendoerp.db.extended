@@ -30,6 +30,27 @@ pip3 install pyyaml psycopg2-binary
 ### 📌 1. Partition a Table
 ⚠️ This process modifies the physical structure of the table. Use with caution and always validate backups before execution.
 
+#### Steps to Configure a Partitioned Table
+1. Log in as System Administrator.
+    Ensure you have the necessary privileges to modify system-level configurations.
+
+2. Navigate to the Partitioned Table Config window.
+    This section allows you to define how tables will be partitioned.
+
+    1. Create a new configuration record.
+
+    2. Select the table you want to partition.
+
+    3. Choose the column to use for partitioning (it must be a column with a date reference).
+
+    4. Save the configuration.
+
+#### Apply the partitioning:
+
+Stop the Tomcat server.
+
+Run the partitioning script or command (details below).
+
 ```bash
 python3 modules/com.etendoerp.db.extended/tool/migrate.py
 ./gradlew update.database -Dforce=yes smartbuild
