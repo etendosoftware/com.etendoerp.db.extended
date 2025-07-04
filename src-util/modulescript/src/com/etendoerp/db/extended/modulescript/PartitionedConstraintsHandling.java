@@ -1,13 +1,8 @@
-package com.etendoerp.archiving.modulescript;
+package com.etendoerp.db.extended.modulescript;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.base.exception.OBException;
-import org.openbravo.base.model.Entity;
-import org.openbravo.base.model.ModelProvider;
 import org.openbravo.database.ConnectionProvider;
-import org.openbravo.ddlutils.util.ModulesUtil;
 import org.openbravo.modulescript.ModuleScript;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
@@ -20,8 +15,15 @@ import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
+import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
@@ -30,6 +32,18 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   private static final Logger log4j = LogManager.getLogger();
+  public static final String MODULES_JAR  = "build/etendo/modules";
+  public static final String MODULES_BASE = "modules";
+  public static final String MODULES_CORE = "modules_core";
+  private static String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
+
+  public static boolean isBlank(String str) {
+    return str == null || str.trim().isEmpty();
+  }
+
+  public static boolean isEqualsIgnoreCase(String str1, String str2) {
+    return str1 != null && str1.equalsIgnoreCase(str2);
+  }
 
   public void execute() {
     try {
@@ -55,16 +69,18 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         String tableName = config.get("tableName");
         String columnName = config.get("columnName");
         String pkColumnName = config.get("pkColumnName");
-        if (StringUtils.isBlank(tableName) || StringUtils.isBlank(columnName) || StringUtils.isBlank(pkColumnName)) {
+        if (isBlank(tableName) || isBlank(columnName) || isBlank(pkColumnName)) {
           log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}", tableName, columnName, pkColumnName);
           continue;
         }
         sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
       }
 
-      File outFile = new File("/tmp/PartitionedConstraintsHandling.sql");
-      outFile.createNewFile();
-      java.nio.file.Files.writeString(outFile.toPath(), sql.toString());
+      if(isBlank(sql.toString())) {
+        log4j.info("No constraints to handle for the provided configurations.");
+        return;
+      }
+
       PreparedStatement ps = cp.getPreparedStatement(sql.toString());
       ps.executeUpdate();
     } catch (Exception e) {
@@ -102,11 +118,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
         for (int i = 0; i < fkList.getLength(); i++) {
           Element fkEl = (Element) fkList.item(i);
-          if (StringUtils.equalsIgnoreCase(targetTable, fkEl.getAttribute("foreignTable"))) {
+          if (isEqualsIgnoreCase(targetTable, fkEl.getAttribute("foreignTable"))) {
             NodeList refList = fkEl.getElementsByTagName("reference");
             for (int j = 0; j < refList.getLength(); j++) {
               Element refEl = (Element) refList.item(j);
-              if (StringUtils.equalsIgnoreCase(targetColumn, refEl.getAttribute("local"))) {
+              if (isEqualsIgnoreCase(targetColumn, refEl.getAttribute("local"))) {
                 return fkEl.getAttribute("name");
               }
             }
@@ -224,10 +240,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *
    * @return a List of File objects representing each valid tables directory
    */
-  private static List<File> collectTableDirs() {
+  private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
-    File root = new File(ModulesUtil.getProjectRootDir());
-    for (String mod : ModulesUtil.moduleDirs) {
+    File root = new File(getSourcePath());
+    for (String mod : this.moduleDirs) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
@@ -240,7 +256,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
     }
     dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
-    return dirs.stream().filter(File::isDirectory).toList();
+    return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
   }
 
   /**
@@ -254,7 +270,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @param tableName the base name of the table (without the .xml extension)
    * @return a List of matching XML files (maybe empty if none found)
    */
-  public static List<File> findTableXmlFiles(String tableName) {
+  public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
     String target = tableName.toLowerCase() + ".xml";
     return collectTableDirs().stream()
         .flatMap(dir -> {
@@ -262,7 +278,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           return files == null ? Stream.empty() : Arrays.stream(files);
         })
         .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
-        .toList();
+        .collect(Collectors.toList());
   }
 
   /**
@@ -285,7 +301,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @return the complete DDL script as a single String
    * @throws Exception if any database or XML processing error occurs
    */
-  public static String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
+  public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
       String partitionField) throws Exception {
     // Check if table is partitioned
     String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";
@@ -297,11 +313,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     // Get required information from the primary table's XML
     List<File> tableXmlFiles = findTableXmlFiles(tableName);
     if (tableXmlFiles.isEmpty()) {
-      throw new OBException("Entity XML file for " + tableName + " not found.");
+      throw new Exception("Entity XML file for " + tableName + " not found.");
     }
     String pkName = findPrimaryKey(tableXmlFiles);
     if (pkName == null) {
-      throw new OBException("Primary Key for entity " + tableName + " not found in XML.");
+      throw new Exception("Primary Key for entity " + tableName + " not found in XML.");
     }
 
     // SQL templates for primary table
@@ -372,7 +388,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
               Element refEl = (Element) refList.item(0);
               String relationColumn = refEl.getAttribute("local");
 
-              if (StringUtils.isBlank(foreignKey) || StringUtils.isBlank(relationColumn)) {
+              if (isBlank(foreignKey) || isBlank(relationColumn)) {
                 continue;
               }
 
