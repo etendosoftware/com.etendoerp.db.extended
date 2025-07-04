@@ -157,15 +157,19 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
                 continue
 
             if contype == 'c':
-              if consrc.upper().startswith('CHECK '):
-                  consrc = consrc[6:].strip()
+                if consrc.upper().startswith('CHECK '):
+                    consrc = consrc[6:].strip()
 
-              if needs_parentheses(consrc):
-                  consrc = f"(({consrc}))"
+                if needs_parentheses(consrc):
+                    consrc = f"(({consrc}))"
                 cur.execute(sql.SQL("""
                     ALTER TABLE {}.{} ADD CONSTRAINT {} CHECK ({})
-                """).format(sql.Identifier(schema), sql.Identifier(table),
-                            sql.Identifier(conname), sql.SQL(consrc)))
+                """).format(
+                    sql.Identifier(schema),
+                    sql.Identifier(table),
+                    sql.Identifier(conname),
+                    sql.SQL(consrc)
+                ))
 
         # Restaurar Foreign Keys
         for conname, ref_table, conkey, refkey in foreign_keys:
@@ -183,18 +187,22 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
                 continue
             cur.execute(sql.SQL("""
                 ALTER TABLE {}.{} ADD CONSTRAINT {} FOREIGN KEY ({}) REFERENCES {}.{} ({})
-            """).format(sql.Identifier(schema), sql.Identifier(table), sql.Identifier(conname),
-                        sql.SQL(', ').join(map(sql.Identifier, source_cols)),
-                        sql.Identifier(target_schema), sql.Identifier(target_table),
-                        sql.SQL(', ').join(map(sql.Identifier, target_cols))))
+            """).format(
+                sql.Identifier(schema), sql.Identifier(table), sql.Identifier(conname),
+                sql.SQL(', ').join(map(sql.Identifier, source_cols)),
+                sql.Identifier(target_schema), sql.Identifier(target_table),
+                sql.SQL(', ').join(map(sql.Identifier, target_cols))
+            ))
 
         # Crear nueva PK basada en <table_name>_id
         pk_column = f"{table}_id"
         new_pk_name = f"{table}_pk"
         cur.execute(sql.SQL("""
             ALTER TABLE {}.{} ADD CONSTRAINT {} PRIMARY KEY ({})
-        """).format(sql.Identifier(schema), sql.Identifier(table),
-                    sql.Identifier(new_pk_name), sql.Identifier(pk_column)))
+        """).format(
+            sql.Identifier(schema), sql.Identifier(table),
+            sql.Identifier(new_pk_name), sql.Identifier(pk_column)
+        ))
         print_message(f"Primary key {new_pk_name} added on column {pk_column}", "INFO")
 
 def needs_parentheses(expr):
