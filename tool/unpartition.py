@@ -157,10 +157,11 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
                 continue
 
             if contype == 'c':
-                if consrc.upper().startswith('CHECK '):
-                    consrc = consrc[6:].strip()
-                while consrc.startswith('(') and consrc.endswith(')'):
-                    consrc = consrc[1:-1].strip()
+              if consrc.upper().startswith('CHECK '):
+                  consrc = consrc[6:].strip()
+
+              if needs_parentheses(consrc):
+                  consrc = f"(({consrc}))"
                 cur.execute(sql.SQL("""
                     ALTER TABLE {}.{} ADD CONSTRAINT {} CHECK ({})
                 """).format(sql.Identifier(schema), sql.Identifier(table),
@@ -195,6 +196,15 @@ def add_constraints(conn, schema, table, constraints, foreign_keys):
         """).format(sql.Identifier(schema), sql.Identifier(table),
                     sql.Identifier(new_pk_name), sql.Identifier(pk_column)))
         print_message(f"Primary key {new_pk_name} added on column {pk_column}", "INFO")
+
+def needs_parentheses(expr):
+    # Ignora si ya comienza con paréntesis
+    if expr.strip().startswith('('):
+        return False
+    # Detecta mezcla de operadores lógicos
+    has_and = re.search(r'\bAND\b', expr, re.IGNORECASE)
+    has_or = re.search(r'\bOR\b', expr, re.IGNORECASE)
+    return has_and and has_or
 
 def delete_table_config_entry(conn, table_name):
     with conn.cursor() as cur:
