@@ -1,6 +1,6 @@
-# com.etendoerp.db.extended
+# com.etendoerp.db.extended **(BETA MODULE)**
 
-This module extends the database functionalities of the Etendo ERP, providing advanced tools to manage complex structures such as partitioned tables.
+This **BETA** module extends the database functionalities of the Etendo ERP, providing advanced tools to manage complex structures such as partitioned tables.
 
 ## 🔧 Main Features
 
