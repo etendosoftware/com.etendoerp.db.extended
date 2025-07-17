@@ -1,5 +1,6 @@
 package com.etendoerp.db.extended.modulescript;
 
+import com.etendoerp.db.extended.utils.TableDefinitionComparator;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
@@ -64,7 +65,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         config.put("pkColumnName", pkColumnName);
         tableConfigs.add(config);
       }
-
       for( Map<String, String> config : tableConfigs) {
         String tableName = config.get("tableName");
         String columnName = config.get("columnName");
@@ -73,6 +73,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}", tableName, columnName, pkColumnName);
           continue;
         }
+
+        List<File> tableXmlFiles = findTableXmlFiles(tableName);
+        log4j.debug("Tables from XML: " + tableXmlFiles);
+        TableDefinitionComparator comparator = new TableDefinitionComparator();
+        if (!comparator.isTableDefinitionChanged(tableName, cp, tableXmlFiles)) {
+          log4j.info("Table " + tableName + " has no changes. Skipping recreation...");
+          continue;
+        }
+        log4j.info("Table " + tableName + " has changes. Recreating...");
         sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
       }
 
