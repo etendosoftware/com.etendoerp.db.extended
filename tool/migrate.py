@@ -1297,6 +1297,7 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
 
         print_message("Parsing database connection parameters...", "CONFIG_LOAD")
         db_params = parse_db_params(properties)
+        db_params['host'] = db_params.get('host', '').replace('\\', '')
 
         conn = None
         try:
