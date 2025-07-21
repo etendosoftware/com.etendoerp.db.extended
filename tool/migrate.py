@@ -130,15 +130,16 @@ def read_properties_file(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f"[default]\n{f.read()}"
         config.read_string(content)
-        return {
+        properties = {
             'source.path': config.get('default', 'source.path', fallback=None),
             'bbdd.rdbms': config.get('default', 'bbdd.rdbms', fallback=None),
-            'bbdd.url': config.get('default', 'bbdd.url', fallback=None),
+            'bbdd.url': config.get('default', 'bbdd.url', fallback=None).replace('\\', ''),
             'bbdd.sid': config.get('default', 'bbdd.sid', fallback=None),
             'bbdd.user': config.get('default', 'bbdd.user', fallback=None),
             'bbdd.password': config.get('default', 'bbdd.password', fallback=None),
             'bbdd.sessionConfig': config.get('default', 'bbdd.sessionConfig', fallback=None)
         }
+        return properties
     except Exception as e:
         print_message(f"Error reading {file_path}: {e}", "ERROR")
         return {}
@@ -1280,20 +1281,22 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
         # except OSError as e:
         #     print_message(f"Could not create configuration directory '{config_dir}': {e}", "ERROR")
         #     return # Cannot proceed
-        return
+        return False
 
     properties_file = config_dir / "Openbravo.properties"
     migration_summary = []
+    success = True
 
     try:
         print_message(f"Reading properties from: {properties_file}", "CONFIG_LOAD")
-        properties = read_properties_file(str(properties_file)) # read_properties_file expects string
-        if not properties or not properties.get('bbdd.url'): # Check if essential props are missing
+        properties = read_properties_file(str(properties_file))
+        if not properties or not properties.get('bbdd.url'):
             print_message("Failed to read properties file, or essential properties are missing. Exiting.", "FAILURE")
-            return
+            return False
 
-        if properties.get('bbdd.rdbms', '').upper() != 'POSTGRE': # Default to empty string if not present
+        if properties.get('bbdd.rdbms', '').upper() != 'POSTGRE':
             raise ValueError(f"Unsupported RDBMS: {properties.get('bbdd.rdbms')}. Only POSTGRE is supported.")
+            return False
 
         print_message("Parsing database connection parameters...", "CONFIG_LOAD")
         db_params = parse_db_params(properties)
@@ -1310,14 +1313,14 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
                     else:
                         print_message(f"Applying session configuration: {session_config}", "DB_CONNECT")
                         cur.execute(session_config)
-                        conn.commit() # Commit session config
+                        conn.commit()
                         print_message("Session configuration applied.", "SUCCESS")
 
             table_fields_config = get_tables_and_fields_from_database(conn)
 
             if not table_fields_config:
-                print_message("No tables configured for processing from database (ETARC_TABLE_CONFIG etc.). Script will exit.", "INFO")
-                return
+                print_message("No tables configured for processing from database. Script will exit.", "INFO")
+                return False
 
             for table_name, fields in table_fields_config.items():
                 if not fields:
@@ -1329,11 +1332,11 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
                     })
                     continue
 
-                partition_field = next(iter(fields)) # Taking the first field if multiple are somehow defined
+                partition_field = next(iter(fields))
                 if len(fields) > 1:
                     print_message(f"Warning: Multiple partition fields defined for {table_name}: {fields}. Using '{partition_field}'.", "WARNING")
 
-                header_line = "="*80
+                header_line = "=" * 80
                 print_message(f"\n\n{header_line}", "TABLE_PROCESS")
                 print_message(f"=== Processing Table: {Style.BOLD}{table_name}{Style.RESET} (Partition Field: {Style.UNDERLINE}{partition_field}{Style.RESET}) ===", "TABLE_PROCESS")
                 print_message(header_line, "TABLE_PROCESS")
@@ -1350,10 +1353,10 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
                         migration_summary.append({
                             'table_name': table_name, 'status': 'FAILURE',
                             'message': 'Error during main partitioning steps (see logs above).',
-                            'related_tables_result': None # Related might have succeeded before this point
+                            'related_tables_result': None
                         })
+                        success = False
                     elif current_table_outcome.get('success', False):
-                        # Related tables processed successfully (or skipped if none), AND main partitioning also considered done by execute_partition_steps
                         migration_summary.append({
                             'table_name': table_name, 'status': 'SUCCESS',
                             'message': 'Partitioning process completed successfully.' if not dry_run else 'Partitioning process simulated successfully.',
@@ -1366,6 +1369,7 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
                             'message': 'Related table processing failed; main partitioning aborted. Check related table details.',
                             'related_tables_result': current_table_outcome
                         })
+                        success = False
 
                 except Exception as e_table_main_loop: # Catch unexpected errors from execute_partition_steps if it raises
                     error_msg = str(e_table_main_loop).replace('\n', ' ')
@@ -1378,9 +1382,10 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
                     traceback.print_exc()
                     if conn.closed:
                         print_message("CRITICAL: Database connection was closed. Cannot continue.", "ERROR")
-                        raise # Re-raise to stop script
+                        raise
                     else:
-                        if not dry_run: conn.rollback() # Rollback for the failed table
+                        if not dry_run: conn.rollback()
+                    success = False
                 finally:
                     print_message(f"=== Finished processing for table: {table_name} ===", "TABLE_PROCESS")
                     print_message(f"{header_line}\n", "TABLE_PROCESS")
@@ -1389,17 +1394,48 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
                 conn.close()
                 print_message("Database connection closed.", "DB_CONNECT")
 
-    except ValueError as ve: # Config errors usually
+    except ValueError as ve:
         print_message(f"Configuration or Setup Error: {ve}", "ERROR")
         traceback.print_exc()
-    except psycopg2.Error as db_err: # Connection or major DB errors
+        migration_summary.append({
+            'table_name': 'GLOBAL_EXECUTION',
+            'status': 'FAILURE',
+            'message': f'Configuración incorrecta: {str(ve)}',
+            'related_tables_result': None
+        })
+        success = False
+    except psycopg2.Error as db_err:
         print_message(f"Database Operational Error: {db_err}", "ERROR")
         traceback.print_exc()
-    except Exception as e_global: # Any other unexpected error
+        migration_summary.append({
+            'table_name': 'GLOBAL_EXECUTION',
+            'status': 'FAILURE',
+            'message': f'Error de conexión o base de datos: {str(db_err)}',
+            'related_tables_result': None
+        })
+        success = False
+    except Exception as e_global:
         print_message(f"UNHANDLED GLOBAL SCRIPT ERROR: {e_global}", "ERROR")
         traceback.print_exc()
+        migration_summary.append({
+            'table_name': 'GLOBAL_EXECUTION',
+            'status': 'FAILURE',
+            'message': f'Error no controlado: {str(e_global)}',
+            'related_tables_result': None
+        })
+        success = False
     finally:
+        if not migration_summary:
+            migration_summary.append({
+                'table_name': 'GLOBAL_EXECUTION',
+                'status': 'FAILURE',
+                'message': 'Fallo general en la ejecución del script (ver logs).',
+                'related_tables_result': None
+            })
         print_final_summary(migration_summary)
+
+    return success
+
 
 
 if __name__ == "__main__":
@@ -1449,4 +1485,5 @@ if __name__ == "__main__":
             print_message("\nLive run cancelled by user (Ctrl+C). Exiting.", "WARNING")
             exit()
 
-    main_flow(dry_run=args.dry_run)
+    result = main_flow(dry_run=args.dry_run)
+    exit(0 if result else 1)
