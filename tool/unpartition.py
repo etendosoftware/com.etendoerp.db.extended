@@ -43,6 +43,29 @@ def print_message(msg, level="INFO", end="\n"):
 
     print(f"{color}{emoji} {msg}{Style.RESET}", end=end)
 
+def print_unpartition_summary(summary):
+    if not summary:
+        print_message("No table was processed.", "SKIP")
+        return
+
+    border = "═" * 60
+    print(f"\n{Style.BOLD}{Style.YELLOW}╔{border}╗")
+    print(f"║{'FINAL SUMMARY OF DEPARTICIPATION':^60}║")
+    print(f"╚{border}╝{Style.RESET}")
+
+    for item in summary:
+        table = item['table']
+        status = item['status']
+        message = item['message']
+        if status == 'SUCCESS':
+            emoji = Style.SUCCESS
+            color = Style.GREEN
+        else:
+            emoji = Style.ERROR
+            color = Style.RED
+        print(f"{color}{emoji} {table:<25} → {status:<8} | {message}{Style.RESET}")
+
+
 # ─── Read Properties File ───
 
 def read_properties_file(file_path):
@@ -271,27 +294,45 @@ def unpartition_table(conn, table_name):
 # ─── Main Entry ───
 
 def main():
+    success = True
+    summary = []
+
     if len(sys.argv) < 2:
         print(f"{Style.YELLOW}Usage:{Style.RESET} python unpartition.py \"table1,table2,...\"")
-        return
+        return False
 
     props_path = Path("config/Openbravo.properties")
     if not props_path.exists():
         print_message(f"File not found: {props_path}", "ERROR")
-        return
+        return False
 
-    props = read_properties_file(str(props_path))
-    if not props.get("bbdd.url") or not props.get("bbdd.user"):
-        print_message("Missing connection parameters in Openbravo.properties", "ERROR")
-        return
+    try:
+        props = read_properties_file(str(props_path))
+        if not props.get("bbdd.url") or not props.get("bbdd.user"):
+            print_message("Missing connection parameters in Openbravo.properties", "ERROR")
+            return False
 
-    conn = psycopg2.connect(**parse_db_params(props))
-    print_message("Connection established successfully", "SUCCESS")
+        conn = psycopg2.connect(**parse_db_params(props))
+        print_message("Connection established successfully", "SUCCESS")
 
-    for t in [x.strip() for x in sys.argv[1].split(",")]:
-        unpartition_table(conn, t)
+        for t in [x.strip() for x in sys.argv[1].split(",")]:
+            try:
+                unpartition_table(conn, t)
+                summary.append({'table': t, 'status': 'SUCCESS', 'message': 'Table correctly despartitioned.'})
+            except Exception as e_table:
+                print_message(f"Failed to unpartition table {t}: {e_table}", "ERROR")
+                summary.append({'table': t, 'status': 'FAILURE', 'message': str(e_table)})
+                success = False
 
-    conn.close()
+        conn.close()
+    except Exception as e:
+        print_message(f"Unexpected error: {e}", "ERROR")
+        summary.append({'table': 'GLOBAL_EXECUTION', 'status': 'FAILURE', 'message': str(e)})
+        success = False
+
+    print_unpartition_summary(summary)
+    return success
 
 if __name__ == "__main__":
-    main()
+    result = main()
+    sys.exit(0 if result else 1)

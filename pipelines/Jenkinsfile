@@ -187,7 +187,7 @@ spec:
                     echo '------------- Cloning DB Extended module -------------'
                     sh """
                     cd modules
-                    git clone https://github.com/etendosoftware/com.etendoerp.db.extended.git
+                    git clone -b ${GIT_BRANCH} https://github.com/etendosoftware/com.etendoerp.db.extended.git
                     """
 
                     echo "---------------------- Building Classic Environment ----------------------"
