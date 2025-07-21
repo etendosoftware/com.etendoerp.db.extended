@@ -150,7 +150,7 @@ def parse_db_params(properties):
     if not url_match:
         raise ValueError(f"Invalid bbdd.url format: {properties['bbdd.url']}. Expected format: jdbc:postgresql://host:port")
     host, port = url_match.groups()
-    return {'host': host, 'port': port, 'database': properties['bbdd.sid'],
+    return {'host': host.replace('\\', ''), 'port': port, 'database': properties['bbdd.sid'],
             'user': properties.get('bbdd.user'), 'password': properties.get('bbdd.password')}
 
 def get_tables_and_fields_from_database(conn):
@@ -1297,7 +1297,6 @@ def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is
 
         print_message("Parsing database connection parameters...", "CONFIG_LOAD")
         db_params = parse_db_params(properties)
-        db_params['host'] = db_params.get('host', '').replace('\\', '')
 
         conn = None
         try:

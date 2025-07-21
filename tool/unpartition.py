@@ -57,7 +57,7 @@ def read_properties_file(file_path):
     config.read_string(content)
     return {
         'bbdd.rdbms': config.get('default', 'bbdd.rdbms', fallback=None),
-        'bbdd.url': config.get('default', 'bbdd.url', fallback=None),
+        'bbdd.url': config.get('default', 'bbdd.url', fallback=None).replace('\\', ''),
         'bbdd.sid': config.get('default', 'bbdd.sid', fallback=None),
         'bbdd.user': config.get('default', 'bbdd.user', fallback=None),
         'bbdd.password': config.get('default', 'bbdd.password', fallback=None),
