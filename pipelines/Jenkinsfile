@@ -212,6 +212,46 @@ spec:
       }
     }
 
+    stage ("Run Etendo RX Module tests") { // MARK: - Run Etendo RX Module tests
+      when {
+        expression {
+          currentBuild.result == SUCCESS
+        }
+      }
+      steps {
+        container('compiler') {
+          script {
+            try {
+              sh "./pipelines/utils/build-update.sh ${REPOSITORY_NAME} ${COMMIT_INPROGRESS_STATUS} \"Running Module Tests\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
+
+              echo "---------------------- Starting Etendo DB Extended Module Tests ----------------------"
+              sh """
+              cd ${CLASSIC_DIR}
+              ./gradlew test --tests "com.etendoerp.db.extended.*" --info
+              ./gradlew jacocoRootReport --info
+              """
+              echo "---------------------- DB Extended Module Tests Successful ----------------------"
+            } catch (Exception e) {
+              echo "---------------------- DB Extended Module Tests Failed ----------------------"
+              echo 'Exception occurred: ' + e.toString()
+              currentBuild.result = UNSTABLE
+              unstable('DB Extended Module Tests Failed')
+              env.STATUSTEST = "0"
+            }
+            publishHTML([
+              allowMissing: false,
+              alwaysLinkToLastBuild: false,
+              keepAll: true,
+              reportDir: "${CLASSIC_DIR}/build/reports/tests/test",
+              reportFiles: '*.html',
+              reportName: 'DB EXTENDED MODULE TESTS REPORT',
+              reportTitles: ''
+            ])
+          }
+        }
+      }
+    }
+
     stage ('Test DB Extended Module - Partitioning') {
       steps {
         container('compiler') {
