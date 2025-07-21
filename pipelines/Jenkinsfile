@@ -25,6 +25,7 @@ pipeline {
     CORE_URL_REPO = 'https://github.com/etendosoftware/etendo_core'
     CLASSIC_DIR   = 'etendo_core'
     MODULE_URL    = 'https://github.com/etendosoftware/com.etendoerp.db.extended'
+    TOMCAT_URL    = "https://archive.apache.org/dist/tomcat/tomcat-9/v9.0.98/bin/apache-tomcat-9.0.98.tar.gz"
 
     COMMIT_AUTHOR_NAME  = sh(returnStdout: true, script: "git log -1 --pretty=format:'%an'").trim()
     COMMIT_AUTHOR_EMAIL = sh(returnStdout: true, script: "git log -1 --pretty=format:'%ae'").trim()
@@ -138,6 +139,15 @@ spec:
               withCredentials([sshUserPrivateKey(credentialsId: 'my-credentials', keyFileVariable: 'keyfile')]) {
                 withCredentials([usernamePassword(credentialsId: "koodu_credentials", passwordVariable: 'GIT_PASSWORD', usernameVariable: 'GIT_USERNAME')]) {
                   def sshCmd = "ssh -i ${keyfile} -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no"
+
+                  echo "-------------------------- Tomcat Configuration --------------------------"
+
+                  sh "wget -O apache-tomcat.tar.gz $TOMCAT_URL"
+                  sh "tar -xvf apache-tomcat.tar.gz -C $WORKSPACE"
+
+                  env.TOMCAT_FOLDER = sh(script: "basename ${TOMCAT_URL} .tar.gz", returnStdout: true).trim()
+                                env.CATALINA_HOME = "${WORKSPACE}/${TOMCAT_FOLDER}"
+                                env.CATALINA_BASE = "${WORKSPACE}/${TOMCAT_FOLDER}"
 
                   echo "-------------------------- Selecting the Classic Correct Branch for Repository Cloning --------------------------"
                   env.CLASSIC_BRANCH = env.MAIN_BRANCH
