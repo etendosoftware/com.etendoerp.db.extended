@@ -8,7 +8,6 @@ import org.openbravo.base.model.ModelProvider;
 import org.openbravo.client.kernel.event.EntityDeleteEvent;
 import org.openbravo.client.kernel.event.EntityNewEvent;
 import org.openbravo.client.kernel.event.EntityPersistenceEventObserver;
-import org.openbravo.client.kernel.event.EntityUpdateEvent;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
 
