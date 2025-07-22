@@ -20,6 +20,7 @@ import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -36,7 +37,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public static final String MODULES_JAR  = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
-  private static String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
+  private static final String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
 
   public static boolean isBlank(String str) {
     return str == null || str.trim().isEmpty();
@@ -65,23 +66,27 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         config.put("pkColumnName", pkColumnName);
         tableConfigs.add(config);
       }
-      for( Map<String, String> config : tableConfigs) {
+      for (Map<String, String> config : tableConfigs) {
         String tableName = config.get("tableName");
         String columnName = config.get("columnName");
         String pkColumnName = config.get("pkColumnName");
-        if (isBlank(tableName) || isBlank(columnName) || isBlank(pkColumnName)) {
-          log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}", tableName, columnName, pkColumnName);
+
+        boolean isIncomplete = isBlank(tableName) || isBlank(columnName) || isBlank(pkColumnName);
+        List<File> tableXmlFiles = isIncomplete ? Collections.emptyList() : findTableXmlFiles(tableName);
+        boolean isUnchanged = !isIncomplete && !(new TableDefinitionComparator())
+            .isTableDefinitionChanged(tableName, cp, tableXmlFiles);
+
+        if (isIncomplete || isUnchanged) {
+          if (isIncomplete) {
+            log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}",
+                tableName, columnName, pkColumnName);
+          } else {
+            log4j.info("Table {} has no changes. Skipping recreation...", tableName);
+          }
           continue;
         }
 
-        List<File> tableXmlFiles = findTableXmlFiles(tableName);
-        log4j.debug("Tables from XML: " + tableXmlFiles);
-        TableDefinitionComparator comparator = new TableDefinitionComparator();
-        if (!comparator.isTableDefinitionChanged(tableName, cp, tableXmlFiles)) {
-          log4j.info("Table " + tableName + " has no changes. Skipping recreation...");
-          continue;
-        }
-        log4j.info("Table " + tableName + " has changes. Recreating...");
+        log4j.info("Table {} has changes. Recreating...", tableName);
         sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
       }
 
@@ -95,53 +100,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     } catch (Exception e) {
       handleError(e);
     }
-  }
-
-  /**
-   * Searches the supplied XML files for a <foreign-key> element that references
-   * the specified target table and column, and returns its "name" attribute.
-   * <p>
-   * Iterates each file:
-   * <ul>
-   *   <li>Skips any file that does not exist (logs an error).</li>
-   *   <li>For each <foreign-key> whose foreignTable matches {@code targetTable},
-   *       inspects its <reference> children to match {@code targetColumn}.</li>
-   *   <li>Returns the foreign-key’s name as soon as both table and column match.</li>
-   * </ul>
-   *
-   * @param xmlFiles     the list of XML files to search through
-   * @param targetTable  the name of the table being referenced
-   * @param targetColumn the local column name in the foreign key reference
-   * @return the foreign-key name if found, or null otherwise
-   */
-  public static String findForeignKeyName(List<File> xmlFiles, String targetTable,
-                                          String targetColumn) {
-    try {
-      for (File xml : xmlFiles) {
-        if (!xml.exists()) {
-          log4j.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
-          return null;
-        }
-        Document doc = getDocument(xml);
-        NodeList fkList = doc.getElementsByTagName("foreign-key");
-
-        for (int i = 0; i < fkList.getLength(); i++) {
-          Element fkEl = (Element) fkList.item(i);
-          if (isEqualsIgnoreCase(targetTable, fkEl.getAttribute("foreignTable"))) {
-            NodeList refList = fkEl.getElementsByTagName("reference");
-            for (int j = 0; j < refList.getLength(); j++) {
-              Element refEl = (Element) refList.item(j);
-              if (isEqualsIgnoreCase(targetColumn, refEl.getAttribute("local"))) {
-                return fkEl.getAttribute("name");
-              }
-            }
-          }
-        }
-      }
-    } catch (Exception e) {
-      log4j.error("Error processing XML: {}", e.getMessage(), e);
-    }
-    return null;
   }
 
   /**

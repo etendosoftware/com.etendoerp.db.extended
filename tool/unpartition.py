@@ -5,6 +5,8 @@ from configparser import ConfigParser
 import re
 import sys
 
+BBDD_URL = 'bbdd.url'
+
 # ─── Colors and Emojis ───
 
 class Style:
@@ -80,14 +82,14 @@ def read_properties_file(file_path):
     config.read_string(content)
     return {
         'bbdd.rdbms': config.get('default', 'bbdd.rdbms', fallback=None),
-        'bbdd.url': config.get('default', 'bbdd.url', fallback=None).replace('\\', ''),
+        BBDD_URL: config.get('default', BBDD_URL, fallback=None).replace('\\', ''),
         'bbdd.sid': config.get('default', 'bbdd.sid', fallback=None),
         'bbdd.user': config.get('default', 'bbdd.user', fallback=None),
         'bbdd.password': config.get('default', 'bbdd.password', fallback=None),
     }
 
 def parse_db_params(properties):
-    url = properties.get('bbdd.url')
+    url = properties.get(BBDD_URL)
     match = re.match(r'jdbc:postgresql://([^:]+):(\d+)', url)
     if not match:
         raise ValueError(f"Invalid bbdd.url: {url}")

@@ -365,43 +365,9 @@ spec:
     success {
       container('compiler') {
         script {
-          sh "./pipelines/utils/build-update.sh ${MODULE_PACKAGE} ${COMMIT_SUCCESS_STATUS} \"Successful Docker Test\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
+          sh "./pipelines/utils/build-update.sh ${MODULE_PACKAGE} ${COMMIT_SUCCESS_STATUS} \"Successful DB Extended Test\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
         }
       }
-    }
-
-    fixed {
-      mail to: EMAIL_ADDRESS,
-      subject: "✅ FIXED - ${currentBuild.fullDisplayName}",
-      mimeType: 'text/html',
-      body: """
-      <html>
-          <head>
-              <style>
-                  body { font-family: 'Arial', sans-serif; }
-                  .header { font-size: 16px; font-weight: bold; color: #333; }
-              </style>
-          </head>
-          <body>
-              <p><em>${new Date()}</em></p>
-              <p>__________________________________________________________</p>
-
-              <h2 class="header">✅ ERRORS FIXED ✅</h2>
-
-              <p>
-                  <strong>Commit:</strong> <a href="${MODULE_URL}/commits/${env.GIT_COMMIT}">${MODULE_URL}/commits/${env.GIT_COMMIT}</a><br />
-                  <strong>Author:</strong> ${COMMIT_AUTHOR_NAME} (${COMMIT_AUTHOR_EMAIL})
-              </p>
-              <p>
-                  The build has been fixed.<br />
-                  💡 This build was on the ${MODULE_PACKAGE} module.<br />
-                  For more information about the run, visit:<br />
-                  <a href="${env.BUILD_URL}">${env.BUILD_URL}</a>
-              </p>
-              <p>__________________________________________________________</p>
-          </body>
-      </html>
-      """
     }
     failure {
       container('compiler') {
