@@ -27,16 +27,16 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
 
     TableConfig actualTableConfig = (TableConfig) event.getTargetInstance();
     String partitionedTable = actualTableConfig.getTable().getDBTableName();
-    String sql = """
-      SELECT
-        CASE WHEN EXISTS (
-          SELECT 1
-          FROM pg_constraint con
-          JOIN pg_class c ON c.oid = con.conrelid
-          WHERE con.contype = 'u'
-            AND c.relname = ?
-        ) THEN 'Y' ELSE 'N' END AS hasunique;
-    """;
+    String sql =
+        "SELECT " +
+            "  CASE WHEN EXISTS ( " +
+            "    SELECT 1 " +
+            "    FROM pg_constraint con " +
+            "    JOIN pg_class c ON c.oid = con.conrelid " +
+            "    WHERE con.contype = 'u' " +
+            "      AND c.relname = ? " +
+            "  ) THEN 'Y' ELSE 'N' END AS hasunique;";
+
     String hasUnique = "";
 
     try {
@@ -66,18 +66,18 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
     }
     TableConfig actualTableConfig = (TableConfig) event.getTargetInstance();
     String partitionedTable = actualTableConfig.getTable().getDBTableName();
-    String sql = """
-        SELECT
-            'Y' as ispartitioned
-        FROM
-            pg_partitioned_table p
-        JOIN
-            pg_class c ON c.oid = p.partrelid
-        JOIN
-            pg_namespace n ON n.oid = c.relnamespace
-        WHERE
-            c.relkind = 'p' and c.relname = ?;
-        """;
+    String sql =
+        "SELECT " +
+            "    'Y' as ispartitioned " +
+            "FROM " +
+            "    pg_partitioned_table p " +
+            "JOIN " +
+            "    pg_class c ON c.oid = p.partrelid " +
+            "JOIN " +
+            "    pg_namespace n ON n.oid = c.relnamespace " +
+            "WHERE " +
+            "    c.relkind = 'p' and c.relname = ?;";
+
     String isPartitioned = "";
     try {
       Connection connection = OBDal.getInstance().getConnection(true);
