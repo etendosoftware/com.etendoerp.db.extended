@@ -180,9 +180,9 @@ spec:
                     org.gradle.daemon=false
                     org.gradle.jvmargs=-Dfile.encoding=UTF-8" > gradle.properties
                     """
-                    sh './gradlew prepareConfig --info'
-                    sh './gradlew setup --info'
-                    sh './gradlew expandModules --info'
+                    sh './gradlew prepareConfig'
+                    sh './gradlew setup'
+                    sh './gradlew expandModules'
 
                     echo '------------- Cloning DB Extended module -------------'
                     sh """
@@ -191,9 +191,8 @@ spec:
                     """
 
                     echo "---------------------- Building Classic Environment ----------------------"
-                    sh './gradlew install --info'
-                    sh './gradlew update.database --info'
-                    sh './gradlew smartbuild --info'
+                    sh './gradlew install'
+                    sh './gradlew update.database smartbuild'
 
                     echo "---------------------- Classic Environment Successful ----------------------"
                     currentBuild.result = SUCCESS
@@ -212,7 +211,7 @@ spec:
       }
     }
 
-    stage ("Run Etendo RX Module tests") { // MARK: - Run Etendo RX Module tests
+    stage ("Run Etendo DB Extended Module tests") { // MARK: - Run Etendo DB Extended Module tests
       when {
         expression {
           currentBuild.result == SUCCESS
@@ -227,8 +226,8 @@ spec:
               echo "---------------------- Starting Etendo DB Extended Module Tests ----------------------"
               sh """
               cd ${CLASSIC_DIR}
-              ./gradlew test --tests "com.etendoerp.db.extended.*" --info
-              ./gradlew jacocoRootReport --info
+              ./gradlew test --tests "com.etendoerp.db.extended.*"
+              ./gradlew jacocoRootReport
               """
               echo "---------------------- DB Extended Module Tests Successful ----------------------"
             } catch (Exception e) {
@@ -256,6 +255,8 @@ spec:
       steps {
         container('compiler') {
           script {
+            def durationPart
+            def durationUnpart
             try {
             echo '------------- Inserting partition config -------------'
 
@@ -300,9 +301,67 @@ spec:
             """
 
             echo '------------- update.database - smartbuild -------------'
+            dir(CLASSIC_DIR) {
+              def startTime = System.currentTimeMillis()
+              sh './gradlew update.database -Dforce=yes smartbuild'
+              def endTime = System.currentTimeMillis()
+              durationPart = (endTime - startTime) / 1000
+            }
+            echo '------------- Running regression tests on partitioned table -------------'
             sh """
+            # Inserting
             cd ${CLASSIC_DIR}
-            ./gradlew update.database -Dforce=yes smartbuild
+            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} <<EOF
+            INSERT INTO ad_audit_trail (
+                ad_audit_trail_id,
+                ad_client_id,
+                ad_org_id,
+                isactive,
+                created,
+                createdby,
+                updated,
+                updatedby,
+                ad_table_id,
+                record_id,
+                record_revision,
+                ad_user_id,
+                event_time,
+                processtype,
+                process_id,
+                action,
+                ad_column_id,
+                old_char,
+                new_char
+            ) VALUES (
+                '12345678901234567890123456789012', -- ad_audit_trail_id
+                '0',       -- ad_client_id
+                '0',       -- ad_org_id
+                'Y',       -- isactive
+                now(),     -- created
+                '0',       -- createdby
+                now(),     -- updated
+                '0',       -- updatedby
+                '1234567', -- ad_table_id
+                '1000033', -- record_id
+                1,         -- record_revision
+                '0',       -- ad_user_id
+                now(),     -- event_time
+                'Manual',  -- processtype
+                '0',       -- process_id
+                'UPDATE',  -- action
+                '7654321', -- ad_column_id
+                'oldValue',-- old_char
+                'newValue' -- new_char
+            );
+            EOF
+            """
+            sh """
+            # Selecting
+            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "SELECT * FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
+            """
+            sh """
+            # Deleting
+            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "DELETE FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
             """
 
             echo '------------- Starting Tomcat for validation -------------'
@@ -330,10 +389,74 @@ spec:
             """
 
             echo '------------- update.database - smartbuild (after unpartition) -------------'
+            dir(CLASSIC_DIR) {
+              def startTime = System.currentTimeMillis()
+              sh './gradlew update.database -Dforce=yes smartbuild'
+              def endTime = System.currentTimeMillis()
+              durationUnpart = (endTime - startTime) / 1000
+            }
+
+            echo '------------- Running regression tests after unpartition a table -------------'
             sh """
-            cd ${CLASSIC_DIR}
-            ./gradlew update.database -Dforce=yes smartbuild
+                # Inserting
+                cd ${CLASSIC_DIR}
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} <<EOF
+                INSERT INTO ad_audit_trail (
+                    ad_audit_trail_id,
+                    ad_client_id,
+                    ad_org_id,
+                    isactive,
+                    created,
+                    createdby,
+                    updated,
+                    updatedby,
+                    ad_table_id,
+                    record_id,
+                    record_revision,
+                    ad_user_id,
+                    event_time,
+                    processtype,
+                    process_id,
+                    action,
+                    ad_column_id,
+                    old_char,
+                    new_char
+                ) VALUES (
+                    '12345678901234567890123456789012', -- ad_audit_trail_id
+                    '0',       -- ad_client_id
+                    '0',       -- ad_org_id
+                    'Y',       -- isactive
+                    now(),     -- created
+                    '0',       -- createdby
+                    now(),     -- updated
+                    '0',       -- updatedby
+                    '1234567', -- ad_table_id
+                    '1000033', -- record_id
+                    1,         -- record_revision
+                    '0',       -- ad_user_id
+                    now(),     -- event_time
+                    'Manual',  -- processtype
+                    '0',       -- process_id
+                    'UPDATE',  -- action
+                    '7654321', -- ad_column_id
+                    'oldValue',-- old_char
+                    'newValue' -- new_char
+                );
+                EOF
+                """
+                sh """
+                # Selecting
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "SELECT * FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
+                """
+                sh """
+                # Deleting
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "DELETE FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
             """
+
+            echo '------------- Execution time -------------'
+            echo "🔁 Execution times (update and smartbuild):"
+            echo "⏱️ Partitoned time: ${durationPart} secons"
+            echo "⏱️ Unpartitioned time: ${durationUnpart} secons"
 
             echo '------------- Final Tomcat check -------------'
             sh "${WORKSPACE}/${TOMCAT_FOLDER}/bin/catalina.sh start"
