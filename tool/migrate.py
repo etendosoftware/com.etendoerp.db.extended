@@ -1158,27 +1158,27 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         return None # Indicates a failure within this function's main steps
 
 def print_final_summary(summary_data):
-    """Imprime el resumen final de la migración."""
+    """Prints the final summary of the migration."""
     global _use_ansi_output
 
     section_line = "=" * 80
     print_message(f"\n\n{Style.SUMMARY} {section_line}", "HEADER")
-    print_message(f"{' ' * 25}{Style.BOLD}RESUMEN DE MIGRACIÓN DE TABLAS{Style.RESET}", "HEADER")
+    print_message(f"{' ' * 25}{Style.BOLD}TABLE MIGRATION SUMMARY{Style.RESET}", "HEADER")
     print_message(section_line, "HEADER")
 
-    # Encabezados de la tabla del resumen
+    # Table summary headers
     # Adjusted column widths for better display
     header_format_plain = "{:<30} | {:<10} | {:<15} | {}"
-    header_format_ansi  = "{:<30} | {:<20} | {:<25} | {}" # Adjusted for ANSI codes in status and rel_status
+    header_format_ansi  = "{:<30} | {:<20} | {:<25} | {}"  # Adjusted for ANSI codes in status and rel_status
 
-    table_header_plain = header_format_plain.format("Tabla", "Estado", "Rel. Tables", "Mensaje/Detalle")
+    table_header_plain = header_format_plain.format("Table", "Status", "Rel. Tables", "Message/Details")
 
     if _use_ansi_output:
         table_header_ansi = header_format_ansi.format(
-            f"{Style.BOLD}Tabla{Style.RESET}",
-            f"{Style.BOLD}Estado{Style.RESET}",
-            f"{Style.BOLD}Rel. Tables (Proc/Fail){Style.RESET}", # Clarified Rel. Tables
-            f"{Style.BOLD}Mensaje/Detalle{Style.RESET}"
+            f"{Style.BOLD}Table{Style.RESET}",
+            f"{Style.BOLD}Status{Style.RESET}",
+            f"{Style.BOLD}Rel. Tables (Proc/Fail){Style.RESET}",  # Clarified Rel. Tables
+            f"{Style.BOLD}Message/Details{Style.RESET}"
         )
         print_message(table_header_ansi, "IMPORTANT")
         # Dynamically calculate separator length based on the ANSI version of header
@@ -1187,7 +1187,6 @@ def print_final_summary(summary_data):
     else:
         print_message(table_header_plain, "IMPORTANT")
         print_message("-" * len(table_header_plain), "IMPORTANT")
-
 
     success_count = 0
     failure_count = 0
@@ -1202,16 +1201,14 @@ def print_final_summary(summary_data):
         message = item.get('message', '')
         message = message.replace('\n', ' ')[:100] + ('...' if len(message) > 100 else '')
 
-
         related_info = item.get('related_tables_result')
         rel_status_str_plain = "N/A"
         rel_status_str_ansi = f"{Style.BLUE}N/A{Style.RESET}"
 
-
         if related_info:
             processed = related_info.get('processed_tables', 0)
             failed = related_info.get('failed_tables', 0)
-            updated_recs = related_info.get('total_records_updated',0)
+            updated_recs = related_info.get('total_records_updated', 0)
 
             total_related_processed_overall += processed
             total_related_failed_overall += failed
@@ -1220,11 +1217,10 @@ def print_final_summary(summary_data):
             rel_status_str_plain = f"{processed}✓ / {failed}✗ ({updated_recs} upd)"
             if failed > 0:
                 rel_status_str_ansi = f"{Style.GREEN}{processed}✓{Style.RESET} / {Style.RED}{Style.BOLD}{failed}✗{Style.RESET} ({Style.CYAN}{updated_recs} upd{Style.RESET})"
-            elif processed > 0 :
+            elif processed > 0:
                 rel_status_str_ansi = f"{Style.GREEN}{processed}✓{Style.RESET} / 0✗ ({Style.CYAN}{updated_recs} upd{Style.RESET})"
-            else: # No related tables processed or found
+            else:  # No related tables processed or found
                 rel_status_str_ansi = f"{Style.BLUE}0✓ / 0✗ (0 upd){Style.RESET}"
-
 
         status_str_plain = status
         status_str_ansi = status
@@ -1236,9 +1232,8 @@ def print_final_summary(summary_data):
             status_str_ansi = f"{Style.RED}{Style.FAILURE} FAILURE{Style.RESET}"
             failure_count += 1
         elif status == 'SKIPPED':
-            status_str_ansi = f"{Style.YELLOW}{Style.WARNING} SKIPPED{Style.RESET}" # Assuming warning icon for skipped
-            skipped_count +=1
-
+            status_str_ansi = f"{Style.YELLOW}{Style.WARNING} SKIPPED{Style.RESET}"  # Assuming warning icon for skipped
+            skipped_count += 1
 
         # Use the plain string for width calculation in format string
         if _use_ansi_output:
@@ -1246,23 +1241,22 @@ def print_final_summary(summary_data):
         else:
             print(header_format_plain.format(table_name, status_str_plain, rel_status_str_plain, message))
 
-
     if _use_ansi_output:
         print_message("-" * 120, "IMPORTANT")
     else:
         print_message("-" * len(table_header_plain), "IMPORTANT")
 
-    print_message(f"Total Tablas Consideradas: {len(summary_data)}", "INFO")
-    print_message(f"  {Style.SUCCESS} Exitosas: {success_count}", "SUCCESS")
-    print_message(f"  {Style.FAILURE} Fallidas: {failure_count}", "FAILURE" if failure_count > 0 else "INFO")
-    if skipped_count > 0: print_message(f"  {Style.WARNING} Omitidas/Skipped: {skipped_count}", "WARNING")
+    print_message(f"Total Tables Considered: {len(summary_data)}", "INFO")
+    print_message(f"  {Style.SUCCESS} Successful: {success_count}", "SUCCESS")
+    print_message(f"  {Style.FAILURE} Failed: {failure_count}", "FAILURE" if failure_count > 0 else "INFO")
+    if skipped_count > 0:
+        print_message(f"  {Style.WARNING} Skipped: {skipped_count}", "WARNING")
 
-
-    if total_related_processed_overall > 0 or total_related_failed_overall > 0 :
-        print_message("\nResumen de Procesamiento de Tablas Relacionadas (Global):", "SUBHEADER")
-        print_message(f"  Total Instancias de Procesamiento de Tablas Relacionadas: {total_related_processed_overall}", "INFO")
-        print_message(f"  Total Fallos en Tablas Relacionadas: {total_related_failed_overall}", "FAILURE" if total_related_failed_overall > 0 else "INFO")
-        print_message(f"  Total Registros Actualizados en Tablas Relacionadas: {total_records_updated_overall}", "INFO")
+    if total_related_processed_overall > 0 or total_related_failed_overall > 0:
+        print_message("\nRelated Tables Processing Summary (Global):", "SUBHEADER")
+        print_message(f"  Total Related Tables Processing Instances: {total_related_processed_overall}", "INFO")
+        print_message(f"  Total Failures in Related Tables: {total_related_failed_overall}", "FAILURE" if total_related_failed_overall > 0 else "INFO")
+        print_message(f"  Total Records Updated in Related Tables: {total_records_updated_overall}", "INFO")
 
     print_message(section_line, "HEADER")
 

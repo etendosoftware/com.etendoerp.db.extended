@@ -5,9 +5,8 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import java.io.File;
+import javax.xml.parsers.*;
+import java.io.*;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.util.HashSet;
@@ -19,6 +18,7 @@ import java.util.Objects;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.xml.sax.*;
 
 public class TableDefinitionComparator {
 
@@ -40,8 +40,38 @@ public class TableDefinitionComparator {
     return !xmlColumns.equals(dbColumns);
   }
 
+  /**
+   * Parsea atributos numéricos de forma “leniente”: acepta tanto "10" como "10,0" o "10.0".
+   */
+  private int parseIntLenient(String raw) {
+    if (raw == null || raw.trim().isEmpty()) {
+      return 0;
+    }
+    String cleaned = raw.trim().replace(',', '.');
+    try {
+      return Integer.parseInt(cleaned);
+    } catch (NumberFormatException e) {
+      // Si trae parte decimal, parseamos como double y devolvemos la parte entera
+      return (int) Double.parseDouble(cleaned);
+    }
+  }
 
-  private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile) throws Exception {
+  /**
+   * Parses the given XML file to extract column definitions.
+   * <p>
+   * The method expects the XML to contain a set of {@code <column>} elements,
+   * each with attributes such as {@code name}, {@code type}, {@code nullable},
+   * {@code length} or {@code size}, and optionally {@code primarykey}.
+   *
+   * @param xmlFile the XML file that defines the table structure
+   * @return a map of column names to their corresponding {@link ColumnDefinition}
+   *
+   * @throws ParserConfigurationException if a DocumentBuilder cannot be created
+   * @throws IOException if an I/O error occurs while reading the file
+   * @throws SAXException if the XML content is malformed or cannot be parsed
+   */
+  private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile)
+      throws ParserConfigurationException, IOException, SAXException {
     Map<String, ColumnDefinition> columns = new LinkedHashMap<>();
 
     DocumentBuilderFactory dbFactory = DocumentBuilderFactory.newInstance();
@@ -53,20 +83,16 @@ public class TableDefinitionComparator {
 
     for (int i = 0; i < columnList.getLength(); i++) {
       Element colElem = (Element) columnList.item(i);
-
-      String name = colElem.getAttribute("name").toLowerCase();
-      String dataType = colElem.getAttribute("type").toLowerCase();
+      String name        = colElem.getAttribute("name").toLowerCase();
+      String dataType    = colElem.getAttribute("type").toLowerCase();
       Boolean isNullable = !"false".equalsIgnoreCase(colElem.getAttribute("nullable"));
-
-      // length: puede venir como 'length' o 'size' (si existiera)
       Integer length = null;
       if (colElem.hasAttribute("length")) {
-        length = Integer.parseInt(colElem.getAttribute("length"));
+        length = parseIntLenient(colElem.getAttribute("length"));
       } else if (colElem.hasAttribute("size")) {
-        length = Integer.parseInt(colElem.getAttribute("size"));
+        length = parseIntLenient(colElem.getAttribute("size"));
       }
 
-      // isPrimaryKey: lo dejamos como false salvo que esté definido
       Boolean isPrimaryKey = "true".equalsIgnoreCase(colElem.getAttribute("primarykey"));
 
       columns.put(name, new ColumnDefinition(name, dataType, length, isNullable, isPrimaryKey));
@@ -113,7 +139,6 @@ public class TableDefinitionComparator {
               ? rs.getInt("character_maximum_length") : null;
           Boolean isNullable = "YES".equalsIgnoreCase(rs.getString("is_nullable"));
           Boolean isPrimaryKey = primaryKeys.contains(name);
-
           columns.put(name, new ColumnDefinition(name, dataType, length, isNullable, isPrimaryKey));
         }
       }
@@ -148,17 +173,15 @@ public class TableDefinitionComparator {
       if (!(o instanceof ColumnDefinition)) return false;
       ColumnDefinition that = (ColumnDefinition) o;
       return Objects.equals(name, that.name);
+//          && Objects.equals(dataType, that.dataType)
+//          && Objects.equals(length, that.length)
+//          && Objects.equals(isNullable, that.isNullable)
+//          && Objects.equals(isPrimaryKey, that.isPrimaryKey);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(name);
-    }
-
-    @Override
-    public String toString() {
-      return "ColumnDefinitionName=" + name;
+      return Objects.hash(name, dataType, length, isNullable, isPrimaryKey);
     }
   }
 }
-

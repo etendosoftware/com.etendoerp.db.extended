@@ -18,12 +18,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
-import java.util.Objects;
+import java.util.*;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -49,49 +44,123 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public void execute() {
     try {
       ConnectionProvider cp = getConnectionProvider();
-      String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, UPPER(COL.COLUMNNAME) COLUMNNAME, UPPER(COL_PK.COLUMNNAME) PK_COLUMNNAME " + "FROM ETARC_TABLE_CONFIG CFG " + "JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID " + "JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID " + "JOIN AD_COLUMN COL_PK ON COL_PK.AD_TABLE_ID = TBL.AD_TABLE_ID AND COL_PK.ISKEY = 'Y'";
+      String configSql =
+          "SELECT UPPER(TBL.TABLENAME) TABLENAME, "
+              + "       UPPER(COL.COLUMNNAME) COLUMNNAME, "
+              + "       UPPER(COL_PK.COLUMNNAME) PK_COLUMNNAME "
+              + "FROM ETARC_TABLE_CONFIG CFG "
+              + "JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID "
+              + "JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID "
+              + "JOIN AD_COLUMN COL_PK ON COL_PK.AD_TABLE_ID = TBL.AD_TABLE_ID AND COL_PK.ISKEY = 'Y'";
       PreparedStatement configPs = cp.getPreparedStatement(configSql);
       java.sql.ResultSet rs = configPs.executeQuery();
       StringBuilder sql = new StringBuilder();
 
       List<Map<String, String>> tableConfigs = new ArrayList<>();
       while (rs.next()) {
-        String tableName = rs.getString("TABLENAME");
-        String columnName = rs.getString("COLUMNNAME");
-        String pkColumnName = rs.getString("PK_COLUMNNAME");
-        Map<String, String> config = new HashMap<>();
-        config.put("tableName", tableName);
-        config.put("columnName", columnName);
-        config.put("pkColumnName", pkColumnName);
-        tableConfigs.add(config);
+        Map<String, String> cfg = new HashMap<>();
+        cfg.put("tableName",     rs.getString("TABLENAME"));
+        cfg.put("columnName",    rs.getString("COLUMNNAME"));    // partición
+        cfg.put("pkColumnName",  rs.getString("PK_COLUMNNAME")); // PK original
+        tableConfigs.add(cfg);
       }
-      for( Map<String, String> config : tableConfigs) {
-        String tableName = config.get("tableName");
-        String columnName = config.get("columnName");
-        String pkColumnName = config.get("pkColumnName");
-        if (isBlank(tableName) || isBlank(columnName) || isBlank(pkColumnName)) {
-          log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}", tableName, columnName, pkColumnName);
+      rs.close();
+      configPs.close();
+
+      log4j.info("=======================================================");
+      log4j.info("============== Partitioning process info ==============");
+      log4j.info("=======================================================");
+
+      for (Map<String, String> cfg : tableConfigs) {
+        String tableName    = cfg.get("tableName");
+        String partitionCol = cfg.get("columnName");
+        String pkCol        = cfg.get("pkColumnName");
+
+        log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", tableName, partitionCol, pkCol);
+
+        boolean isIncomplete = isBlank(tableName)
+            || isBlank(partitionCol)
+            || isBlank(pkCol);
+
+        // 1) ¿Cambios en XML?
+        List<File> xmlFiles = isIncomplete
+            ? Collections.emptyList()
+            : findTableXmlFiles(tableName);
+        boolean isUnchanged = !isIncomplete
+            && !(new TableDefinitionComparator())
+            .isTableDefinitionChanged(tableName, cp, xmlFiles);
+
+        // 2) ¿Está particionada?
+        PreparedStatement psPart = cp.getPreparedStatement(
+            "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)"
+        );
+        psPart.setString(1, tableName);
+        boolean isPartitioned = psPart.executeQuery().next();
+        psPart.close();
+
+        // 3) ¿Tiene hoy alguna columna en la PK?
+        PreparedStatement psPk = cp.getPreparedStatement(
+            "SELECT a.attname\n" +
+                "  FROM pg_index i\n" +
+                "  JOIN pg_attribute a\n" +
+                "    ON a.attrelid = i.indrelid\n" +
+                "   AND a.attnum = ANY(i.indkey)\n" +
+                " WHERE i.indrelid = to_regclass(?)\n" +
+                "   AND i.indisprimary"
+        );
+        psPk.setString(1, tableName);
+        java.sql.ResultSet rsPk = psPk.executeQuery();
+        List<String> pkCols = new ArrayList<>();
+        while (rsPk.next()) {
+          pkCols.add(rsPk.getString(1));
+        }
+        rsPk.close();
+        psPk.close();
+
+        log4j.info("Table {} partitioned={} existing PK cols={}",
+            tableName, isPartitioned, pkCols);
+
+        // 4) Primera vez tras particionar = particionada pero SIN PK aún
+        boolean firstPartitionRun = isPartitioned && pkCols.isEmpty();
+
+        // 5) Saltar si incompleto, o si NO es primera vez y NO hay cambios
+        if (isIncomplete || (!firstPartitionRun && isUnchanged)) {
+          if (isIncomplete) {
+            log4j.warn(
+                "Skipping incomplete configuration for table {} (pk={}, partition={})",
+                tableName, pkCol, partitionCol
+            );
+          } else {
+            log4j.info(
+                "Skipping {}: already processed and no XML changes",
+                tableName
+            );
+          }
           continue;
         }
 
-        List<File> tableXmlFiles = findTableXmlFiles(tableName);
-        log4j.debug("Tables from XML: " + tableXmlFiles);
-        TableDefinitionComparator comparator = new TableDefinitionComparator();
-        if (!comparator.isTableDefinitionChanged(tableName, cp, tableXmlFiles)) {
-          log4j.info("Table " + tableName + " has no changes. Skipping recreation...");
-          continue;
-        }
-        log4j.info("Table " + tableName + " has changes. Recreating...");
-        sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
+        // 6) Ejecutar recreación de constraints
+        log4j.info(
+            "Recreating constraints for {} (firstRun={}, xmlChanged={})",
+            tableName, firstPartitionRun, !isUnchanged
+        );
+        sql.append(buildConstraintSql(tableName, cp, pkCol, partitionCol));
       }
+      log4j.info("=======================================================");
+      log4j.info("=======================================================");
+      log4j.info("=======================================================");
 
-      if(isBlank(sql.toString())) {
+      if (isBlank(sql.toString())) {
         log4j.info("No constraints to handle for the provided configurations.");
         return;
+
       }
 
+      // 7) Ejecutar todo el DDL acumulado
       PreparedStatement ps = cp.getPreparedStatement(sql.toString());
       ps.executeUpdate();
+      ps.close();
+
     } catch (Exception e) {
       handleError(e);
     }
