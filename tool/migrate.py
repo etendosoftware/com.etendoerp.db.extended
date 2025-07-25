@@ -186,17 +186,15 @@ def get_tables_and_fields_from_database(conn):
 
 def get_table_schema(conn, table_name, schema='public'):
     try:
-        with conn.cursor() as cur:
-            column_data = get_column_metadata(conn, schema, table_name)
-            if not column_data:
-                raise ValueError(f"Couldn't retrieve metadata in {schema}.{table_name}")
-            for col in columns:
-                print_message(f"  - Column: {col[COL_NAME]}, Type: {col[DATA_TYPE]}, Nullable: {col[IS_NULLABLE]}, Default: {col[DEFAULT]}", "DEBUG")
-                schema_info = cur.fetchall()
-                print_message(f"Schema for {schema}.{table_name}:", "DEBUG") # Changed to DEBUG
-                for col_name, col_type, nullable, default in schema_info:
-                    print_message(f"  - Column: {col_name}, Type: {col_type}, Nullable: {nullable}, Default: {default}", "DEBUG")
-                return schema_info
+        column_data = get_column_metadata(conn, schema, table_name)
+        if not column_data:
+            raise ValueError(f"Couldn't retrieve metadata in {schema}.{table_name}")
+
+        print_message(f"Schema for {schema}.{table_name}:", "DEBUG")
+        for col in column_data:
+            print_message(f"  - Column: {col[COL_NAME]}, Type: {col[DATA_TYPE]}, Nullable: {col[IS_NULLABLE]}, Default: {col[DEFAULT]}", "DEBUG")
+
+        return column_data
     except Exception as e:
         print_message(f"Error retrieving schema for {schema}.{table_name}: {e}", "ERROR")
         return []

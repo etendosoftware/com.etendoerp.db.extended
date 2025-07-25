@@ -455,8 +455,8 @@ spec:
 
             echo '------------- Execution time -------------'
             echo "🔁 Execution times (update and smartbuild):"
-            echo "⏱️ Partitoned time: ${durationPart} secons"
-            echo "⏱️ Unpartitioned time: ${durationUnpart} secons"
+            echo "⏱️ Partitioned time: ${durationPart} seconds"
+            echo "⏱️ Unpartitioned time: ${durationUnpart} seconds"
 
             echo '------------- Final Tomcat check -------------'
             sh "${WORKSPACE}/${TOMCAT_FOLDER}/bin/catalina.sh start"
