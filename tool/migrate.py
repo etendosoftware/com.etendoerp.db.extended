@@ -12,6 +12,23 @@ from xml.dom import minidom
 import argparse
 from datetime import datetime
 import traceback
+from db_utils import handle_db_errors, fetchall, fetchone
+
+BBDD_SID = 'bbdd.sid'
+BBDD_RDBMS = 'bbdd.rdbms'
+BBDD_URL = 'bbdd.url'
+BBDD_USER = 'bbdd.user'
+BBDD_PASSWORD = 'bbdd.password'
+
+COL_NAME = 0
+DATA_TYPE = 1
+IS_NULLABLE = 2
+DEFAULT = 3
+MAX_LENGTH = 4
+NUM_PREC = 5
+NUM_SCALE = 6
+DATETIME_PREC = 7
+UDT_NAME = 8
 
 # Variable global para controlar el uso de salida ANSI (colores/emojis)
 _use_ansi_output = True
@@ -48,71 +65,38 @@ class Style:
     SUMMARY = '📊' # Changed to a bar chart
     ERROR_ICON = '❗' # Changed to an exclamation mark
 
+MESSAGE_STYLES = {
+    "HEADER":      (Style.MAGENTA + Style.BOLD, Style.HEADER + " "),
+    "SUBHEADER":   (Style.CYAN + Style.BOLD, Style.PROCESSING + " "),
+    "STEP_INFO":   (Style.BLUE, "  "),
+    "STEP":        (Style.BLUE + Style.BOLD, Style.STEP + " "),
+    "SUCCESS":     (Style.GREEN + Style.BOLD, Style.SUCCESS + " "),
+    "FAILURE":     (Style.RED + Style.BOLD, Style.FAILURE + " "),
+    "ERROR":       (Style.RED + Style.BOLD, Style.ERROR_ICON + " "),
+    "WARNING":     (Style.YELLOW, Style.WARNING + " "),
+    "INFO":        (Style.WHITE, Style.INFO + " "),
+    "DEBUG":       (Style.CYAN, "  "),
+    "IMPORTANT":   (Style.YELLOW + Style.BOLD, Style.WARNING + " "),
+    "SCRIPT_INFO": (Style.MAGENTA, Style.SCRIPT_VERSION + " "),
+    "RUN_MODE":    (Style.YELLOW + Style.BOLD, ""),
+    "DB_CONNECT":  (Style.GREEN, Style.DATABASE + " "),
+    "CONFIG_LOAD": (Style.CYAN, Style.CONFIGURATION + " "),
+    "TABLE_PROCESS": (Style.MAGENTA + Style.BOLD, Style.TABLE + " "),
+}
+
 def print_message(message, level="INFO", end="\n"):
-    """
-    Imprime un mensaje con el estilo apropiado basado en el nivel y la configuración ANSI.
-    """
     global _use_ansi_output
     if not _use_ansi_output:
         print(message, end=end)
         return
 
-    prefix = ""
-    color = Style.RESET
-    emoji = ""
-
-    if level == "HEADER":
-        color = Style.MAGENTA + Style.BOLD
-        emoji = Style.HEADER + " "
-    elif level == "SUBHEADER":
-        color = Style.CYAN + Style.BOLD
-        emoji = Style.PROCESSING + " "
-    elif level == "STEP_INFO": # Para información dentro de un paso
-        color = Style.BLUE
-        emoji = "  " # Indentación para sub-pasos o información detallada
-    elif level == "STEP":
-        color = Style.BLUE + Style.BOLD
-        emoji = Style.STEP + " "
-    elif level == "SUCCESS":
-        color = Style.GREEN + Style.BOLD
-        emoji = Style.SUCCESS + " "
-    elif level == "FAILURE":
-        color = Style.RED + Style.BOLD
-        emoji = Style.FAILURE + " "
-    elif level == "ERROR": # Para errores críticos o excepciones
-        color = Style.RED + Style.BOLD
-        emoji = Style.ERROR_ICON + " "
-    elif level == "WARNING":
-        color = Style.YELLOW
-        emoji = Style.WARNING + " "
-    elif level == "INFO":
-        color = Style.WHITE
-        emoji = Style.INFO + " "
-    elif level == "DEBUG":
-        color = Style.CYAN
-        emoji = "  "
-    elif level == "IMPORTANT":
-        color = Style.YELLOW + Style.BOLD
-        emoji = Style.WARNING + " " # Using warning for important as well
-    elif level == "SCRIPT_INFO":
-        color = Style.MAGENTA
-        emoji = Style.SCRIPT_VERSION + " "
-    elif level == "RUN_MODE":
-        color = Style.YELLOW + Style.BOLD
-    elif level == "DB_CONNECT":
-        color = Style.GREEN
-        emoji = Style.DATABASE + " "
-    elif level == "CONFIG_LOAD":
-        color = Style.CYAN
-        emoji = Style.CONFIGURATION + " "
-    elif level == "TABLE_PROCESS":
-        color = Style.MAGENTA + Style.BOLD
-        emoji = Style.TABLE + " "
-
-
+    color, emoji = MESSAGE_STYLES.get(level, (Style.RESET, ""))
     print(f"{color}{emoji}{message}{Style.RESET}", end=end)
 
 # --- Funciones auxiliares ---
+def column_exists(conn, schema, table, column):
+    return object_exists(conn, schema, table, 'columns', column)
+
 def read_properties_file(file_path):
     try:
         config = ConfigParser()
@@ -130,28 +114,29 @@ def read_properties_file(file_path):
         with open(file_path, 'r', encoding='utf-8') as f:
             content = f"[default]\n{f.read()}"
         config.read_string(content)
-        return {
+        properties = {
             'source.path': config.get('default', 'source.path', fallback=None),
-            'bbdd.rdbms': config.get('default', 'bbdd.rdbms', fallback=None),
-            'bbdd.url': config.get('default', 'bbdd.url', fallback=None),
-            'bbdd.sid': config.get('default', 'bbdd.sid', fallback=None),
-            'bbdd.user': config.get('default', 'bbdd.user', fallback=None),
-            'bbdd.password': config.get('default', 'bbdd.password', fallback=None),
+            BBDD_RDBMS: config.get('default', BBDD_RDBMS, fallback=None),
+            BBDD_URL: config.get('default', BBDD_URL, fallback=None).replace('\\', ''),
+            BBDD_SID: config.get('default', BBDD_SID, fallback=None),
+            BBDD_USER: config.get('default', BBDD_USER, fallback=None),
+            BBDD_PASSWORD: config.get('default', BBDD_PASSWORD, fallback=None),
             'bbdd.sessionConfig': config.get('default', 'bbdd.sessionConfig', fallback=None)
         }
+        return properties
     except Exception as e:
         print_message(f"Error reading {file_path}: {e}", "ERROR")
         return {}
 
 def parse_db_params(properties):
-    if not all([properties.get('bbdd.url'), properties.get('bbdd.sid'), properties.get('bbdd.user'), properties.get('bbdd.password')]):
+    if not all([properties.get(BBDD_URL), properties.get(BBDD_SID), properties.get(BBDD_USER), properties.get(BBDD_PASSWORD)]):
         raise ValueError("Missing required database connection properties (bbdd.url, bbdd.sid, bbdd.user, bbdd.password)")
-    url_match = re.match(r'jdbc:postgresql://([^:]+):(\d+)', properties['bbdd.url'])
+    url_match = re.match(r'jdbc:postgresql://([^:]+):(\d+)', properties[BBDD_URL])
     if not url_match:
-        raise ValueError(f"Invalid bbdd.url format: {properties['bbdd.url']}. Expected format: jdbc:postgresql://host:port")
+        raise ValueError(f"Invalid bbdd.url format: {properties[BBDD_URL]}. Expected format: jdbc:postgresql://host:port")
     host, port = url_match.groups()
-    return {'host': host, 'port': port, 'database': properties['bbdd.sid'],
-            'user': properties.get('bbdd.user'), 'password': properties.get('bbdd.password')}
+    return {'host': host.replace('\\', ''), 'port': port, 'database': properties[BBDD_SID],
+            'user': properties.get(BBDD_USER), 'password': properties.get(BBDD_PASSWORD)}
 
 def get_tables_and_fields_from_database(conn):
     """
@@ -201,29 +186,37 @@ def get_tables_and_fields_from_database(conn):
 
 def get_table_schema(conn, table_name, schema='public'):
     try:
-        with conn.cursor() as cur:
-            cur.execute("SELECT column_name, data_type, is_nullable, column_default FROM information_schema.columns WHERE table_schema = %s AND table_name = %s ORDER BY ordinal_position", (schema, table_name))
-            schema_info = cur.fetchall()
-            print_message(f"Schema for {schema}.{table_name}:", "DEBUG") # Changed to DEBUG
-            for col_name, col_type, nullable, default in schema_info:
-                print_message(f"  - Column: {col_name}, Type: {col_type}, Nullable: {nullable}, Default: {default}", "DEBUG")
-            return schema_info
+        column_data = get_column_metadata(conn, schema, table_name)
+        if not column_data:
+            raise ValueError(f"Couldn't retrieve metadata in {schema}.{table_name}")
+
+        print_message(f"Schema for {schema}.{table_name}:", "DEBUG")
+        for col in column_data:
+            print_message(f"  - Column: {col[COL_NAME]}, Type: {col[DATA_TYPE]}, Nullable: {col[IS_NULLABLE]}, Default: {col[DEFAULT]}", "DEBUG")
+
+        return column_data
     except Exception as e:
         print_message(f"Error retrieving schema for {schema}.{table_name}: {e}", "ERROR")
         return []
 
-def table_exists(conn, table_name_to_check, schema_to_check=None):
-    try:
-        with conn.cursor() as cur:
-            if schema_to_check:
-                cur.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = %s AND table_schema = %s", (table_name_to_check, schema_to_check))
-            else: # Search in default search path if schema not specified
-                cur.execute("SELECT table_schema FROM information_schema.tables WHERE table_name = %s AND table_schema NOT IN ('pg_catalog', 'information_schema') LIMIT 1", (table_name_to_check,))
-            result = cur.fetchone()
-            return result[0] if result else None
-    except Exception as e:
-        print_message(f"Error checking if table '{table_name_to_check}' exists (schema: {schema_to_check if schema_to_check else 'any'}): {e}", "ERROR")
-        return None
+def table_exists(conn, table_name, schema=None):
+    if schema:
+        exists = object_exists(conn, schema, table_name, 'tables', table_name)
+        return schema if exists else None
+
+    row = fetchone(
+        conn,
+        """
+        SELECT table_schema
+        FROM information_schema.tables
+        WHERE table_name = %s
+          AND table_schema NOT IN ('pg_catalog','information_schema')
+        LIMIT 1
+        """,
+        (table_name,),
+        log_msg=f"Searching schema from table {table_name}", level="DEBUG"
+    )
+    return row[0] if row else None
 
 def is_table_partitioned(conn, table_name, schema):
     try:
@@ -235,60 +228,126 @@ def is_table_partitioned(conn, table_name, schema):
         print_message(f"Error checking if table {schema}.{table_name} is partitioned: {e}", "ERROR")
         return False
 
+def object_exists(conn, schema, table, object_type, object_name):
+    """
+    object_type: 'columns' | 'tables' | 'views' ...
+    """
+    query = f"""
+      SELECT 1
+      FROM information_schema.{object_type}
+      WHERE table_schema = %s
+        AND table_name = %s
+        AND {"column_name" if object_type=='columns' else "table_name"} = %s
+      LIMIT 1
+    """
+    return fetchone(conn, query, (schema, table, object_name)) is not None
+
+@handle_db_errors(default=[])
 def get_dependent_views(conn, table_name, schema):
-    try:
-        with conn.cursor() as cur:
-            # This query finds views that depend on the specified table
-            cur.execute("""
-                SELECT DISTINCT dependent_ns.nspname AS view_schema, dependent_view.relname AS view_name, pg_get_viewdef(dependent_view.oid) AS view_definition
-                FROM pg_depend AS d 
-                JOIN pg_rewrite AS r ON r.oid = d.objid 
-                JOIN pg_class AS dependent_view ON dependent_view.oid = r.ev_class
-                JOIN pg_namespace AS dependent_ns ON dependent_ns.oid = dependent_view.relnamespace 
-                JOIN pg_class AS source_table ON source_table.oid = d.refobjid
-                JOIN pg_namespace AS source_ns ON source_ns.oid = source_table.relnamespace
-                WHERE d.refclassid = 'pg_class'::REGCLASS 
-                  AND d.classid = 'pg_rewrite'::REGCLASS 
-                  AND dependent_view.relkind = 'v' 
-                  AND source_table.relname = %s 
-                  AND source_ns.nspname = %s;
-            """, (table_name, schema))
-            return cur.fetchall()
-    except Exception as e:
-        print_message(f"Error finding dependent views for {schema}.{table_name}: {e}", "ERROR")
-        return []
+    sql= """
+        SELECT DISTINCT dependent_ns.nspname AS view_schema, dependent_view.relname AS view_name, pg_get_viewdef(dependent_view.oid) AS view_definition
+        FROM pg_depend AS d
+        JOIN pg_rewrite AS r ON r.oid = d.objid
+        JOIN pg_class AS dependent_view ON dependent_view.oid = r.ev_class
+        JOIN pg_namespace AS dependent_ns ON dependent_ns.oid = dependent_view.relnamespace
+        JOIN pg_class AS source_table ON source_table.oid = d.refobjid
+        JOIN pg_namespace AS source_ns ON source_ns.oid = source_table.relnamespace
+        WHERE d.refclassid = 'pg_class'::REGCLASS
+          AND d.classid = 'pg_rewrite'::REGCLASS
+          AND dependent_view.relkind = 'v'
+          AND source_table.relname = %s
+          AND source_ns.nspname = %s;
+    """
+    return fetchall(conn, sql, (table_name, schema),
+                        log_msg=f"Searching related view with {schema}.{table_name}", level="DEBUG")
 
+@handle_db_errors(default=[])
 def get_triggers(conn, table_name, schema):
-    try:
-        with conn.cursor() as cur:
-            cur.execute("""
-                SELECT n.nspname AS schema_name, tg.tgname AS trigger_name, pg_get_triggerdef(tg.oid) as trigger_definition 
-                FROM pg_trigger tg 
-                JOIN pg_class t ON tg.tgrelid = t.oid 
-                JOIN pg_namespace n ON t.relnamespace = n.oid 
-                WHERE t.relname = %s AND n.nspname = %s AND tg.tgisinternal = FALSE
-            """, (table_name, schema)) # Added tgisinternal = FALSE to exclude system triggers
-            return cur.fetchall()
-    except Exception as e:
-        print_message(f"Error finding triggers for {schema}.{table_name}: {e}", "ERROR")
-        return []
+    sql ="""
+        SELECT n.nspname AS schema_name, tg.tgname AS trigger_name, pg_get_triggerdef(tg.oid) as trigger_definition
+        FROM pg_trigger tg
+        JOIN pg_class t ON tg.tgrelid = t.oid
+        JOIN pg_namespace n ON t.relnamespace = n.oid
+        WHERE t.relname = %s AND n.nspname = %s AND tg.tgisinternal = FALSE
+    """ # Added tgisinternal = FALSE to exclude system triggers
+    return fetchall(conn, sql, (table_name, schema),
+                            log_msg=f"Searching triggers in {schema}.{table_name}", level="DEBUG")
 
-def get_foreign_keys_on_table(conn, table_name, schema):
-    try:
-        with conn.cursor() as cur:
-            # This query finds FKs defined ON the specified table (i.e., this table is the referencing table)
-            cur.execute("""
-                SELECT pc.conname AS constraint_name, pg_get_constraintdef(pc.oid) AS constraint_definition,
-                       ARRAY(SELECT att.attname FROM unnest(pc.conkey) WITH ORDINALITY k(attnum, ord)
-                             JOIN pg_attribute att ON att.attrelid = pc.conrelid AND att.attnum = k.attnum ORDER BY k.ord) AS fk_columns
-                FROM pg_constraint pc 
-                JOIN pg_namespace n ON n.oid = pc.connamespace 
-                JOIN pg_class cl ON cl.oid = pc.conrelid
-                WHERE pc.contype = 'f' AND cl.relname = %s AND n.nspname = %s;
-            """, (table_name, schema))
-            return [{'name': r[0], 'definition': r[1], 'columns': list(r[2])} for r in cur.fetchall()]
-    except Exception as e: print_message(f"Error retrieving FKs defined ON {schema}.{table_name}: {e}", "ERROR"); return []
+@handle_db_errors(default=[])
+def get_foreign_keys(conn, table, schema, direction="on"):
+    """
+    direction='on' → FKs definidas EN esta tabla (tabla → otras tablas)
+    direction='to' → FKs que apuntan A esta tabla (otras tablas → tabla)
+    """
+    if direction == "on":
+        sql = """
+          SELECT
+            pc.conname AS constraint_name,
+            pg_get_constraintdef(pc.oid) AS constraint_definition,
+            ARRAY(
+              SELECT att.attname
+              FROM unnest(pc.conkey) WITH ORDINALITY k(attnum, ord)
+              JOIN pg_attribute att
+                ON att.attrelid = pc.conrelid
+               AND att.attnum = k.attnum
+              ORDER BY k.ord
+            ) AS fk_columns
+          FROM pg_constraint pc
+          JOIN pg_namespace n ON n.oid = pc.connamespace
+          JOIN pg_class cl      ON cl.oid = pc.conrelid
+          WHERE pc.contype = 'f'
+            AND cl.relname = %s
+            AND n.nspname = %s;
+        """
+        rows = fetchall(
+            conn, sql,
+            params=(table, schema),
+            log_msg=f"Buscando FKs definidas ON {schema}.{table}",
+            level="DEBUG"
+        )
+        return [
+            {'name': name, 'definition': definition, 'columns': list(columns)}
+            for name, definition, columns in rows
+        ]
 
+    else:  # direction == "to"
+        sql = """
+          SELECT
+            con.conname AS constraint_name,
+            cl_ref.relname AS referencing_table,
+            ns_ref.nspname AS referencing_schema,
+            pg_get_constraintdef(con.oid) AS constraint_definition,
+            ARRAY(
+              SELECT att.attname
+              FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
+              JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum
+              ORDER BY k.ord
+            ) AS fk_columns
+          FROM pg_constraint con
+          JOIN pg_class cl_ref      ON cl_ref.oid = con.conrelid
+          JOIN pg_namespace ns_ref  ON ns_ref.oid = cl_ref.relnamespace
+          JOIN pg_class cl_referenced ON cl_referenced.oid = con.confrelid
+          JOIN pg_namespace ns_referenced ON ns_referenced.oid = cl_referenced.relnamespace
+          WHERE cl_referenced.relname = %s
+            AND ns_referenced.nspname = %s
+            AND con.contype = 'f';
+        """
+        rows = fetchall(
+            conn, sql,
+            params=(table, schema),
+            log_msg=f"Buscando FKs que apuntan A {schema}.{table}",
+            level="DEBUG"
+        )
+        return [
+            {
+              'name': name,
+              'referencing_table': ref_table,
+              'referencing_schema': ref_schema,
+              'definition': definition,
+              'columns': list(columns)
+            }
+            for name, ref_table, ref_schema, definition, columns in rows
+        ]
 
 def process_related_tables_for_partitioning(conn, source_table_name, source_schema, partition_field, dry_run=False):
     """
@@ -429,6 +488,9 @@ def process_related_tables_for_partitioning(conn, source_table_name, source_sche
                 print_message(f"  {Style.ERROR_ICON} Outer rollback failed: {rb_err}", "ERROR")
         return result
 
+def get_partition_field_name(partition_field, constraint_name):
+    return f"etarc_{partition_field}__{constraint_name}"
+
 def validate_partition_field_population(conn, related_table_info, partition_field):
     """
     Validate that partition field population was successful.
@@ -436,8 +498,7 @@ def validate_partition_field_population(conn, related_table_info, partition_fiel
     try:
         table_schema = related_table_info['table_schema']
         table_name = related_table_info['table_name']
-        new_field_name = f"etarc_{partition_field}__{related_table_info['constraint_name']}"
-
+        new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
         print_message(f"Validating '{new_field_name}' population in {table_schema}.{table_name}...", "DEBUG")
 
         with conn.cursor() as cur:
@@ -499,7 +560,7 @@ def populate_partition_field_in_related_table(conn, source_table, source_schema,
     try:
         table_schema = related_table_info['table_schema']
         table_name = related_table_info['table_name']
-        new_field_name = f"etarc_{partition_field}__{related_table_info['constraint_name']}"
+        new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
         fk_columns = related_table_info['fk_columns'] # Columns in related_table forming the FK
         referenced_columns = related_table_info['referenced_columns'] # Columns in source_table referenced by FK
 
@@ -593,17 +654,12 @@ def add_partition_field_to_related_table(conn, related_table_info, partition_fie
     try:
         table_schema = related_table_info['table_schema']
         table_name = related_table_info['table_name']
-        new_field_name = f"etarc_{partition_field}__{related_table_info['constraint_name']}" # e.g., etarc_created
-
+        new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
         print_message(f"Ensuring field '{new_field_name}' in {table_schema}.{table_name}...", "DEBUG")
 
         # Check if field already exists
         with conn.cursor() as cur:
-            cur.execute("""
-                SELECT 1 FROM information_schema.columns 
-                WHERE table_schema = %s AND table_name = %s AND column_name = %s
-            """, (table_schema, table_name, new_field_name))
-            if cur.fetchone():
+            if column_exists(conn, table_schema, table_name, new_field_name):
                 print_message(f"Field '{new_field_name}' already exists in {table_schema}.{table_name}. Verifying type...", "INFO")
                 new_field_name += "_1"
                 # Optional: Add type verification here if needed, though get_partition_field_type should be robust.
@@ -651,6 +707,23 @@ def add_partition_field_to_related_table(conn, related_table_info, partition_fie
         print_message(f"Error adding field '{new_field_name}' to {table_schema}.{table_name}: {e}", "ERROR")
         return False
 
+def get_column_metadata(conn, schema, table, column=None):
+    base_query = """
+        SELECT column_name, data_type, is_nullable, column_default,
+               character_maximum_length, numeric_precision, numeric_scale, datetime_precision, udt_name
+        FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s
+    """
+    params = [schema, table]
+    if column:
+        base_query += " AND column_name = %s"
+        params.append(column)
+
+    with conn.cursor() as cur:
+        cur.execute(base_query, params)
+        return cur.fetchall()
+
+
 def get_partition_field_type(conn, table_name, schema, field_name):
     """
     Get the exact data type and relevant attributes of the partition field from the source table.
@@ -658,51 +731,32 @@ def get_partition_field_type(conn, table_name, schema, field_name):
     try:
         print_message(f"Getting data type for field '{field_name}' in {schema}.{table_name}...", "DEBUG")
 
-        with conn.cursor() as cur:
-            # Query information_schema for detailed column type information
-            query = """
-                SELECT 
-                    data_type, 
-                    is_nullable, 
-                    column_default,
-                    character_maximum_length, 
-                    numeric_precision, 
-                    numeric_scale,
-                    datetime_precision,
-                    udt_name -- User-defined type name, often more precise
-                FROM information_schema.columns 
-                WHERE table_schema = %s 
-                  AND table_name = %s 
-                  AND column_name = %s
-            """
-            cur.execute(query, (schema, table_name, field_name))
-            result = cur.fetchone()
+        column_data = get_column_metadata(conn, schema, table_name, field_name)
+        if not column_data:
+            raise ValueError(f"Partition field '{field_name}' not found in {schema}.{table_name}")
+        col = column_data[0]
 
-            if not result:
-                raise ValueError(f"Partition field '{field_name}' not found in {schema}.{table_name}")
+        field_type_info = {
+            'data_type': col[DATA_TYPE],
+            'is_nullable': col[IS_NULLABLE],
+            'column_default': col[DEFAULT],
+            'character_maximum_length': col[MAX_LENGTH],
+            'numeric_precision': col[NUM_PREC],
+            'numeric_scale': col[NUM_SCALE],
+            'datetime_precision': col[DATETIME_PREC],
+            'udt_name': col[UDT_NAME]  # puedes mantenerlo como data_type si udt_name no se incluye
+        }
+        # Prefer udt_name if it's more specific, but data_type is generally good for CREATE TABLE LIKE
+        # For ALTER TABLE ADD COLUMN, the full data_type string is usually needed.
 
-            # Construct a dictionary with all relevant type information
-            field_type_info = {
-                'data_type': result[0], # e.g., 'timestamp without time zone', 'integer', 'character varying'
-                'is_nullable': result[1],
-                'column_default': result[2],
-                'character_maximum_length': result[3],
-                'numeric_precision': result[4],
-                'numeric_scale': result[5],
-                'datetime_precision': result[6],
-                'udt_name': result[7] # e.g., 'timestamp', 'int4', 'varchar'
-            }
-            # Prefer udt_name if it's more specific, but data_type is generally good for CREATE TABLE LIKE
-            # For ALTER TABLE ADD COLUMN, the full data_type string is usually needed.
-
-            print_message(
-                f"Source partition field '{schema}.{table_name}.{field_name}' type: {field_type_info['data_type']} "
-                f"(UDT: {field_type_info['udt_name']}, MaxLen: {field_type_info['character_maximum_length']}, "
-                f"NumPrec: {field_type_info['numeric_precision']}, NumScale: {field_type_info['numeric_scale']}, "
-                f"DatePrec: {field_type_info['datetime_precision']})",
-                "DEBUG"
-            )
-            return field_type_info
+        print_message(
+            f"Source partition field '{schema}.{table_name}.{field_name}' type: {field_type_info['data_type']} "
+            f"(UDT: {field_type_info['udt_name']}, MaxLen: {field_type_info['character_maximum_length']}, "
+            f"NumPrec: {field_type_info['numeric_precision']}, NumScale: {field_type_info['numeric_scale']}, "
+            f"DatePrec: {field_type_info['datetime_precision']})",
+            "DEBUG"
+        )
+        return field_type_info
 
     except psycopg2.Error as db_err:
         print_message(f"Database error getting field type for {schema}.{table_name}.{field_name}: {db_err}", "ERROR")
@@ -769,41 +823,6 @@ def get_related_tables(conn, table_name, schema):
     except Exception as e:
         print_message(f"Error finding related tables for {schema}.{table_name}: {e}", "ERROR")
         return []
-
-def get_foreign_keys_referencing_table(conn, referenced_table_name, referenced_schema_name):
-    """ Get FKs from OTHER tables that reference the given table. """
-    fks_referencing = []
-    try:
-        with conn.cursor() as cur:
-            # This query finds FKs where the given table is the *referenced* one.
-            cur.execute("""
-                SELECT con.conname AS constraint_name,
-                       cl_ref.relname AS referencing_table_name,      -- Table containing the FK
-                       ns_ref.nspname AS referencing_table_schema,    -- Schema of table containing the FK
-                       pg_get_constraintdef(con.oid) AS constraint_definition,
-                       ARRAY(SELECT att.attname
-                             FROM unnest(con.conkey) WITH ORDINALITY k(attnum, ord)
-                             JOIN pg_attribute att ON att.attrelid = con.conrelid AND att.attnum = k.attnum
-                             ORDER BY k.ord
-                       ) AS fk_columns_on_referencing_table -- Columns forming the FK in the referencing table
-                FROM pg_constraint con
-                JOIN pg_class cl_ref ON cl_ref.oid = con.conrelid -- This is the referencing table
-                JOIN pg_namespace ns_ref ON ns_ref.oid = cl_ref.relnamespace
-                JOIN pg_class cl_referenced ON cl_referenced.oid = con.confrelid -- This is the referenced table (our input)
-                JOIN pg_namespace ns_referenced ON ns_referenced.oid = cl_referenced.relnamespace
-                WHERE cl_referenced.relname = %s AND ns_referenced.nspname = %s
-                  AND con.contype = 'f';
-            """, (referenced_table_name, referenced_schema_name))
-            for row in cur.fetchall():
-                fks_referencing.append({
-                    'name': row[0],
-                    'referencing_table': row[1],
-                    'referencing_schema': row[2],
-                    'definition': row[3],
-                    'columns': list(row[4]) # These are the columns in the referencing_table
-                })
-        return fks_referencing
-    except Exception as e: print_message(f"Error retrieving FKs REFERENCING {referenced_schema_name}.{referenced_table_name}: {e}", "ERROR"); return []
 
 def get_indexes_for_table(conn, schema, table_name_idx):
     indexes = {}
@@ -984,7 +1003,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
             else: conn.cursor().execute(s); print_message(f"Dropped view {vs}.{vn}", "STEP_INFO")
 
         print_message(f"\n[Step 2] Dropping Foreign Keys from OTHER tables that reference {actual_schema}.{table_to_partition_name}...", "STEP")
-        fks_referencing_source = get_foreign_keys_referencing_table(conn, table_to_partition_name, actual_schema)
+        fks_referencing_source = get_foreign_keys(conn, table_to_partition_name, actual_schema, direction="to")
         if not fks_referencing_source: print_message("No external FKs found referencing this table.", "STEP_INFO")
         for fk in fks_referencing_source:
             s_fk = sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}").format(
@@ -997,7 +1016,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
             # This might need manual intervention or a more sophisticated index discovery.
 
         print_message(f"\n[Step 3] Dropping FKs defined ON {actual_schema}.{table_to_partition_name} (pointing to other tables)...", "STEP")
-        fks_on_this_table = get_foreign_keys_on_table(conn, table_to_partition_name, actual_schema)
+        fks_on_this_table = get_foreign_keys(conn, table_to_partition_name, actual_schema, direction="on")
         if not fks_on_this_table: print_message("No FKs found defined on this table.", "STEP_INFO")
         for fk in fks_on_this_table:
             dropped_on_table_fks_info.append(fk)
@@ -1266,140 +1285,152 @@ def print_final_summary(summary_data):
 
     print_message(section_line, "HEADER")
 
-
 # --- Main Program Flow ---
-def main_flow(dry_run=False): # Renamed from main to avoid conflict if script is imported
-    # Ensure config directory exists
-    config_dir = Path("config")
-    if not config_dir.exists():
-        print_message(f"Configuration directory '{config_dir}' does not exist. Please create it and place 'Openbravo.properties' inside.", "ERROR")
-        # Optionally, create it:
-        # try:
-        #     config_dir.mkdir(parents=True, exist_ok=True)
-        #     print_message(f"Created configuration directory '{config_dir}'.", "INFO")
-        # except OSError as e:
-        #     print_message(f"Could not create configuration directory '{config_dir}': {e}", "ERROR")
-        #     return # Cannot proceed
-        return
+def main_flow(dry_run=False):
+    if not validate_config_directory():
+        return False
 
-    properties_file = config_dir / "Openbravo.properties"
+    properties = read_properties_file("config/Openbravo.properties")
+    if not properties or not properties.get(BBDD_URL):
+        print_message("Failed to read properties file, or essential properties are missing. Exiting.", "FAILURE")
+        return False
+
+    if not is_supported_rdbms(properties):
+        print_message(f"Unsupported RDBMS: {properties.get(BBDD_RDBMS)}. Only POSTGRE is supported.", "FAILURE")
+        return False
+
+    db_params = parse_db_params(properties)
     migration_summary = []
 
     try:
-        print_message(f"Reading properties from: {properties_file}", "CONFIG_LOAD")
-        properties = read_properties_file(str(properties_file)) # read_properties_file expects string
-        if not properties or not properties.get('bbdd.url'): # Check if essential props are missing
-            print_message("Failed to read properties file, or essential properties are missing. Exiting.", "FAILURE")
-            return
+        conn = connect_to_database(db_params)
+        apply_session_config(conn, properties, dry_run)
 
-        if properties.get('bbdd.rdbms', '').upper() != 'POSTGRE': # Default to empty string if not present
-            raise ValueError(f"Unsupported RDBMS: {properties.get('bbdd.rdbms')}. Only POSTGRE is supported.")
+        table_fields_config = get_tables_and_fields_from_database(conn)
+        if not table_fields_config:
+            print_message("No tables configured for processing from database. Script will exit.", "INFO")
+            return False
 
-        print_message("Parsing database connection parameters...", "CONFIG_LOAD")
-        db_params = parse_db_params(properties)
-
-        conn = None
-        try:
-            print_message(f"Connecting to PostgreSQL: Host={db_params['host']}, Port={db_params['port']}, DB={db_params['database']}", "DB_CONNECT")
-            conn = psycopg2.connect(**db_params)
-
-            session_config = properties.get('bbdd.sessionConfig')
-            if session_config:
-                with conn.cursor() as cur:
-                    if dry_run: print_message(f"[Dry Run] Would apply session config: {session_config}", "INFO")
-                    else:
-                        print_message(f"Applying session configuration: {session_config}", "DB_CONNECT")
-                        cur.execute(session_config)
-                        conn.commit() # Commit session config
-                        print_message("Session configuration applied.", "SUCCESS")
-
-            table_fields_config = get_tables_and_fields_from_database(conn)
-
-            if not table_fields_config:
-                print_message("No tables configured for processing from database (ETARC_TABLE_CONFIG etc.). Script will exit.", "INFO")
-                return
-
-            for table_name, fields in table_fields_config.items():
-                if not fields:
-                    print_message(f"\n--- Skipping table: {table_name} (No partition fields defined in config.) ---", "WARNING")
-                    migration_summary.append({
-                        'table_name': table_name, 'status': 'SKIPPED',
-                        'message': 'No partition fields specified in DB config.',
-                        'related_tables_result': None
-                    })
-                    continue
-
-                partition_field = next(iter(fields)) # Taking the first field if multiple are somehow defined
-                if len(fields) > 1:
-                    print_message(f"Warning: Multiple partition fields defined for {table_name}: {fields}. Using '{partition_field}'.", "WARNING")
-
-                header_line = "="*80
-                print_message(f"\n\n{header_line}", "TABLE_PROCESS")
-                print_message(f"=== Processing Table: {Style.BOLD}{table_name}{Style.RESET} (Partition Field: {Style.UNDERLINE}{partition_field}{Style.RESET}) ===", "TABLE_PROCESS")
-                print_message(header_line, "TABLE_PROCESS")
-
-                current_table_outcome = None
-                try:
-                    # execute_partition_steps now returns:
-                    # - dict: result from related_tables_processing (if it ran, success or fail)
-                    # - None: if a main partitioning step (after related tables) failed internally
-                    current_table_outcome = execute_partition_steps(conn, table_name, partition_field, dry_run)
-
-                    if current_table_outcome is None:
-                        # Failure INSIDE execute_partition_steps during MAIN partitioning steps
-                        migration_summary.append({
-                            'table_name': table_name, 'status': 'FAILURE',
-                            'message': 'Error during main partitioning steps (see logs above).',
-                            'related_tables_result': None # Related might have succeeded before this point
-                        })
-                    elif current_table_outcome.get('success', False):
-                        # Related tables processed successfully (or skipped if none), AND main partitioning also considered done by execute_partition_steps
-                        migration_summary.append({
-                            'table_name': table_name, 'status': 'SUCCESS',
-                            'message': 'Partitioning process completed successfully.' if not dry_run else 'Partitioning process simulated successfully.',
-                            'related_tables_result': current_table_outcome
-                        })
-                    else: # current_table_outcome is not None, but current_table_outcome['success'] is False
-                        # This means related_tables_processing (Step 1.5) failed, and execute_partition_steps returned that result.
-                        migration_summary.append({
-                            'table_name': table_name, 'status': 'FAILURE',
-                            'message': 'Related table processing failed; main partitioning aborted. Check related table details.',
-                            'related_tables_result': current_table_outcome
-                        })
-
-                except Exception as e_table_main_loop: # Catch unexpected errors from execute_partition_steps if it raises
-                    error_msg = str(e_table_main_loop).replace('\n', ' ')
-                    migration_summary.append({
-                        'table_name': table_name, 'status': 'FAILURE',
-                        'message': f"Critical unhandled error for table: {error_msg[:150]}",
-                        'related_tables_result': current_table_outcome # Store if available
-                    })
-                    print_message(f"!!!!!!!! CRITICAL FAILURE processing table {table_name}: {e_table_main_loop} !!!!!!!!", "FAILURE")
-                    traceback.print_exc()
-                    if conn.closed:
-                        print_message("CRITICAL: Database connection was closed. Cannot continue.", "ERROR")
-                        raise # Re-raise to stop script
-                    else:
-                        if not dry_run: conn.rollback() # Rollback for the failed table
-                finally:
-                    print_message(f"=== Finished processing for table: {table_name} ===", "TABLE_PROCESS")
-                    print_message(f"{header_line}\n", "TABLE_PROCESS")
-        finally:
-            if conn and not conn.closed:
-                conn.close()
-                print_message("Database connection closed.", "DB_CONNECT")
-
-    except ValueError as ve: # Config errors usually
-        print_message(f"Configuration or Setup Error: {ve}", "ERROR")
-        traceback.print_exc()
-    except psycopg2.Error as db_err: # Connection or major DB errors
-        print_message(f"Database Operational Error: {db_err}", "ERROR")
-        traceback.print_exc()
-    except Exception as e_global: # Any other unexpected error
-        print_message(f"UNHANDLED GLOBAL SCRIPT ERROR: {e_global}", "ERROR")
-        traceback.print_exc()
+        migration_summary = process_all_tables(conn, table_fields_config, dry_run)
+    except Exception as e:
+        handle_global_exception(e, migration_summary)
+        return False
     finally:
         print_final_summary(migration_summary)
+        close_connection_if_open(locals().get('conn'))
+
+    return all(entry['status'] == 'SUCCESS' for entry in migration_summary)
+
+
+# --- Funciones auxiliares ---
+
+def validate_config_directory():
+    config_dir = Path("config")
+    if not config_dir.exists():
+        print_message(f"Configuration directory '{config_dir}' does not exist. Please create it and place 'Openbravo.properties' inside.", "ERROR")
+        return False
+    return True
+
+def is_supported_rdbms(properties):
+    return properties.get(BBDD_RDBMS, '').upper() == 'POSTGRE'
+
+def connect_to_database(params):
+    print_message(f"Connecting to PostgreSQL: Host={params['host']}, Port={params['port']}, DB={params['database']}", "DB_CONNECT")
+    return psycopg2.connect(**params)
+
+def apply_session_config(conn, properties, dry_run):
+    session_config = properties.get('bbdd.sessionConfig')
+    if session_config:
+        with conn.cursor() as cur:
+            if dry_run:
+                print_message(f"[Dry Run] Would apply session config: {session_config}", "INFO")
+            else:
+                print_message(f"Applying session configuration: {session_config}", "DB_CONNECT")
+                cur.execute(session_config)
+                conn.commit()
+                print_message("Session configuration applied.", "SUCCESS")
+
+def process_all_tables(conn, table_fields_config, dry_run):
+    summary = []
+    for table_name, fields in table_fields_config.items():
+        result = process_single_table(conn, table_name, fields, dry_run)
+        summary.append(result)
+    return summary
+
+def process_single_table(conn, table_name, fields, dry_run):
+    if not fields:
+        print_message(f"\n--- Skipping table: {table_name} (No partition fields defined in config.) ---", "WARNING")
+        return {
+            'table_name': table_name, 'status': 'SKIPPED',
+            'message': 'No partition fields specified in DB config.',
+            'related_tables_result': None
+        }
+
+    partition_field = next(iter(fields))
+    if len(fields) > 1:
+        print_message(f"Warning: Multiple partition fields defined for {table_name}: {fields}. Using '{partition_field}'.", "WARNING")
+
+    header_line = "=" * 80
+    print_message(f"\n\n{header_line}", "TABLE_PROCESS")
+    print_message(f"=== Processing Table: {Style.BOLD}{table_name}{Style.RESET} (Partition Field: {Style.UNDERLINE}{partition_field}{Style.RESET}) ===", "TABLE_PROCESS")
+    print_message(header_line, "TABLE_PROCESS")
+
+    current_table_outcome = None
+    try:
+        current_table_outcome = execute_partition_steps(conn, table_name, partition_field, dry_run)
+        return build_table_result(table_name, current_table_outcome, dry_run)
+    except Exception as e:
+        return handle_table_exception(e, conn, table_name, current_table_outcome, dry_run)
+    finally:
+        print_message(f"=== Finished processing for table: {table_name} ===", "TABLE_PROCESS")
+        print_message(f"{header_line}\n", "TABLE_PROCESS")
+
+def build_table_result(table_name, outcome, dry_run):
+    if outcome is None:
+        return {
+            'table_name': table_name, 'status': 'FAILURE',
+            'message': 'Error during main partitioning steps (see logs above).',
+            'related_tables_result': None
+        }
+    elif outcome.get('success', False):
+        return {
+            'table_name': table_name, 'status': 'SUCCESS',
+            'message': 'Partitioning process completed successfully.' if not dry_run else 'Partitioning process simulated successfully.',
+            'related_tables_result': outcome
+        }
+    else:
+        return {
+            'table_name': table_name, 'status': 'FAILURE',
+            'message': 'Related table processing failed; main partitioning aborted. Check related table details.',
+            'related_tables_result': outcome
+        }
+
+def handle_table_exception(exception, conn, table_name, outcome, dry_run):
+    error_msg = str(exception).replace('\n', ' ')
+    print_message(f"!!!!!!!! CRITICAL FAILURE processing table {table_name}: {exception} !!!!!!!!", "FAILURE")
+    traceback.print_exc()
+    if not dry_run and conn and not conn.closed:
+        conn.rollback()
+    return {
+        'table_name': table_name, 'status': 'FAILURE',
+        'message': f"Critical unhandled error for table: {error_msg[:150]}",
+        'related_tables_result': outcome
+    }
+
+def handle_global_exception(e, summary):
+    print_message(f"UNHANDLED GLOBAL SCRIPT ERROR: {e}", "ERROR")
+    traceback.print_exc()
+    summary.append({
+        'table_name': 'GLOBAL_EXECUTION',
+        'status': 'FAILURE',
+        'message': f'Error no controlado: {str(e)}',
+        'related_tables_result': None
+    })
+
+def close_connection_if_open(conn):
+    if conn and not conn.closed:
+        conn.close()
+        print_message("Database connection closed.", "DB_CONNECT")
 
 
 if __name__ == "__main__":
@@ -1449,4 +1480,5 @@ if __name__ == "__main__":
             print_message("\nLive run cancelled by user (Ctrl+C). Exiting.", "WARNING")
             exit()
 
-    main_flow(dry_run=args.dry_run)
+    result = main_flow(dry_run=args.dry_run)
+    exit(0 if result else 1)
