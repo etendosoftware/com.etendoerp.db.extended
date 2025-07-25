@@ -19,6 +19,7 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.xml.sax.SAXException;
@@ -58,21 +59,6 @@ public class TableDefinitionComparator {
   }
 
   /**
-   * Parsea atributos numéricos de forma “leniente”: acepta tanto "10" como "10,0" o "10.0".
-   */
-  private int parseIntLenient(String raw) {
-    if (raw == null || raw.trim().isEmpty()) {
-      return 0;
-    }
-    String cleaned = raw.trim().replace(',', '.');
-    try {
-      return Integer.parseInt(cleaned);
-    } catch (NumberFormatException e) {
-      return (int) Double.parseDouble(cleaned);
-    }
-  }
-
-  /**
    * Parses the given XML file to extract column definitions.
    * <p>
    * The method expects the XML to contain a set of {@code <column>} elements,
@@ -102,19 +88,43 @@ public class TableDefinitionComparator {
     NodeList columnList = doc.getElementsByTagName("column");
     for (int i = 0; i < columnList.getLength(); i++) {
       Element colElem = (Element) columnList.item(i);
-      String name = colElem.getAttribute("name").toLowerCase();
-      String dataType = colElem.getAttribute("type").toLowerCase();
+      String name        = colElem.getAttribute("name").toLowerCase();
+      String dataType    = colElem.getAttribute("type").toLowerCase();
       Boolean isNullable = !"false".equalsIgnoreCase(colElem.getAttribute("nullable"));
       Integer length = null;
       if (colElem.hasAttribute("length")) {
-        length = Integer.parseInt(colElem.getAttribute("length"));
+        length = parseIntLenient(colElem.getAttribute("length"));
       } else if (colElem.hasAttribute("size")) {
-        length = Integer.parseInt(colElem.getAttribute("size"));
+        length = parseIntLenient(colElem.getAttribute("size"));
       }
-      Boolean isPrimaryKey = "true".equalsIgnoreCase(colElem.getAttribute("primarykey"));
+      Boolean isPrimaryKey = StringUtils.equalsIgnoreCase("true", colElem.getAttribute("primarykey"));
       columns.put(name, new ColumnDefinition(name, dataType, length, isNullable, isPrimaryKey));
     }
     return columns;
+  }
+
+  /**
+   * Parses a string into an integer, using a lenient approach.
+   * <p>
+   * If the input string is blank (null, empty, or only whitespace), returns 0.
+   * If the string contains a decimal separator (e.g., "123,45" or "123.45"), it replaces commas with dots,
+   * trims whitespace, and attempts to parse the value. If parsing as an integer fails, it tries parsing as a double
+   * and then casts the result to an integer (truncating the decimal part).
+   * </p>
+   *
+   * @param raw the raw input string to parse
+   * @return the parsed integer value, or 0 if the input is blank
+   */
+  private int parseIntLenient(String raw) {
+    if (StringUtils.isBlank(raw)) {
+      return 0;
+    }
+    String cleaned = StringUtils.replace(StringUtils.trim(raw), ",", ".");
+    try {
+      return Integer.parseInt(cleaned);
+    } catch (NumberFormatException e) {
+      return (int) Math.round(Double.parseDouble(cleaned));
+    }
   }
 
   /**
@@ -200,15 +210,11 @@ public class TableDefinitionComparator {
       if (!(o instanceof ColumnDefinition)) return false;
       ColumnDefinition that = (ColumnDefinition) o;
       return Objects.equals(name, that.name);
-//          && Objects.equals(dataType, that.dataType)
-//          && Objects.equals(length, that.length)
-//          && Objects.equals(isNullable, that.isNullable)
-//          && Objects.equals(isPrimaryKey, that.isPrimaryKey);
     }
 
     @Override
     public int hashCode() {
-      return Objects.hash(name, dataType, length, isNullable, isPrimaryKey);
+      return Objects.hash(name);
     }
   }
 }
