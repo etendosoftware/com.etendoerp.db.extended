@@ -180,7 +180,18 @@ spec:
                     org.gradle.daemon=false
                     org.gradle.jvmargs=-Dfile.encoding=UTF-8" > gradle.properties
                     """
-                    sh "sed -i \"s/'com.etendoerp:dbsm:1\\.1\\.0'/'com.etendoerp:dbsm:1.2.0-beta'/\" artifacts.list.COMPILATION.gradle"
+                    def latestVersion = ""
+                    def command = """
+                        curl -s -H 'Authorization: Bearer ${GITHUB_TOKEN}' \
+                             -H 'Accept: application/vnd.github.v3+json' \
+                             'https://api.github.com/orgs/etendosoftware/packages/maven/com.etendoerp.dbsm/versions' \
+                        | jq -r '.[].name' \
+                        | grep -- '-beta\$' \
+                        | sort -V \
+                        | tail -1
+                    """
+                    latestVersion = sh(script: command, returnStdout: true).trim()
+                    sh "sed -i \"s/'com.etendoerp:dbsm:[^']*'/'com.etendoerp:dbsm:${latestVersion}'/\" artifacts.list.COMPILATION.gradle"
                     sh './gradlew prepareConfig'
                     sh './gradlew setup'
                     sh './gradlew expandModules'
@@ -360,7 +371,7 @@ spec:
               script: """
                 cd ${CLASSIC_DIR}
                 set +e
-                ./gradlew export.database > export_output.log 2>&1
+                ./gradlew export.database --info > export_output.log 2>&1
                 echo \$? > export_exit_code.txt
               """,
               returnStdout: true
