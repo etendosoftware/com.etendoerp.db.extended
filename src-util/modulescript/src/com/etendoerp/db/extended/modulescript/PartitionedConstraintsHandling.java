@@ -18,6 +18,7 @@
 package com.etendoerp.db.extended.modulescript;
 
 import com.etendoerp.db.extended.utils.TableDefinitionComparator;
+import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
@@ -35,6 +36,7 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -55,9 +57,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
   private static final String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
+  public static final String SEPARATOR = "=======================================================";
 
   public static boolean isBlank(String str) {
-    return str == null || str.trim().isEmpty();
+    return StringUtils.isBlank(str);
   }
 
   public static boolean isEqualsIgnoreCase(String str1, String str2) {
@@ -67,55 +70,194 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public void execute() {
     try {
       ConnectionProvider cp = getConnectionProvider();
-      String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, UPPER(COL.COLUMNNAME) COLUMNNAME, UPPER(COL_PK.COLUMNNAME) PK_COLUMNNAME " + "FROM ETARC_TABLE_CONFIG CFG " + "JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID " + "JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID " + "JOIN AD_COLUMN COL_PK ON COL_PK.AD_TABLE_ID = TBL.AD_TABLE_ID AND COL_PK.ISKEY = 'Y'";
-      PreparedStatement configPs = cp.getPreparedStatement(configSql);
-      java.sql.ResultSet rs = configPs.executeQuery();
+      List<Map<String, String>> tableConfigs = loadTableConfigs(cp);
+
+      if (!tableConfigs.isEmpty()) {
+        logSeparator();
+        log4j.info("============== Partitioning process info ==============");
+        logSeparator();
+      }
       StringBuilder sql = new StringBuilder();
-
-      List<Map<String, String>> tableConfigs = new ArrayList<>();
-      while (rs.next()) {
-        String tableName = rs.getString("TABLENAME");
-        String columnName = rs.getString("COLUMNNAME");
-        String pkColumnName = rs.getString("PK_COLUMNNAME");
-        Map<String, String> config = new HashMap<>();
-        config.put("tableName", tableName);
-        config.put("columnName", columnName);
-        config.put("pkColumnName", pkColumnName);
-        tableConfigs.add(config);
+      for (Map<String, String> cfg : tableConfigs) {
+        processTableConfig(cp, cfg, sql);
       }
-      for (Map<String, String> config : tableConfigs) {
-        String tableName = config.get("tableName");
-        String columnName = config.get("columnName");
-        String pkColumnName = config.get("pkColumnName");
-
-        boolean isIncomplete = isBlank(tableName) || isBlank(columnName) || isBlank(pkColumnName);
-        List<File> tableXmlFiles = isIncomplete ? Collections.emptyList() : findTableXmlFiles(tableName);
-        boolean isUnchanged = !isIncomplete && !(new TableDefinitionComparator())
-            .isTableDefinitionChanged(tableName, cp, tableXmlFiles);
-
-        if (isIncomplete || isUnchanged) {
-          if (isIncomplete) {
-            log4j.warn("Skipping incomplete configuration for table: {}, column: {}, pkColumn: {}",
-                tableName, columnName, pkColumnName);
-          } else {
-            log4j.info("Table {} has no changes. Skipping recreation...", tableName);
-          }
-          continue;
-        }
-
-        log4j.info("Table {} has changes. Recreating...", tableName);
-        sql.append(buildConstraintSql(tableName, cp, pkColumnName, columnName));
+      if (!tableConfigs.isEmpty()) {
+        logSeparator();
       }
+      executeConstraintSqlIfNeeded(cp, sql.toString());
 
-      if(isBlank(sql.toString())) {
-        log4j.info("No constraints to handle for the provided configurations.");
-        return;
-      }
-
-      PreparedStatement ps = cp.getPreparedStatement(sql.toString());
-      ps.executeUpdate();
     } catch (Exception e) {
       handleError(e);
+    }
+  }
+
+  /**
+   * Logs a separator line to the application log using the info level.
+   * <p>
+   * This method is typically used to visually separate sections in the log output,
+   * improving readability during debugging or tracing execution flow.
+   */
+  private static void logSeparator() {
+    log4j.info(SEPARATOR);
+  }
+
+  /**
+   * Loads the table configuration from the `ETARC_TABLE_CONFIG` table.
+   * This includes the table name, the partition column, and the primary key column.
+   *
+   * @param cp the connection provider for accessing the database.
+   * @return a list of maps, where each map contains the keys:
+   *         "tableName", "columnName", and "pkColumnName".
+   * @throws Exception if a database access error occurs.
+   */
+  private List<Map<String, String>> loadTableConfigs(ConnectionProvider cp) throws Exception {
+    String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, "
+            + "UPPER(COL.COLUMNNAME) COLUMNNAME, "
+            + "UPPER(COL_PK.COLUMNNAME) PK_COLUMNNAME "
+            + "FROM ETARC_TABLE_CONFIG CFG "
+            + "JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID "
+            + "JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID "
+            + "JOIN AD_COLUMN COL_PK ON COL_PK.AD_TABLE_ID = TBL.AD_TABLE_ID AND COL_PK.ISKEY = 'Y'";
+
+    List<Map<String, String>> tableConfigs = new ArrayList<>();
+    try (PreparedStatement ps = cp.getPreparedStatement(configSql);
+         ResultSet rs = ps.executeQuery()) {
+      while (rs.next()) {
+        Map<String, String> cfg = new HashMap<>();
+        cfg.put("tableName", rs.getString("TABLENAME"));
+        cfg.put("columnName", rs.getString("COLUMNNAME"));
+        cfg.put("pkColumnName", rs.getString("PK_COLUMNNAME"));
+        tableConfigs.add(cfg);
+      }
+    }
+    return tableConfigs;
+  }
+
+  /**
+   * Processes a single table configuration, determining whether constraints
+   * need to be recreated. If the table is not yet partitioned correctly
+   * or its structure has changed, it generates the corresponding SQL.
+   *
+   * @param cp the connection provider for accessing the database.
+   * @param cfg a map containing the table configuration (table name, partition column, primary key).
+   * @param sql the SQL builder to which constraint SQL will be appended if necessary.
+   * @throws Exception if an error occurs during processing or querying the database.
+   */
+  private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg, StringBuilder sql) throws Exception {
+    String tableName = cfg.get("tableName");
+    String partitionCol = cfg.get("columnName");
+    String pkCol = cfg.get("pkColumnName");
+
+    log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", tableName, partitionCol, pkCol);
+
+    boolean isIncomplete = isBlank(tableName) || isBlank(partitionCol) || isBlank(pkCol);
+    List<File> xmlFiles = isIncomplete ? Collections.emptyList() : findTableXmlFiles(tableName);
+
+    boolean isUnchanged = !isIncomplete &&
+            !(new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
+
+    boolean isPartitioned = isTablePartitioned(cp, tableName);
+    List<String> pkCols = getPrimaryKeyColumns(cp, tableName);
+    boolean firstPartitionRun = isPartitioned && pkCols.isEmpty();
+
+    log4j.info("Table {} partitioned = {} existing PK cols = {}", tableName, isPartitioned, pkCols);
+
+    if (shouldSkipTable(isIncomplete, firstPartitionRun, isUnchanged)) {
+      logSkipReason(isIncomplete, tableName, pkCol, partitionCol);
+      return;
+    }
+
+    log4j.info("Recreating constraints for {} (firstRun = {}, xmlChanged = {})", tableName, firstPartitionRun, !isUnchanged);
+    sql.append(buildConstraintSql(tableName, cp, pkCol, partitionCol));
+  }
+
+  /**
+   * Determines whether a table should be skipped based on its configuration
+   * and partitioning state.
+   *
+   * @param isIncomplete true if the table configuration is incomplete.
+   * @param firstPartitionRun true if this is the first partitioning run for the table.
+   * @param isUnchanged true if the table definition has not changed.
+   * @return true if the table should be skipped, false otherwise.
+   */
+  private boolean shouldSkipTable(boolean isIncomplete, boolean firstPartitionRun, boolean isUnchanged) {
+    return isIncomplete || (!firstPartitionRun && isUnchanged);
+  }
+
+  /**
+   * Logs the reason why a table is being skipped during processing.
+   *
+   * @param isIncomplete true if the configuration is incomplete.
+   * @param tableName the name of the table being skipped.
+   * @param pkCol the primary key column name.
+   * @param partitionCol the partition column name.
+   */
+  private void logSkipReason(boolean isIncomplete, String tableName, String pkCol, String partitionCol) {
+    if (isIncomplete) {
+      log4j.warn("Skipping incomplete configuration for table {} (pk = {}, partition = {})", tableName, pkCol, partitionCol);
+    } else {
+      log4j.info("Skipping {}: already processed and no XML changes", tableName);
+    }
+  }
+
+  /**
+   * Checks whether the given table is currently partitioned in the PostgreSQL database.
+   *
+   * @param cp the connection provider for accessing the database.
+   * @param tableName the name of the table to check.
+   * @return true if the table is partitioned, false otherwise.
+   * @throws Exception if a database access error occurs.
+   */
+  private boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws Exception {
+    try (PreparedStatement ps = cp.getPreparedStatement(
+            "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)")) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
+   * Retrieves the list of columns that make up the primary key of the given table.
+   *
+   * @param cp the connection provider for accessing the database.
+   * @param tableName the name of the table.
+   * @return a list of column names that are part of the primary key.
+   * @throws Exception if a database access error occurs.
+   */
+  private List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws Exception {
+    List<String> pkCols = new ArrayList<>();
+    String sql = "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
+            + "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+            + "WHERE i.indrelid = to_regclass(?) AND i.indisprimary";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+          pkCols.add(rs.getString(1));
+        }
+      }
+    }
+    return pkCols;
+  }
+
+  /**
+   * Executes the constraint SQL if it is not blank.
+   * This typically includes adding or modifying table constraints after analyzing configurations.
+   *
+   * @param cp the connection provider for accessing the database.
+   * @param sql the SQL string to execute.
+   * @throws Exception if a database access error occurs.
+   */
+  private void executeConstraintSqlIfNeeded(ConnectionProvider cp, String sql) throws Exception {
+    if (isBlank(sql)) {
+      log4j.info("No constraints to handle for the provided configurations.");
+      return;
+    }
+
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.executeUpdate();
     }
   }
 
