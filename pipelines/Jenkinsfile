@@ -180,6 +180,18 @@ spec:
                     org.gradle.daemon=false
                     org.gradle.jvmargs=-Dfile.encoding=UTF-8" > gradle.properties
                     """
+                    def latestVersion = ""
+                    def command = """
+                        curl -s -H 'Authorization: Bearer ${GITHUB_TOKEN}' \
+                             -H 'Accept: application/vnd.github.v3+json' \
+                             'https://api.github.com/orgs/etendosoftware/packages/maven/com.etendoerp.dbsm/versions' \
+                        | jq -r '.[].name' \
+                        | grep -- '-beta\$' \
+                        | sort -V \
+                        | tail -1
+                    """
+                    latestVersion = sh(script: command, returnStdout: true).trim()
+                    sh "sed -i \"s/'com.etendoerp:dbsm:[^']*'/'com.etendoerp:dbsm:${latestVersion}'/\" artifacts.list.COMPILATION.gradle"
                     sh './gradlew prepareConfig'
                     sh './gradlew setup'
                     sh './gradlew expandModules'
@@ -284,8 +296,8 @@ spec:
                   '100',
                   now(),
                   '100',
-                  'A1E2D02EE8154BD59FA6747C9E85A928',
-                  'F038FDD2AAEC47AAA752573384DF5DCB'
+                  'F6C3CA3DB2464E80AF5A05BEAFCCAED0',
+                  '768FB9C188ED43F18D49E4E4873674C9'
                 );
               """
             }
@@ -307,13 +319,14 @@ spec:
               def endTime = System.currentTimeMillis()
               durationPart = (endTime - startTime) / 1000
             }
+
             echo '------------- Running regression tests on partitioned table -------------'
             sh """
             # Inserting
             cd ${CLASSIC_DIR}
             psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} <<EOF
-            INSERT INTO ad_audit_trail (
-                ad_audit_trail_id,
+            INSERT INTO etarc_table_config (
+                etarc_table_config_id,
                 ad_client_id,
                 ad_org_id,
                 isactive,
@@ -322,47 +335,69 @@ spec:
                 updated,
                 updatedby,
                 ad_table_id,
-                record_id,
-                record_revision,
-                ad_user_id,
-                event_time,
-                processtype,
-                process_id,
-                action,
-                ad_column_id,
-                old_char,
-                new_char
+                ad_column_id
             ) VALUES (
-                '12345678901234567890123456789012', -- ad_audit_trail_id
-                '0',       -- ad_client_id
-                '0',       -- ad_org_id
-                'Y',       -- isactive
-                now(),     -- created
-                '0',       -- createdby
-                now(),     -- updated
-                '0',       -- updatedby
-                '1234567', -- ad_table_id
-                '1000033', -- record_id
-                1,         -- record_revision
-                '0',       -- ad_user_id
-                now(),     -- event_time
-                'Manual',  -- processtype
-                '0',       -- process_id
-                'UPDATE',  -- action
-                '7654321', -- ad_column_id
-                'oldValue',-- old_char
-                'newValue' -- new_char
+                'abcdefabcdefabcdefabcdefabcdefab', -- etarc_table_config_id
+                '0',                                -- ad_client_id
+                '0',                                -- ad_org_id
+                'Y',                                -- isactive
+                now(),                              -- created
+                '0',                                -- createdby
+                now(),                              -- updated
+                '0',                                -- updatedby
+                'A1E2D02EE8154BD59FA6747C9E85A928', -- ad_table_id
+                'F038FDD2AAEC47AAA752573384DF5DCB'  -- ad_column_id
             );
-            EOF
             """
             sh """
             # Selecting
-            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "SELECT * FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
+            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "SELECT * FROM etarc_table_config WHERE etarc_table_config_id = 'abcdefabcdefabcdefabcdefabcdefab';"
             """
             sh """
             # Deleting
-            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "DELETE FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
+            psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "DELETE FROM etarc_table_config WHERE etarc_table_config_id = 'abcdefabcdefabcdefabcdefabcdefab';"
             """
+
+            echo '------------- Running export.database to validate partition restriction -------------'
+            withEnv(["PGPASSWORD=${env.BBDD_PASSWORD}"]) {
+              sh """
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} <<EOF
+
+                update ad_module set isindevelopment = 'Y', name = 'ChangeToExport' where ad_module_id = '502453E6AD584DF4A0527C156FA0E800';
+              """
+            }
+
+            def exportOutput = sh(
+              script: """
+                cd ${CLASSIC_DIR}
+                set +e
+                ./gradlew export.database --info > export_output.log 2>&1
+                echo \$? > export_exit_code.txt
+              """,
+              returnStdout: true
+            )
+
+            def exitCode = readFile("${CLASSIC_DIR}/export_exit_code.txt").trim()
+            def outputLog = readFile("${CLASSIC_DIR}/export_output.log")
+
+            if (exitCode == "0") {
+              error("export.database should have failed, but it exited with code 0.")
+            }
+
+            if (!outputLog.contains("ERROR: The module contains partitioned")) {
+              echo outputLog
+              error("export.database did not return the expected error about partitioned tables.")
+            }
+
+            echo "✅ export.database correctly failed due to partitioned tables in a development module"
+
+            withEnv(["PGPASSWORD=${env.BBDD_PASSWORD}"]) {
+              sh """
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} <<EOF
+
+                update ad_module set isindevelopment = 'N' where ad_module_id = '502453E6AD584DF4A0527C156FA0E800';
+              """
+            }
 
             echo '------------- Starting Tomcat for validation -------------'
             sh "${WORKSPACE}/${TOMCAT_FOLDER}/bin/catalina.sh start"
@@ -384,7 +419,7 @@ spec:
             cd ${CLASSIC_DIR}
             bash -c "
               source ./modules/com.etendoerp.db.extended/.venv/bin/activate
-              python3 modules/com.etendoerp.db.extended/tool/unpartition.py "ad_audit_trail"
+              python3 modules/com.etendoerp.db.extended/tool/unpartition.py "etarc_table_config"
             "
             """
 
@@ -401,8 +436,8 @@ spec:
                 # Inserting
                 cd ${CLASSIC_DIR}
                 psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} <<EOF
-                INSERT INTO ad_audit_trail (
-                    ad_audit_trail_id,
+                INSERT INTO etarc_table_config (
+                    etarc_table_config_id,
                     ad_client_id,
                     ad_org_id,
                     isactive,
@@ -411,46 +446,27 @@ spec:
                     updated,
                     updatedby,
                     ad_table_id,
-                    record_id,
-                    record_revision,
-                    ad_user_id,
-                    event_time,
-                    processtype,
-                    process_id,
-                    action,
-                    ad_column_id,
-                    old_char,
-                    new_char
+                    ad_column_id
                 ) VALUES (
-                    '12345678901234567890123456789012', -- ad_audit_trail_id
-                    '0',       -- ad_client_id
-                    '0',       -- ad_org_id
-                    'Y',       -- isactive
-                    now(),     -- created
-                    '0',       -- createdby
-                    now(),     -- updated
-                    '0',       -- updatedby
-                    '1234567', -- ad_table_id
-                    '1000033', -- record_id
-                    1,         -- record_revision
-                    '0',       -- ad_user_id
-                    now(),     -- event_time
-                    'Manual',  -- processtype
-                    '0',       -- process_id
-                    'UPDATE',  -- action
-                    '7654321', -- ad_column_id
-                    'oldValue',-- old_char
-                    'newValue' -- new_char
+                    'abcdefabcdefabcdefabcdefabcdefab', -- etarc_table_config_id
+                    '0',                                -- ad_client_id
+                    '0',                                -- ad_org_id
+                    'Y',                                -- isactive
+                    now(),                              -- created
+                    '0',                                -- createdby
+                    now(),                              -- updated
+                    '0',                                -- updatedby
+                    'A1E2D02EE8154BD59FA6747C9E85A928', -- ad_table_id
+                    'F038FDD2AAEC47AAA752573384DF5DCB'  -- ad_column_id
                 );
-                EOF
                 """
                 sh """
                 # Selecting
-                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "SELECT * FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "SELECT * FROM etarc_table_config WHERE etarc_table_config_id = 'abcdefabcdefabcdefabcdefabcdefab';"
                 """
                 sh """
                 # Deleting
-                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "DELETE FROM ad_audit_trail WHERE ad_audit_trail_id = '12345678901234567890123456789012';"
+                psql -h localhost -U ${BBDD_USER} -d ${BBDD_SID} -c "DELETE FROM etarc_table_config WHERE etarc_table_config_id = 'abcdefabcdefabcdefabcdefabcdefab';"
             """
 
             echo '------------- Execution time -------------'

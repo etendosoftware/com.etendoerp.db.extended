@@ -7,9 +7,9 @@
 */
 
 group          = "com.etendoerp"
-version        = "1.8.0"
-description    = "Etendo Archiving"
-ext.artifact   = "archiving"
+version        = "1.0.0"
+description    = "Etendo DB Extended"
+ext.artifact   = "db.extended"
 ext.repository = "https://maven.pkg.github.com/etendosoftware/com.etendoerp.platform.extensions"
 
 configurations {
@@ -38,13 +38,18 @@ repositories {
         url "https://maven.pkg.github.com/etendosoftware/com.etendoerp.platform.extensions"
     }
     maven {
-        url "https://maven.pkg.github.com/etendosoftware/com.etendoerp.platform.extensions"
-    }
-    maven {
         url "https://repo.futit.cloud/repository/maven-public-releases"
     }
     maven {
         url "https://repo.futit.cloud/repository/maven-public-jars"
+    }
+}
+
+sourceSets {
+    main {
+        resources {
+            srcDirs("etendo-resources")
+        }
     }
 }
 
