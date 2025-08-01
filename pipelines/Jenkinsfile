@@ -15,6 +15,7 @@ pipeline {
     NEXUS_PASSWORD      = credentials('nexus-admin-passwd')
     GITHUB_USER         = 'etendobot'
     GITHUB_TOKEN        = credentials('github-read-package-token')
+    SONAR_TOKEN         = credentials('sonar-token-access')
 
     ACCESS_TOKEN        = credentials('access_token_github')
 
@@ -323,7 +324,7 @@ spec:
               """
               echo "---------------------- Getting SonarQube Report URL ----------------------"
               def branchName = URLEncoder.encode(GIT_BRANCH, 'UTF-8')
-              def projectUrl = "${SONAR_SERVER}/dashboard?id=${PROJECT_KEY}&branch=${branchName}"
+              def projectUrl = "${SONAR_SERVER}/dashboard?id=${sonarProjectKey}&branch=${branchName}"
               env.PROJECT_URL = "${projectUrl}"
               echo "Sonar Project URL: ${PROJECT_URL}"
               echo '-------------------------- SonarQube Analysis Completed --------------------------'
