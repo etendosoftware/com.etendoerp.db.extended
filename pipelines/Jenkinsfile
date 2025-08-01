@@ -35,9 +35,7 @@ pipeline {
 
     CONTEXT_BUILD       = 'Module Tests'
     STATUSCORE          = '1'
-
-    MODULE_PACKAGE  = 'com.etendoerp.db.extended'
-
+    
     COMMIT_INPROGRESS_STATUS = "pending"
     COMMIT_SUCCESS_STATUS    = "success"
     COMMIT_FAILED_STATUS     = "failure"
@@ -142,12 +140,13 @@ spec:
 
                   echo "-------------------------- Tomcat Configuration --------------------------"
 
-                  sh "wget -O apache-tomcat.tar.gz $TOMCAT_URL"
-                  sh "tar -xvf apache-tomcat.tar.gz -C $WORKSPACE"
+                  sh "wget -O apache-tomcat.tar.gz ${TOMCAT_URL}"
+                  sh "tar -xvf apache-tomcat.tar.gz -C ${WORKSPACE}"
 
                   env.TOMCAT_FOLDER = sh(script: "basename ${TOMCAT_URL} .tar.gz", returnStdout: true).trim()
-                                env.CATALINA_HOME = "${WORKSPACE}/${TOMCAT_FOLDER}"
-                                env.CATALINA_BASE = "${WORKSPACE}/${TOMCAT_FOLDER}"
+                  env.CATALINA_HOME = "${WORKSPACE}/${TOMCAT_FOLDER}"
+                  env.CATALINA_BASE = "${WORKSPACE}/${TOMCAT_FOLDER}"
+                  env.JACOCO_REPORT_EXISTS = FALSE
 
                   echo "-------------------------- Selecting the Classic Correct Branch for Repository Cloning --------------------------"
                   env.CLASSIC_BRANCH = env.MAIN_BRANCH
@@ -241,6 +240,13 @@ spec:
               ./gradlew test --tests "com.etendoerp.db.extended.*"
               ./gradlew jacocoRootReport
               """
+              if (fileExists("${CLASSIC_DIR}/build/reports/jacoco/jacocoRootReport/jacocoRootReport.xml")) {
+                echo '----> Jacoco report found'
+                env.JACOCO_REPORT_EXISTS = TRUE
+              } else {
+                echo '----> Jacoco report not found'
+              }
+              currentBuild.result = SUCCESS
               echo "---------------------- DB Extended Module Tests Successful ----------------------"
             } catch (Exception e) {
               echo "---------------------- DB Extended Module Tests Failed ----------------------"
@@ -248,22 +254,97 @@ spec:
               currentBuild.result = UNSTABLE
               unstable('DB Extended Module Tests Failed')
               env.STATUSTEST = "0"
+            } finally {
+              publishHTML([
+                allowMissing: true,
+                alwaysLinkToLastBuild: false,
+                keepAll: true,
+                reportDir: "${CLASSIC_DIR}/build/reports/tests/test",
+                reportFiles: '*.html',
+                reportName: 'DB EXTENDED MODULE TESTS REPORT',
+                reportTitles: ''
+              ])
             }
-            publishHTML([
-              allowMissing: false,
-              alwaysLinkToLastBuild: false,
-              keepAll: true,
-              reportDir: "${CLASSIC_DIR}/build/reports/tests/test",
-              reportFiles: '*.html',
-              reportName: 'DB EXTENDED MODULE TESTS REPORT',
-              reportTitles: ''
-            ])
           }
         }
       }
     }
 
-    stage ('Test DB Extended Module - Partitioning') {
+    stage('SonarQube Analysis') { // MARK: - SonarQube Analysis
+      when {
+          expression {
+              currentBuild.result == SUCCESS && env.JACOCO_REPORT_EXISTS == TRUE
+          }
+      }
+      steps {
+        container('compiler') {
+          script {
+            try {
+              sh "./pipelines/utils/build-update.sh ${REPOSITORY_NAME} ${COMMIT_INPROGRESS_STATUS} \"Running SonarQube Analysis\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
+              echo '-------------------------- Installing SonarQube Scanner --------------------------'
+              sh """
+                apt-get update && apt-get install -y wget unzip
+                wget https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SONAR_VERSION}-linux.zip
+                unzip sonar-scanner-cli-${SONAR_VERSION}-linux.zip
+                export PATH=\$PATH:\${WORKSPACE}/sonar-scanner-${SONAR_VERSION}-linux/bin
+              """
+              echo '-------------------------- Reading SonarQube Project Key from sonar-project.properties --------------------------'
+              def sonarPropertiesFile = "${CLASSIC_DIR}/modules/${REPOSITORY_NAME}/sonar-project.properties"
+              if (!fileExists(sonarPropertiesFile)) {
+                error("SonarQube properties file not found in ${sonarPropertiesFile}")
+              }
+              def sonarProjectKey = sh(script: "grep 'sonar.projectKey' ${sonarPropertiesFile} | cut -d '=' -f2", returnStdout: true).trim()
+              echo "SonarQube Project Key: ${sonarProjectKey}"
+
+              echo '-------------------------- Checking if module contains Java source files --------------------------'
+              def parsedRepositoryName = REPOSITORY_NAME.replace('.', '/')
+              def sonarSources = ""
+              if (fileExists("${CLASSIC_DIR}/modules/${REPOSITORY_NAME}/src/${parsedRepositoryName}")) {
+                echo '----> Java source files found in module'
+                sonarSources = "src/${parsedRepositoryName}"
+                echo "SonarQube Sources: ${sonarSources}"
+              }
+
+              env.WORKDIR_JACOCO = "${pwd()}/${CLASSIC_DIR}/build/reports/jacoco/jacocoRootReport/jacocoRootReport.xml"
+              def jacocoReportPathAttribute = "-Dsonar.java.coveragePlugin=jacoco -Dsonar.coverage.jacoco.xmlReportPaths=${env.WORKDIR_JACOCO}"
+              echo "Jacoco Report Path: ${env.WORKDIR_JACOCO}"
+
+              echo '-------------------------- Executing SonarQube Analysis --------------------------'
+              sh """
+                cd ${CLASSIC_DIR}/modules/${REPOSITORY_NAME}
+                ${WORKSPACE}/sonar-scanner-${SONAR_VERSION}-linux/bin/sonar-scanner -X \
+                  -Dsonar.projectKey=${sonarProjectKey} \
+                  -Dsonar.sources=${sonarSources} \
+                  -Dsonar.host.url=${SONAR_SERVER} \
+                  -Dsonar.login=${SONAR_TOKEN} \
+                  -Dsonar.branch.name=${GIT_BRANCH} \
+                  -Dsonar.projectVersion=${GIT_COMMIT} \
+                  ${jacocoReportPathAttribute}
+              """
+              echo "---------------------- Getting SonarQube Report URL ----------------------"
+              def branchName = URLEncoder.encode(GIT_BRANCH, 'UTF-8')
+              def projectUrl = "${SONAR_SERVER}/dashboard?id=${PROJECT_KEY}&branch=${branchName}"
+              env.PROJECT_URL = "${projectUrl}"
+              echo "Sonar Project URL: ${PROJECT_URL}"
+              echo '-------------------------- SonarQube Analysis Completed --------------------------'
+            } catch (Exception e) {
+              env.ERROR_MESSAGE = "SonarQube Analysis Failed"
+              echo "--------------- ${env.ERROR_MESSAGE} ---------------"
+              echo 'Exception occurred: ' + e.toString()
+              currentBuild.result = FAILED
+              error(env.ERROR_MESSAGE)
+            }
+          }
+        }
+      }
+    }
+
+    stage ('Test DB Extended Module - Partitioning') { // MARK: - Test DB Extended Module - Partitioning
+      when {
+        expression {
+          currentBuild.result == SUCCESS
+        }
+      }
       steps {
         container('compiler') {
           script {
@@ -500,18 +581,18 @@ spec:
     }
   }
 
-  post {
+  post { // MARK: - Post Actions
     success {
       container('compiler') {
         script {
-          sh "./pipelines/utils/build-update.sh ${MODULE_PACKAGE} ${COMMIT_SUCCESS_STATUS} \"Successful DB Extended Test\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
+          sh "./pipelines/utils/build-update.sh ${REPOSITORY_NAME} ${COMMIT_SUCCESS_STATUS} \"Successful DB Extended Test\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
         }
       }
     }
     failure {
       container('compiler') {
         script {
-          sh "./pipelines/utils/build-update.sh ${MODULE_PACKAGE} ${COMMIT_FAILED_STATUS} \"Build Failed\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
+          sh "./pipelines/utils/build-update.sh ${REPOSITORY_NAME} ${COMMIT_FAILED_STATUS} \"Build Failed\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
         }
       }
       mail to: EMAIL_ADDRESS,
@@ -537,7 +618,7 @@ spec:
               </p>
               <p>
                   The build has failed unexpectedly.<br />
-                  💡 This build was on the ${MODULE_PACKAGE} module.<br />
+                  💡 This build was on the ${REPOSITORY_NAME} module.<br />
                   To more information on the failing run visit:<br />
                   <a href="${env.BUILD_URL}">${env.BUILD_URL}</a>
               </p>
