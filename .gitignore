@@ -1,0 +1,8 @@
+/build/
+etendo.artifact.properties
+!build/classes/
+
+build/
+etendo.artifact.properties
+.venv
+
