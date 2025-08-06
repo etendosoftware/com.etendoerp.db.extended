@@ -203,8 +203,8 @@ spec:
                     """
 
                     echo "---------------------- Building Classic Environment ----------------------"
-                    sh './gradlew install'
-                    sh './gradlew update.database smartbuild'
+                    sh './gradlew install --info'
+                    sh './gradlew update.database smartbuild --info'
 
                     echo "---------------------- Classic Environment Successful ----------------------"
                     currentBuild.result = SUCCESS
@@ -397,7 +397,7 @@ spec:
             echo '------------- update.database - smartbuild -------------'
             dir(CLASSIC_DIR) {
               def startTime = System.currentTimeMillis()
-              sh './gradlew update.database -Dforce=yes smartbuild'
+              sh './gradlew update.database -Dforce=yes smartbuild --info'
               def endTime = System.currentTimeMillis()
               durationPart = (endTime - startTime) / 1000
             }
@@ -508,7 +508,7 @@ spec:
             echo '------------- update.database - smartbuild (after unpartition) -------------'
             dir(CLASSIC_DIR) {
               def startTime = System.currentTimeMillis()
-              sh './gradlew update.database -Dforce=yes smartbuild'
+              sh './gradlew update.database -Dforce=yes smartbuild --info'
               def endTime = System.currentTimeMillis()
               durationUnpart = (endTime - startTime) / 1000
             }
