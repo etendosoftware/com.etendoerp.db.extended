@@ -17,6 +17,7 @@
 
 package com.etendoerp.db.extended.buildvalidation;
 
+import org.apache.commons.lang3.StringUtils;
 import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
 import org.apache.logging.log4j.LogManager;
@@ -56,7 +57,6 @@ public class CreateExcludeFilter extends BuildValidation {
   private static final Logger logger = LogManager.getLogger();
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
-  public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   public static final String MODULES_JAR  = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
@@ -96,6 +96,7 @@ public class CreateExcludeFilter extends BuildValidation {
         // 2) Extract the PRIMARY KEY (PK) from the XML files of that base table
         List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
         String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
+        logger.info("Primary Key to exclude: '{}'", primaryKeyName);
         if (!isBlank(primaryKeyName)) {
           String primaryKeyUpper = primaryKeyName.toUpperCase();
           constraintsToExclude.add(primaryKeyUpper);
@@ -273,6 +274,9 @@ public class CreateExcludeFilter extends BuildValidation {
   public static String findPrimaryKey(List<File> xmlFiles) {
     try {
       for (File xml : xmlFiles) {
+        if (StringUtils.contains(xml.getAbsolutePath(), "modifiedTables")) {
+          continue;
+        }
         if (!xml.exists()) {
           logger.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
           return null;

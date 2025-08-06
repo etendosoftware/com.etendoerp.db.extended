@@ -228,6 +228,75 @@ def is_table_partitioned(conn, table_name, schema):
         print_message(f"Error checking if table {schema}.{table_name} is partitioned: {e}", "ERROR")
         return False
 
+def debug_table_status(conn, table_name, schema, step_description):
+    """Debug function to check table existence and properties during migration"""
+    try:
+        print_message(f"DEBUG [{step_description}] Checking table status for {schema}.{table_name}:", "DEBUG")
+        
+        # Check existence
+        exists = table_exists(conn, table_name, schema)
+        print_message(f"  - Table exists: {exists is not None} (in schema: {exists})", "DEBUG")
+        
+        if exists:
+            # Check if partitioned
+            is_part = is_table_partitioned(conn, table_name, schema)
+            print_message(f"  - Is partitioned: {is_part}", "DEBUG")
+            
+            # Get row count - use a separate connection/cursor to avoid affecting main transaction
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                        sql.Identifier(schema), sql.Identifier(table_name)
+                    ))
+                    row_count = cur.fetchone()[0]
+                    print_message(f"  - Row count: {row_count}", "DEBUG")
+            except Exception as e:
+                print_message(f"  - Row count: ERROR - {e}", "DEBUG")
+                # If there's an error, rollback to savepoint to avoid affecting main transaction
+                try:
+                    conn.rollback()
+                except:
+                    pass
+                
+            # Check table type from pg_class - simplified to avoid transaction issues
+            try:
+                with conn.cursor() as cur:
+                    cur.execute("""
+                        SELECT c.relkind
+                        FROM pg_class c 
+                        JOIN pg_namespace n ON n.oid = c.relnamespace 
+                        WHERE c.relname = %s AND n.nspname = %s
+                    """, (table_name, schema))
+                    result = cur.fetchone()
+                    if result:
+                        relkind = result[0]
+                        type_mapping = {
+                            'r': 'ordinary table',
+                            'p': 'partitioned table',
+                            'v': 'view',
+                            'i': 'index',
+                            'S': 'sequence'
+                        }
+                        table_type = type_mapping.get(relkind, f'other ({relkind})')
+                        print_message(f"  - Table type: {table_type} ({relkind})", "DEBUG")
+                    else:
+                        print_message(f"  - Table type: NOT FOUND in pg_class", "DEBUG")
+            except Exception as e:
+                print_message(f"  - Table type: ERROR - {e}", "DEBUG")
+                # If there's an error, rollback to avoid affecting main transaction
+                try:
+                    conn.rollback()
+                except:
+                    pass
+        
+    except Exception as e:
+        print_message(f"DEBUG [{step_description}] Error checking table status: {e}", "ERROR")
+        # If there's an error, rollback to avoid affecting main transaction
+        try:
+            conn.rollback()
+        except:
+            pass
+
 def object_exists(conn, schema, table, object_type, object_name):
     """
     object_type: 'columns' | 'tables' | 'views' ...
@@ -954,7 +1023,30 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         if not actual_schema:
             raise ValueError(f"Table '{table_to_partition_name}' does not exist in any accessible schema.")
 
+        print_message(f"DEBUG: Found table {table_to_partition_name} in schema: {actual_schema}", "DEBUG")
         print_message(f"Processing table {Style.BOLD}{actual_schema}.{table_to_partition_name}{Style.RESET} for partitioning by field '{Style.UNDERLINE}{partition_by_field}{Style.RESET}'.", "SUBHEADER")
+
+        # Debug: Check initial table status
+        debug_table_status(conn, table_to_partition_name, actual_schema, "Initial State")
+
+        # Verify connection is working and transaction state
+        try:
+            with conn.cursor() as test_cur:
+                test_cur.execute("SELECT 1")
+                result = test_cur.fetchone()
+                print_message(f"DEBUG: Database connection test successful: {result[0]}", "DEBUG")
+        except Exception as e:
+            print_message(f"ERROR: Database connection test failed: {e}", "ERROR")
+            print_message("Attempting to rollback and retry connection test...", "INFO")
+            try:
+                conn.rollback()
+                with conn.cursor() as test_cur:
+                    test_cur.execute("SELECT 1")
+                    result = test_cur.fetchone()
+                    print_message(f"DEBUG: Database connection test successful after rollback: {result[0]}", "DEBUG")
+            except Exception as e2:
+                print_message(f"ERROR: Database connection test failed even after rollback: {e2}", "ERROR")
+                raise
 
         if is_table_partitioned(conn, new_partitioned_table_name, actual_schema):
             print_message(f"Table {actual_schema}.{new_partitioned_table_name} is already a partitioned table. Skipping.", "INFO")
@@ -962,6 +1054,18 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
 
         # --- Step 0: Initial Validations and Info Gathering ---
         print_message(f"\n--- Validating and Preparing Original Table: {actual_schema}.{table_to_partition_name} ---", "SUBHEADER")
+        
+        # Get row count of original table
+        try:
+            with conn.cursor() as count_cur:
+                count_cur.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name)
+                ))
+                row_count = count_cur.fetchone()[0]
+                print_message(f"DEBUG: Original table has {row_count} rows", "DEBUG")
+        except Exception as e:
+            print_message(f"WARNING: Could not get row count from original table: {e}", "WARNING")
+        
         get_table_schema(conn, table_to_partition_name, actual_schema) # For debug/info
         validate_partition_field(conn, table_to_partition_name, actual_schema, partition_by_field) # Critical validation
 
@@ -1041,30 +1145,104 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
             print_message(f"\n[Step 5] Skipping PK drop as no original PK was found.", "STEP_INFO")
 
         print_message(f"\n[Step 6] Renaming {actual_schema}.{table_to_partition_name} to {actual_schema}.{tmp_table_name}...", "STEP")
+        
+        # Check if original table still exists before rename
+        original_exists = table_exists(conn, table_to_partition_name, actual_schema)
+        print_message(f"DEBUG: Original table {actual_schema}.{table_to_partition_name} exists: {original_exists}", "DEBUG")
+        
+        if not original_exists:
+            raise Exception(f"Original table {actual_schema}.{table_to_partition_name} no longer exists! Cannot proceed with rename.")
+        
         if table_exists(conn, tmp_table_name, actual_schema):
             # Safety: if temp table from a failed previous run exists, drop it in non-dry-run.
             if not dry_run:
                 print_message(f"Temporary table {actual_schema}.{tmp_table_name} already exists. Dropping it...", "WARNING")
                 conn.cursor().execute(sql.SQL("DROP TABLE IF EXISTS {}.{}").format(sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)))
+                print_message(f"DEBUG: Dropped existing temporary table {actual_schema}.{tmp_table_name}", "DEBUG")
             else:
                 print_message(f"[Dry Run] Temporary table {actual_schema}.{tmp_table_name} already exists. Would attempt to drop if not dry run.", "WARNING")
                 # In dry run, we can't proceed if it exists as rename would fail.
                 # raise Exception(f"[Dry Run Abort] Temp table {actual_schema}.{tmp_table_name} already exists. Cannot simulate rename.")
 
         stmt_rename = sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(tmp_table_name))
-        if dry_run: print_message(f"[Dry Run] Rename to temp: {stmt_rename.as_string(conn)}", "STEP_INFO")
-        else: conn.cursor().execute(stmt_rename); print_message(f"Renamed original table to {actual_schema}.{tmp_table_name}", "STEP_INFO")
+        print_message(f"DEBUG: About to execute rename SQL: {stmt_rename.as_string(conn)}", "DEBUG")
+        
+        if dry_run: 
+            print_message(f"[Dry Run] Rename to temp: {stmt_rename.as_string(conn)}", "STEP_INFO")
+        else: 
+            try:
+                conn.cursor().execute(stmt_rename)
+                print_message(f"SUCCESS: Renamed original table to {actual_schema}.{tmp_table_name}", "STEP_INFO")
+                
+                # Verify the rename was successful
+                tmp_exists = table_exists(conn, tmp_table_name, actual_schema)
+                original_still_exists = table_exists(conn, table_to_partition_name, actual_schema)
+                print_message(f"DEBUG: After rename - Temp table exists: {tmp_exists}, Original table exists: {original_still_exists}", "DEBUG")
+                
+                if not tmp_exists or original_still_exists:
+                    raise Exception(f"Rename verification failed! Temp exists: {tmp_exists}, Original still exists: {original_still_exists}")
+                
+                # Debug: Check table status after rename
+                debug_table_status(conn, tmp_table_name, actual_schema, "After Rename - Temp Table")
+                debug_table_status(conn, table_to_partition_name, actual_schema, "After Rename - Original Name")
+                    
+            except Exception as e:
+                print_message(f"ERROR: Failed to rename table: {e}", "ERROR")
+                raise
 
         print_message(f"\n--- Creating New Partitioned Table {actual_schema}.{new_partitioned_table_name} & Migrating Data ---", "SUBHEADER")
 
         print_message(f"\n[Step 7] Creating new partitioned table shell {actual_schema}.{new_partitioned_table_name}...", "STEP")
+        
+        # Verify temp table exists before creating partitioned table
+        temp_exists_before_create = table_exists(conn, tmp_table_name, actual_schema)
+        print_message(f"DEBUG: Temp table {actual_schema}.{tmp_table_name} exists before create: {temp_exists_before_create}", "DEBUG")
+        
+        if not temp_exists_before_create:
+            raise Exception(f"Temp table {actual_schema}.{tmp_table_name} does not exist! Cannot create partitioned table based on it.")
+        
+        # Check if new partitioned table name already exists (shouldn't after rename)
+        new_table_exists_before = table_exists(conn, new_partitioned_table_name, actual_schema)
+        print_message(f"DEBUG: New table {actual_schema}.{new_partitioned_table_name} exists before create: {new_table_exists_before}", "DEBUG")
+        
+        if new_table_exists_before:
+            raise Exception(f"New table {actual_schema}.{new_partitioned_table_name} already exists! This should not happen after rename.")
+        
         # Create the partitioned table shell (LIKE includes defaults, comments, storage options but NOT constraints/indexes)
         stmt_create_part_shell = sql.SQL("CREATE TABLE {}.{} (LIKE {}.{} INCLUDING DEFAULTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE ({})").format(
             sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name),
             sql.Identifier(actual_schema), sql.Identifier(tmp_table_name), # Likeness from temp table
             sql.Identifier(partition_by_field))
-        if dry_run: print_message(f"[Dry Run] Create partitioned shell: {stmt_create_part_shell.as_string(conn)}", "STEP_INFO")
-        else: conn.cursor().execute(stmt_create_part_shell); print_message(f"Created partitioned table shell {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
+        
+        print_message(f"DEBUG: About to execute CREATE TABLE SQL: {stmt_create_part_shell.as_string(conn)}", "DEBUG")
+        
+        if dry_run: 
+            print_message(f"[Dry Run] Create partitioned shell: {stmt_create_part_shell.as_string(conn)}", "STEP_INFO")
+        else: 
+            try:
+                conn.cursor().execute(stmt_create_part_shell)
+                print_message(f"SUCCESS: Created partitioned table shell {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
+                
+                # Verify the table was created successfully
+                new_table_exists_after = table_exists(conn, new_partitioned_table_name, actual_schema)
+                print_message(f"DEBUG: New partitioned table exists after create: {new_table_exists_after}", "DEBUG")
+                
+                if not new_table_exists_after:
+                    raise Exception(f"Partitioned table creation verification failed! Table {actual_schema}.{new_partitioned_table_name} does not exist after CREATE.")
+                
+                # Check if it's actually partitioned
+                is_partitioned = is_table_partitioned(conn, new_partitioned_table_name, actual_schema)
+                print_message(f"DEBUG: New table is partitioned: {is_partitioned}", "DEBUG")
+                
+                if not is_partitioned:
+                    raise Exception(f"Table {actual_schema}.{new_partitioned_table_name} was created but is not partitioned!")
+                
+                # Debug: Check new table status after creation
+                debug_table_status(conn, new_partitioned_table_name, actual_schema, "After Create - New Partitioned Table")
+                    
+            except Exception as e:
+                print_message(f"ERROR: Failed to create partitioned table: {e}", "ERROR")
+                raise
 
         print_message(f"\n[Step 9] Ensuring partitions schema '{partitions_schema_name}' exists...", "STEP")
         stmt_create_schema = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(partitions_schema_name))
@@ -1111,15 +1289,63 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
 
 
         print_message(f"\n[Step 12] Copying data from {actual_schema}.{tmp_table_name} to {actual_schema}.{new_partitioned_table_name}...", "STEP")
+        
+        # Before copying, verify both tables exist
+        temp_exists_before_copy = table_exists(conn, tmp_table_name, actual_schema)
+        new_exists_before_copy = table_exists(conn, new_partitioned_table_name, actual_schema)
+        print_message(f"DEBUG: Before copy - Temp table exists: {temp_exists_before_copy}, New table exists: {new_exists_before_copy}", "DEBUG")
+        
+        if not temp_exists_before_copy:
+            raise Exception(f"Temp table {actual_schema}.{tmp_table_name} does not exist before data copy!")
+        if not new_exists_before_copy:
+            raise Exception(f"New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before data copy!")
+        
+        # Get row count from temp table before copy
+        try:
+            with conn.cursor() as count_cur:
+                count_cur.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                    sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)
+                ))
+                temp_row_count = count_cur.fetchone()[0]
+                print_message(f"DEBUG: Temp table has {temp_row_count} rows to copy", "DEBUG")
+        except Exception as e:
+            print_message(f"WARNING: Could not get row count from temp table: {e}", "WARNING")
+            temp_row_count = "UNKNOWN"
+        
         # This will route data to appropriate partitions.
         stmt_copy_data = sql.SQL("INSERT INTO {}.{} SELECT * FROM {}.{}").format(
             sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name),
             sql.Identifier(actual_schema), sql.Identifier(tmp_table_name))
-        if dry_run: print_message(f"[Dry Run] Data copy: {stmt_copy_data.as_string(conn)}", "STEP_INFO")
+        
+        print_message(f"DEBUG: About to execute data copy SQL: {stmt_copy_data.as_string(conn)}", "DEBUG")
+        
+        if dry_run: 
+            print_message(f"[Dry Run] Data copy: {stmt_copy_data.as_string(conn)}", "STEP_INFO")
         else:
-            with conn.cursor() as cur:
-                cur.execute(stmt_copy_data)
-                print_message(f"Copied {cur.rowcount} rows from temp table to {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(stmt_copy_data)
+                    copied_rows = cur.rowcount
+                    print_message(f"SUCCESS: Copied {copied_rows} rows from temp table to {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
+                    
+                    # Verify copy was successful by checking row count in new table
+                    cur.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                        sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name)
+                    ))
+                    new_table_row_count = cur.fetchone()[0]
+                    print_message(f"DEBUG: New partitioned table now has {new_table_row_count} rows", "DEBUG")
+                    
+                    if temp_row_count != "UNKNOWN" and new_table_row_count != temp_row_count:
+                        print_message(f"WARNING: Row count mismatch! Temp: {temp_row_count}, New: {new_table_row_count}", "WARNING")
+                    elif temp_row_count != "UNKNOWN":
+                        print_message(f"DEBUG: Row count verification successful: {new_table_row_count} rows", "DEBUG")
+                    
+                    # Debug: Check table status after data copy
+                    debug_table_status(conn, new_partitioned_table_name, actual_schema, "After Data Copy - New Table")
+                    
+            except Exception as e:
+                print_message(f"ERROR: Failed to copy data: {e}", "ERROR")
+                raise
 
         print_message(f"\n--- Data migration to {actual_schema}.{new_partitioned_table_name} complete. ---", "SUCCESS")
 
@@ -1133,8 +1359,22 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
             for fk_info in dropped_on_table_fks_info: print_message(f"  - Original FK '{fk_info['name']}' (Def: {fk_info['definition']})", "INFO")
 
         if not dry_run:
-            print_message("\nCommitting main partitioning changes...", "DB_CONNECT")
+            # Final verification before commit
+            print_message("\n[Final Verification] Checking all tables before commit...", "STEP")
+            final_temp_exists = table_exists(conn, tmp_table_name, actual_schema)
+            final_new_exists = table_exists(conn, new_partitioned_table_name, actual_schema)
+            final_is_partitioned = is_table_partitioned(conn, new_partitioned_table_name, actual_schema)
+            
+            print_message(f"DEBUG: Final check - Temp exists: {final_temp_exists}, New exists: {final_new_exists}, Is partitioned: {final_is_partitioned}", "DEBUG")
+            
+            if not final_new_exists:
+                raise Exception(f"CRITICAL: New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before commit!")
+            if not final_is_partitioned:
+                raise Exception(f"CRITICAL: Table {actual_schema}.{new_partitioned_table_name} exists but is not partitioned before commit!")
+            
+            print_message("Committing main partitioning changes...", "DB_CONNECT")
             conn.commit()
+            print_message("SUCCESS: Transaction committed successfully", "SUCCESS")
         else:
             print_message("\n[Dry Run] Main partitioning changes would be committed here. Rolling back simulation.", "DB_CONNECT")
             conn.rollback()
