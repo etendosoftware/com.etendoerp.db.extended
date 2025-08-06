@@ -30,6 +30,16 @@ NUM_SCALE = 6
 DATETIME_PREC = 7
 UDT_NAME = 8
 
+# Constants for commonly used strings to avoid duplication
+PARTITIONS_SCHEMA_NAME = "partitions"
+ETARC_TMP_SUFFIX = "_etarc_tmp_old"
+COUNT_QUERY_TEMPLATE = "SELECT COUNT(*) FROM {}.{}"
+DEBUG_PREFIX = "DEBUG: "
+ERROR_PREFIX = "ERROR: "
+WARNING_PREFIX = "WARNING: "
+TABLE_NOT_FOUND_ERROR = "does not exist"
+ROLLBACK_ERROR_MSG = "Rollback error"
+
 # Variable global para controlar el uso de salida ANSI (colores/emojis)
 _use_ansi_output = True
 
@@ -224,7 +234,7 @@ def is_table_partitioned(conn, table_name, schema):
             cur.execute("SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = %s AND n.nspname = %s", (table_name, schema))
             result = cur.fetchone()
             return result[0] == 'p' if result else False # 'p' for partitioned table
-    except Exception as e:
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
         print_message(f"Error checking if table {schema}.{table_name} is partitioned: {e}", "ERROR")
         return False
 
@@ -250,12 +260,12 @@ def debug_table_status(conn, table_name, schema, step_description):
                     ))
                     row_count = cur.fetchone()[0]
                     print_message(f"  - Row count: {row_count}", "DEBUG")
-            except Exception as e:
+            except (psycopg2.Error, psycopg2.DatabaseError) as e:
                 print_message(f"  - Row count: ERROR - {e}", "DEBUG")
                 # If there's an error, rollback to savepoint to avoid affecting main transaction
                 try:
                     conn.rollback()
-                except:
+                except psycopg2.Error:
                     pass
                 
             # Check table type from pg_class - simplified to avoid transaction issues
@@ -281,20 +291,20 @@ def debug_table_status(conn, table_name, schema, step_description):
                         print_message(f"  - Table type: {table_type} ({relkind})", "DEBUG")
                     else:
                         print_message(f"  - Table type: NOT FOUND in pg_class", "DEBUG")
-            except Exception as e:
+            except (psycopg2.Error, psycopg2.DatabaseError) as e:
                 print_message(f"  - Table type: ERROR - {e}", "DEBUG")
                 # If there's an error, rollback to avoid affecting main transaction
                 try:
                     conn.rollback()
-                except:
+                except psycopg2.Error:
                     pass
         
-    except Exception as e:
+    except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
         print_message(f"DEBUG [{step_description}] Error checking table status: {e}", "ERROR")
         # If there's an error, rollback to avoid affecting main transaction
         try:
             conn.rollback()
-        except:
+        except psycopg2.Error:
             pass
 
 def object_exists(conn, schema, table, object_type, object_name):
@@ -1000,16 +1010,64 @@ def get_year_range(conn, table_name_for_range, schema_for_range, partition_by_fi
                 max_year = min_year
 
             return min_year, max_year
-    except Exception as e:
+    except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
         print_message(f"Error determining year range for {schema_for_range}.{table_name_for_range} (field {partition_by_field}): {e}. Using default range (current year).", "WARNING")
         current_year = datetime.now().year
         return current_year, current_year # Default to a single year partition for current year
 
+def validate_database_connection(conn):
+    """Validates the database connection and returns True if successful"""
+    try:
+        with conn.cursor() as test_cur:
+            test_cur.execute("SELECT 1")
+            result = test_cur.fetchone()
+            print_message(f"DEBUG: Database connection test successful: {result[0]}", "DEBUG")
+            return True
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"ERROR: Database connection test failed: {e}", "ERROR")
+        print_message("Attempting to rollback and retry connection test...", "INFO")
+        try:
+            conn.rollback()
+            with conn.cursor() as test_cur:
+                test_cur.execute("SELECT 1")
+                result = test_cur.fetchone()
+                print_message(f"DEBUG: Database connection test successful after rollback: {result[0]}", "DEBUG")
+                return True
+        except (psycopg2.Error, psycopg2.DatabaseError) as e2:
+            print_message(f"ERROR: Database connection test failed even after rollback: {e2}", "ERROR")
+            raise
+
+def validate_table_prerequisites(conn, table_to_partition_name, partition_by_field, actual_schema):
+    """Validates table exists and is ready for partitioning"""
+    # Get row count of original table
+    try:
+        with conn.cursor() as count_cur:
+            count_cur.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name)
+            ))
+            row_count = count_cur.fetchone()[0]
+            print_message(f"DEBUG: Original table has {row_count} rows", "DEBUG")
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"WARNING: Could not get row count from original table: {e}", "WARNING")
+    
+    get_table_schema(conn, table_to_partition_name, actual_schema) # For debug/info
+    validate_partition_field(conn, table_to_partition_name, actual_schema, partition_by_field) # Critical validation
+
+    pk_info = get_primary_key_info(conn, table_to_partition_name, actual_schema)
+    original_pk_name = pk_info['name']
+    original_pk_columns = pk_info['columns']
+    if original_pk_name: 
+        print_message(f"Original Primary Key found: Name='{original_pk_name}', Columns={original_pk_columns}", "INFO")
+    else: 
+        print_message(f"No Primary Key found on {actual_schema}.{table_to_partition_name}.", "WARNING")
+    
+    return pk_info
+
 # --- Main Execution Function ---
 def execute_partition_steps(conn, table_to_partition_name, partition_by_field, dry_run=False):
     new_partitioned_table_name = table_to_partition_name # The target partitioned table will have the same name
-    tmp_table_name = f"{table_to_partition_name}_etarc_tmp_old" # More unique temp table name
-    partitions_schema_name = "partitions" # Schema for individual partition tables
+    tmp_table_name = f"{table_to_partition_name}{ETARC_TMP_SUFFIX}" # More unique temp table name
+    partitions_schema_name = PARTITIONS_SCHEMA_NAME # Schema for individual partition tables
 
     dropped_referencing_fks_info = [] # FKs from other tables pointing to this one
     dropped_on_table_fks_info = []    # FKs defined on this table, pointing to others
@@ -1030,23 +1088,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         debug_table_status(conn, table_to_partition_name, actual_schema, "Initial State")
 
         # Verify connection is working and transaction state
-        try:
-            with conn.cursor() as test_cur:
-                test_cur.execute("SELECT 1")
-                result = test_cur.fetchone()
-                print_message(f"DEBUG: Database connection test successful: {result[0]}", "DEBUG")
-        except Exception as e:
-            print_message(f"ERROR: Database connection test failed: {e}", "ERROR")
-            print_message("Attempting to rollback and retry connection test...", "INFO")
-            try:
-                conn.rollback()
-                with conn.cursor() as test_cur:
-                    test_cur.execute("SELECT 1")
-                    result = test_cur.fetchone()
-                    print_message(f"DEBUG: Database connection test successful after rollback: {result[0]}", "DEBUG")
-            except Exception as e2:
-                print_message(f"ERROR: Database connection test failed even after rollback: {e2}", "ERROR")
-                raise
+        validate_database_connection(conn)
 
         if is_table_partitioned(conn, new_partitioned_table_name, actual_schema):
             print_message(f"Table {actual_schema}.{new_partitioned_table_name} is already a partitioned table. Skipping.", "INFO")
@@ -1055,25 +1097,9 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         # --- Step 0: Initial Validations and Info Gathering ---
         print_message(f"\n--- Validating and Preparing Original Table: {actual_schema}.{table_to_partition_name} ---", "SUBHEADER")
         
-        # Get row count of original table
-        try:
-            with conn.cursor() as count_cur:
-                count_cur.execute(sql.SQL("SELECT COUNT(*) FROM {}.{}").format(
-                    sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name)
-                ))
-                row_count = count_cur.fetchone()[0]
-                print_message(f"DEBUG: Original table has {row_count} rows", "DEBUG")
-        except Exception as e:
-            print_message(f"WARNING: Could not get row count from original table: {e}", "WARNING")
-        
-        get_table_schema(conn, table_to_partition_name, actual_schema) # For debug/info
-        validate_partition_field(conn, table_to_partition_name, actual_schema, partition_by_field) # Critical validation
-
-        pk_info = get_primary_key_info(conn, table_to_partition_name, actual_schema)
+        pk_info = validate_table_prerequisites(conn, table_to_partition_name, partition_by_field, actual_schema)
         original_pk_name = pk_info['name']
         original_pk_columns = pk_info['columns']
-        if original_pk_name: print_message(f"Original Primary Key found: Name='{original_pk_name}', Columns={original_pk_columns}", "INFO")
-        else: print_message(f"No Primary Key found on {actual_schema}.{table_to_partition_name}.", "WARNING")
 
 
         # --- Step 1.5: Process Related Tables (Critical - Moved Earlier) ---
@@ -1151,7 +1177,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         print_message(f"DEBUG: Original table {actual_schema}.{table_to_partition_name} exists: {original_exists}", "DEBUG")
         
         if not original_exists:
-            raise Exception(f"Original table {actual_schema}.{table_to_partition_name} no longer exists! Cannot proceed with rename.")
+            raise ValueError(f"Original table {actual_schema}.{table_to_partition_name} no longer exists! Cannot proceed with rename.")
         
         if table_exists(conn, tmp_table_name, actual_schema):
             # Safety: if temp table from a failed previous run exists, drop it in non-dry-run.
@@ -1180,13 +1206,13 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
                 print_message(f"DEBUG: After rename - Temp table exists: {tmp_exists}, Original table exists: {original_still_exists}", "DEBUG")
                 
                 if not tmp_exists or original_still_exists:
-                    raise Exception(f"Rename verification failed! Temp exists: {tmp_exists}, Original still exists: {original_still_exists}")
+                    raise ValueError(f"Rename verification failed! Temp exists: {tmp_exists}, Original still exists: {original_still_exists}")
                 
                 # Debug: Check table status after rename
                 debug_table_status(conn, tmp_table_name, actual_schema, "After Rename - Temp Table")
                 debug_table_status(conn, table_to_partition_name, actual_schema, "After Rename - Original Name")
                     
-            except Exception as e:
+            except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
                 print_message(f"ERROR: Failed to rename table: {e}", "ERROR")
                 raise
 
@@ -1199,14 +1225,14 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         print_message(f"DEBUG: Temp table {actual_schema}.{tmp_table_name} exists before create: {temp_exists_before_create}", "DEBUG")
         
         if not temp_exists_before_create:
-            raise Exception(f"Temp table {actual_schema}.{tmp_table_name} does not exist! Cannot create partitioned table based on it.")
+            raise ValueError(f"Temp table {actual_schema}.{tmp_table_name} does not exist! Cannot create partitioned table based on it.")
         
         # Check if new partitioned table name already exists (shouldn't after rename)
         new_table_exists_before = table_exists(conn, new_partitioned_table_name, actual_schema)
         print_message(f"DEBUG: New table {actual_schema}.{new_partitioned_table_name} exists before create: {new_table_exists_before}", "DEBUG")
         
         if new_table_exists_before:
-            raise Exception(f"New table {actual_schema}.{new_partitioned_table_name} already exists! This should not happen after rename.")
+            raise ValueError(f"New table {actual_schema}.{new_partitioned_table_name} already exists! This should not happen after rename.")
         
         # Create the partitioned table shell (LIKE includes defaults, comments, storage options but NOT constraints/indexes)
         stmt_create_part_shell = sql.SQL("CREATE TABLE {}.{} (LIKE {}.{} INCLUDING DEFAULTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE ({})").format(
@@ -1296,9 +1322,9 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         print_message(f"DEBUG: Before copy - Temp table exists: {temp_exists_before_copy}, New table exists: {new_exists_before_copy}", "DEBUG")
         
         if not temp_exists_before_copy:
-            raise Exception(f"Temp table {actual_schema}.{tmp_table_name} does not exist before data copy!")
+            raise ValueError(f"Temp table {actual_schema}.{tmp_table_name} does not exist before data copy!")
         if not new_exists_before_copy:
-            raise Exception(f"New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before data copy!")
+            raise ValueError(f"New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before data copy!")
         
         # Get row count from temp table before copy
         try:
@@ -1308,7 +1334,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
                 ))
                 temp_row_count = count_cur.fetchone()[0]
                 print_message(f"DEBUG: Temp table has {temp_row_count} rows to copy", "DEBUG")
-        except Exception as e:
+        except (psycopg2.Error, psycopg2.DatabaseError) as e:
             print_message(f"WARNING: Could not get row count from temp table: {e}", "WARNING")
             temp_row_count = "UNKNOWN"
         
@@ -1343,7 +1369,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
                     # Debug: Check table status after data copy
                     debug_table_status(conn, new_partitioned_table_name, actual_schema, "After Data Copy - New Table")
                     
-            except Exception as e:
+            except (psycopg2.Error, psycopg2.DatabaseError) as e:
                 print_message(f"ERROR: Failed to copy data: {e}", "ERROR")
                 raise
 
@@ -1368,9 +1394,9 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
             print_message(f"DEBUG: Final check - Temp exists: {final_temp_exists}, New exists: {final_new_exists}, Is partitioned: {final_is_partitioned}", "DEBUG")
             
             if not final_new_exists:
-                raise Exception(f"CRITICAL: New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before commit!")
+                raise ValueError(f"CRITICAL: New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before commit!")
             if not final_is_partitioned:
-                raise Exception(f"CRITICAL: Table {actual_schema}.{new_partitioned_table_name} exists but is not partitioned before commit!")
+                raise ValueError(f"CRITICAL: Table {actual_schema}.{new_partitioned_table_name} exists but is not partitioned before commit!")
             
             print_message("Committing main partitioning changes...", "DB_CONNECT")
             conn.commit()
@@ -1392,7 +1418,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
                 with conn.cursor() as cur:
                     cur.execute(stmt_drop_tmp_table)
                 print_message(f"Successfully dropped temporary table {actual_schema}.{tmp_table_name}.", "SUCCESS")
-            except Exception as e_drop_tmp:
+            except (psycopg2.Error, psycopg2.DatabaseError) as e_drop_tmp:
                 print_message(f"Error dropping temporary table {actual_schema}.{tmp_table_name}: {e_drop_tmp}", "ERROR")
                 print_message(f"  You may need to drop it manually: {stmt_drop_tmp_table.as_string(conn)}", "INFO")
         else:
@@ -1402,7 +1428,7 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
         print_message(f"\n{Style.SUCCESS} Full partitioning process for {actual_schema}.{new_partitioned_table_name} {'simulated.' if dry_run else 'completed successfully.'}", "SUCCESS")
         return related_tables_result # Return the result from Step 1.5 (should be success if we got here)
 
-    except Exception as e:
+    except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
         error_msg = f"ERROR during partitioning of {actual_schema if 'actual_schema' in locals() else ''}.{table_to_partition_name if 'table_to_partition_name' in locals() else 'UNKNOWN'}: {e}"
         print_message(error_msg, "ERROR")
         traceback.print_exc()
@@ -1410,7 +1436,8 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
             try:
                 if not dry_run: conn.rollback()
                 print_message("Rolled back transaction due to error.", "DB_CONNECT")
-            except Exception as rb_e: print_message(f"Rollback error: {rb_e}", "ERROR")
+            except (psycopg2.Error, psycopg2.DatabaseError) as rb_e: 
+                print_message(f"Rollback error: {rb_e}", "ERROR")
         # Return the related_tables_result if it exists and indicates failure, otherwise None for main partitioning error
         if related_tables_result and not related_tables_result.get('success', True):
             return related_tables_result # Propagate earlier failure
