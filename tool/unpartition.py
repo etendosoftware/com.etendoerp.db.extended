@@ -14,6 +14,7 @@ class Style:
     GREEN = '\033[92m'
     YELLOW = '\033[93m'
     BLUE = '\033[94m'
+    MAGENTA = '\033[95m'
     CYAN = '\033[96m'
     RESET = '\033[0m'
     BOLD = '\033[1m'
@@ -67,6 +68,7 @@ def print_unpartition_summary(summary):
             color = Style.RED
         print(f"{color}{emoji} {table:<25} → {status:<8} | {message}{Style.RESET}")
 
+    print_message("Execute './gradlew update.database -Dforce=yes' to complete the operation", "HEADER")
 
 # ─── Read Properties File ───
 
@@ -333,6 +335,7 @@ def main():
         success = False
 
     print_unpartition_summary(summary)
+
     return success
 
 if __name__ == "__main__":

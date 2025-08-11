@@ -25,14 +25,10 @@ import org.openbravo.modulescript.ModuleScript;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
 
-import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
-import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.sql.*;
 import java.util.ArrayList;
@@ -51,7 +47,6 @@ import com.etendoerp.db.extended.utils.TableDefinitionComparator;
 import com.etendoerp.db.extended.utils.DataMigrationService;
 import com.etendoerp.db.extended.utils.DatabaseOptimizerUtil;
 import com.etendoerp.db.extended.utils.TableAnalyzer;
-import com.etendoerp.db.extended.utils.PartitionManager;
 import com.etendoerp.db.extended.utils.ConstraintManagementUtils;
 import com.etendoerp.db.extended.utils.LoggingUtils;
 import com.etendoerp.db.extended.utils.XmlParsingUtils;
@@ -66,16 +61,13 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
   private static final String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
-  public static final String SEPARATOR = "=======================================================";
-  
+
   // Schema for backup tables to preserve data during structural changes
   private static final String BACKUP_SCHEMA = "etarc_backup";
   
   // Performance optimization constants
   private static final int DEFAULT_BATCH_SIZE = 50000;
   private static final int LARGE_TABLE_THRESHOLD = 1000000;
-  private static final int MEMORY_LIMIT_MB = 512;
-  private static final boolean ENABLE_PARALLEL_PROCESSING = true;
   
   // Constants for commonly used strings to avoid duplication
   private static final String TABLE_NAME_KEY = "tableName";
@@ -84,8 +76,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private static final String CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS %s";
   private static final String DROP_TABLE_CASCADE_SQL = "DROP TABLE IF EXISTS public.%s CASCADE";
   private static final String ALTER_TABLE_RENAME_SQL = "ALTER TABLE IF EXISTS public.%s RENAME TO %s";
-  private static final String MIGRATION_SUCCESS_MSG = "Successfully migrated {} rows from {} to {}";
-  private static final String PUBLIC_SCHEMA_PREFIX = "public.";
   private static final String VARCHAR_PREFIX = "VARCHAR(";
   private static final String VARCHAR_255 = "VARCHAR(255)";
 
@@ -94,7 +84,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private final DataMigrationService migrationService;
   private final DatabaseOptimizerUtil dbOptimizer;
   private final TableAnalyzer tableAnalyzer;
-  private final PartitionManager partitionManager;
   private final ConstraintManagementUtils constraintUtils;
   
   // Execution controls and metrics
@@ -106,7 +95,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     this.migrationService = new DataMigrationService();
     this.dbOptimizer = new DatabaseOptimizerUtil();
     this.tableAnalyzer = new TableAnalyzer();
-    this.partitionManager = new PartitionManager();
     this.constraintUtils = new ConstraintManagementUtils();
   }
 
@@ -214,8 +202,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
       
       String tableName = cfg.get(TABLE_NAME_KEY);
-      String partitionCol = cfg.get(COLUMN_NAME_KEY);
-      String pkCol = cfg.get(PK_COLUMN_NAME_KEY);
       
       // Check if table is currently partitioned
       boolean isCurrentlyPartitioned = tableAnalyzer.isTablePartitioned(cp, tableName);
@@ -383,7 +369,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           sql.append(constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath()));
         }
       }
-      
       // Post-processing optimizations for large tables
       if (isLargeTable) {
         if (!dryRun) {
@@ -782,14 +767,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     executeUpdate(cp, sql);
   }
 
-  private int safeExecuteUpdateWithRowCount(ConnectionProvider cp, String sql) throws Exception {
-    if (dryRun) {
-      log4j.info("[DRY-RUN] SQL (rowcount unknown): {}", sql);
-      return 0;
-    }
-    return executeUpdateWithRowCount(cp, sql);
-  }
-
   private void safeConstraintExecuteUpdate(ConnectionProvider cp, String sql) throws Exception {
     if (StringUtils.isBlank(sql)) return;
     if (dryRun) {
@@ -834,35 +811,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     return "true".equalsIgnoreCase(sys) || "1".equals(env) || "true".equalsIgnoreCase(env);
   }
 
-  /**
-   * Calculates optimal batch size for migration operations.
-   *
-   * @param totalRows the total number of rows to migrate
-   * @return the optimal batch size
-   */
-  private int calculateOptimalBatchSize(long totalRows) {
-    if (totalRows < 10000) {
-      return 1000;
-    } else if (totalRows < 100000) {
-      return 5000;
-    } else if (totalRows < 1000000) {
-      return 10000;
-    } else {
-      return DEFAULT_BATCH_SIZE;
-    }
-  }
-
-  /**
-   * Inner class to represent migration statistics
-   */
-  private static class DataMigrationStats {
-    public final long rowCount;
-    
-    public DataMigrationStats(long rowCount) {
-      this.rowCount = rowCount;
-    }
-  }
-
   // Basic per-table metrics holder
   private static class TableMetrics {
     final String tableName;
@@ -874,30 +822,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     boolean largeTable = false;
 
     TableMetrics(String tableName) { this.tableName = tableName; }
-  }
-
-  /**
-   * Handles errors during migration operations.
-   *
-   * @param cp the connection provider
-   * @param sourceReference the source table reference
-   * @param e the SQLException that occurred
-   * @throws Exception rethrows the exception after logging
-   */
-  private void handleMigrationError(ConnectionProvider cp, String sourceReference, SQLException e) throws Exception {
-    log4j.error("Migration error for source {}: {}", sourceReference, e.getMessage(), e);
-    throw new TableMigrationException("Migration failed for " + sourceReference, e);
-  }
-
-  /**
-   * Logs migration success message.
-   *
-   * @param tableName the table name
-   * @param rowCount the number of rows migrated
-   * @param sourceTable the source table
-   */
-  private void logMigrationSuccessMessage(String tableName, int rowCount, String sourceTable) {
-    LoggingUtils.logMigrationSuccessMessage(tableName, rowCount, sourceTable);
   }
 
   /**
@@ -929,102 +853,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Cleans up old backup tables that are older than 7 days.
-   * This prevents accumulation of unnecessary backup data.
-   * 
-   * @param cp the connection provider
-   * @throws Exception if cleanup fails
-   */
-  private void cleanupOldBackups(ConnectionProvider cp) throws Exception {
-    try {
-      log4j.info("Cleaning up old backup tables (older than 7 days)...");
-      
-      // Ensure backup schema and tracking table exist before attempting cleanup
-      ensureBackupSchemaAndTrackingTableExist(cp);
-      
-      // Find old backup tables
-      String findOldBackupsSql = String.format(
-          "SELECT backup_table FROM %s.backup_tracking " +
-          "WHERE backup_timestamp < CURRENT_TIMESTAMP - INTERVAL '7 days'",
-          BACKUP_SCHEMA
-      );
-      
-      List<String> oldBackups = new ArrayList<>();
-      try (PreparedStatement ps = cp.getPreparedStatement(findOldBackupsSql);
-           ResultSet rs = ps.executeQuery()) {
-        while (rs.next()) {
-          oldBackups.add(rs.getString("backup_table"));
-        }
-      }
-      
-      if (oldBackups.isEmpty()) {
-        log4j.info("No old backup tables found to clean up");
-        return;
-      }
-      
-      log4j.info("Found {} old backup tables to clean up", oldBackups.size());
-      
-      // Clean up each old backup
-      for (String backupTable : oldBackups) {
-        try {
-          executeUpdate(cp, String.format("DROP TABLE IF EXISTS %s.%s CASCADE", BACKUP_SCHEMA, backupTable));
-          log4j.info("Dropped old backup table: {}.{}", BACKUP_SCHEMA, backupTable);
-        } catch (Exception e) {
-          log4j.warn("Warning: Failed to drop old backup table {}.{}: {}", BACKUP_SCHEMA, backupTable, e.getMessage());
-        }
-      }
-      
-      // Clean up tracking records
-      String cleanupTrackingSql = String.format(
-          "DELETE FROM %s.backup_tracking " +
-          "WHERE backup_timestamp < CURRENT_TIMESTAMP - INTERVAL '7 days'",
-          BACKUP_SCHEMA
-      );
-      
-      try (PreparedStatement ps = cp.getPreparedStatement(cleanupTrackingSql)) {
-        int deletedRows = ps.executeUpdate();
-        log4j.info("Cleaned up {} old backup tracking records", deletedRows);
-      }
-      
-    } catch (Exception e) {
-      log4j.warn("Warning: Failed to cleanup old backups: {}", e.getMessage());
-      // Don't throw exception for cleanup failures
-    }
-  }
-
-  /**
-   * Ensures that the backup schema and tracking table exist.
-   * Creates them if they don't exist to avoid errors during cleanup operations.
-   * 
-   * @param cp the connection provider
-   * @throws Exception if schema or table creation fails
-   */
-  private void ensureBackupSchemaAndTrackingTableExist(ConnectionProvider cp) throws Exception {
-    try {
-      // Create backup schema if it doesn't exist
-  safeExecuteUpdate(cp, String.format(CREATE_SCHEMA_SQL, BACKUP_SCHEMA));
-      
-      // Create backup tracking table if it doesn't exist
-      String createBackupTrackingTable = String.format(
-          "CREATE TABLE IF NOT EXISTS %s.backup_tracking (" +
-          "original_table " + VARCHAR_255 + ", " +
-          "backup_table " + VARCHAR_255 + ", " +
-          "backup_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP" +
-          ")", BACKUP_SCHEMA
-      );
-      
-  safeExecuteUpdate(cp, createBackupTrackingTable);
-      log4j.debug("Ensured backup schema '{}' and tracking table exist", BACKUP_SCHEMA);
-      
-    } catch (Exception e) {
-      log4j.warn("Warning: Failed to ensure backup schema and tracking table exist: {}", e.getMessage());
-      // Don't throw exception - this is just preparation for cleanup
-    }
-  }
-
-
-
-  /**
    * Checks whether the given table is currently partitioned in the PostgreSQL database.
    *
    * @param cp the connection provider for accessing the database.
@@ -1041,34 +869,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
     }
   }
-
-  /**
-   * Retrieves the list of columns that make up the primary key of the given table.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param tableName the name of the table.
-   * @return a list of column names that are part of the primary key.
-   * @throws Exception if a database access error occurs.
-   */
-  private List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws Exception {
-    List<String> pkCols = new ArrayList<>();
-    String sql = "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
-            + "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
-            + "WHERE i.indrelid = to_regclass(?) AND i.indisprimary";
-    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-      ps.setString(1, tableName);
-      try (ResultSet rs = ps.executeQuery()) {
-        while (rs.next()) {
-          pkCols.add(rs.getString(1));
-        }
-      }
-    }
-    return pkCols;
-  }
-
-
-
-
 
   /**
    * Searches the provided list of XML table definition files for the "primaryKey"
@@ -1176,148 +976,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
         .collect(Collectors.toList());
   }
-
-  /**
-   * Builds a SQL script to drop and re-create primary key and foreign key
-   * constraints for the specified table, taking partitioning into account.
-   * <p>
-   * Steps performed:
-   * <ol>
-   * <li>Checks whether {@code tableName} is partitioned.</li>
-   * <li>Loads the table’s XML to determine the primary key name.</li>
-   * <li>Drops existing PK and re-adds it (with or without partition column).</li>
-   * <li>Iterates all table XML definition files to find any foreign keys referencing
-   * {@code tableName}, then drops and re-adds those FKs (partitioned if needed).</li>
-   * </ol>
-   *
-   * @param tableName      the name of the table to modify
-   * @param cp             the ConnectionProvider used to query catalog tables
-   * @param pkField        the column name of the primary key
-   * @param partitionField the partition key column (if table is partitioned)
-   * @return the complete DDL script as a single String
-   * @throws Exception if any database or XML processing error occurs
-   */
-  public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
-      String partitionField) throws Exception {
-    // Check if table is partitioned
-    String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";
-    PreparedStatement psCheck = cp.getPreparedStatement(checkPartition);
-    psCheck.setString(1, tableName);
-    boolean isPartitioned = psCheck.executeQuery().next();
-    psCheck.close();
-
-    // Get required information from the primary table's XML
-    List<File> tableXmlFiles = findTableXmlFiles(tableName);
-    if (tableXmlFiles.isEmpty()) {
-      throw new Exception("Entity XML file for " + tableName + " not found.");
-    }
-    String pkName = findPrimaryKey(tableXmlFiles);
-    if (pkName == null) {
-      throw new Exception("Primary Key for entity " + tableName + " not found in XML.");
-    }
-
-    // SQL templates for primary table
-    String dropPrimaryKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
-    String addPartitionedPrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
-    String addSimplePrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
-
-    // Build SQL script for primary table
-    StringBuilder sql = new StringBuilder();
-    sql.append(String.format(dropPrimaryKeySQL, tableName, pkName));
-
-    if (isPartitioned) {
-      sql.append(
-          String.format(addPartitionedPrimaryKeySQL, tableName, pkName, pkField, partitionField));
-    } else {
-      sql.append(String.format(addSimplePrimaryKeySQL, tableName, pkName, pkField));
-    }
-
-    // SQL templates for foreign key constraints
-    String dropForeignKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s;\n";
-    String addColumnSQL = "ALTER TABLE %s\n" + "ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
-    String updateColumnSQL = "UPDATE %s SET %s = F.%s FROM %s F "
-        + "WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
-    String addPartitionedForeignKeySQL = ALTER_TABLE
-        + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) "
-        + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE "
-        + "ON UPDATE CASCADE ON DELETE NO ACTION;\n";
-    String addSimpleForeignKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s FOREIGN KEY (%s) "
-        + "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE "
-        + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
-
-    // Iterate over all table XMLs to find references to our target table
-    for (File dir : collectTableDirs()) {
-      File[] xmlsInDir = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
-      if (xmlsInDir == null) {
-        continue;
-      }
-
-      for (File sourceXmlFile : xmlsInDir) {
-        try {
-          Document doc = getDocument(sourceXmlFile);
-          NodeList tableNodes = doc.getElementsByTagName("table");
-          if (tableNodes.getLength() != 1) {
-            continue;
-          }
-
-          Element tableEl = (Element) tableNodes.item(0);
-          // Skip views or the table we are already processing
-          if (Boolean.parseBoolean(tableEl.getAttribute("isView")) || tableName.equalsIgnoreCase(
-              tableEl.getAttribute("name"))) {
-            continue;
-          }
-
-          String relatedTableName = tableEl.getAttribute("name").toUpperCase();
-          NodeList fkList = tableEl.getElementsByTagName("foreign-key");
-
-          for (int i = 0; i < fkList.getLength(); i++) {
-            Element fkEl = (Element) fkList.item(i);
-            if (tableName.equalsIgnoreCase(fkEl.getAttribute("foreignTable"))) {
-              // This table has a foreign key to our target table
-              String foreignKey = fkEl.getAttribute("name");
-              NodeList refList = fkEl.getElementsByTagName("reference");
-              if (refList.getLength() == 0) {
-                continue;
-              }
-
-              // Assuming a single-column FK for this logic, like the original method
-              Element refEl = (Element) refList.item(0);
-              String relationColumn = refEl.getAttribute("local");
-
-              if (isBlank(foreignKey) || isBlank(relationColumn)) {
-                continue;
-              }
-
-              sql.append(String.format(dropForeignKeySQL, relatedTableName, foreignKey));
-
-              if (isPartitioned) {
-                String partitionColumn = "etarc_" + partitionField + "__" + foreignKey;
-                sql.append(String.format(addColumnSQL, relatedTableName, partitionColumn));
-                sql.append(String.format(updateColumnSQL, relatedTableName, partitionColumn,
-                    partitionField, tableName, pkField, relatedTableName, relationColumn,
-                    relatedTableName, partitionColumn));
-                sql.append(
-                    String.format(addPartitionedForeignKeySQL, relatedTableName, foreignKey,
-                        relationColumn, partitionColumn, tableName, pkField, partitionField));
-              } else {
-                sql.append(String.format(addSimpleForeignKeySQL, relatedTableName, foreignKey,
-                    relationColumn, tableName, pkField));
-              }
-            }
-          }
-        } catch (Exception e) {
-          log4j.error("Error processing XML file: {}", sourceXmlFile.getAbsolutePath(), e);
-        }
-      }
-    }
-    return sql.toString();
-  }
-
-
-
-
-
-
 
   /**
    * Creates a new partitioned table with updated structure based on the temporary table
@@ -1615,152 +1273,4 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
     }
   }
-
-  /**
-   * Migrates all data from the temporary table to the new partitioned table.
-   *
-   * @param cp the connection provider
-   * @param sourceTableName the source table name (can include schema)
-   * @param targetTableName the target table name
-   * @return the number of rows migrated
-   * @throws Exception if data migration fails
-   */
-
-
-
-
-  /**
-   * Migrates large datasets using batch processing and optimized settings.
-   */
-  private long migrateLargeDataset(ConnectionProvider cp, String sourceReference, String targetTableName, 
-                                 String columnList, DataMigrationStats stats) throws Exception {
-    log4j.info("Using optimized migration strategy for large dataset ({} rows)", stats.rowCount);
-    
-    Connection conn = cp.getConnection();
-    boolean originalAutoCommit = conn.getAutoCommit();
-    
-    try {
-      // Configure connection for large operations
-      conn.setAutoCommit(false);
-      
-      // Optimize PostgreSQL settings for bulk operations
-      executeUpdate(cp, "SET work_mem = '256MB'");
-      executeUpdate(cp, "SET maintenance_work_mem = '512MB'");
-      executeUpdate(cp, "SET synchronous_commit = OFF");
-      executeUpdate(cp, "SET wal_buffers = '16MB'");
-      
-      int batchSize = calculateOptimalBatchSize(stats.rowCount);
-      long totalMigrated = 0;
-      long offset = 0;
-      
-      log4j.info("Starting batch migration with batch size: {}", batchSize);
-      
-      while (true) {
-        String batchSql = String.format(
-            "INSERT INTO public.%s (%s) SELECT %s FROM %s ORDER BY dateacct LIMIT %d OFFSET %d", 
-            targetTableName, columnList, columnList, sourceReference, batchSize, offset
-        );
-        
-  int rowsMigrated = safeExecuteUpdateWithRowCount(cp, batchSql);
-        
-        if (rowsMigrated == 0) {
-          break; // No more rows to migrate
-        }
-        
-        totalMigrated += rowsMigrated;
-        offset += batchSize;
-        
-        // Commit batch and log progress
-        conn.commit();
-        
-        if (totalMigrated % (batchSize * 5) == 0) {
-          log4j.info("Migration progress: {} rows migrated to {}", totalMigrated, targetTableName);
-        }
-        
-        // Break if we migrated fewer rows than batch size (last batch)
-        if (rowsMigrated < batchSize) {
-          break;
-        }
-      }
-      
-      // Restore connection settings
-  safeExecuteUpdate(cp, "RESET work_mem");
-  safeExecuteUpdate(cp, "RESET maintenance_work_mem");
-  safeExecuteUpdate(cp, "RESET synchronous_commit");
-  safeExecuteUpdate(cp, "RESET wal_buffers");
-      
-      logMigrationSuccessMessage(targetTableName, (int)totalMigrated, sourceReference);
-      return totalMigrated;
-      
-    } catch (SQLException e) {
-      log4j.error("Large dataset migration failed. Error: {}", e.getMessage());
-      handleMigrationError(cp, sourceReference, e);
-      throw e;
-    } finally {
-      conn.setAutoCommit(originalAutoCommit);
-    }
-  }
-
-
-
-
-
-
-
-  /**
-   * Gets the list of columns that exist in both source and destination tables.
-   * 
-   * @param cp the connection provider
-   * @param sourceTableName the source table (can include schema)
-   * @param destinationTableName the destination table name
-   * @return list of matching column names
-   * @throws Exception if query fails
-   */
-  private List<String> getMatchingColumns(ConnectionProvider cp, String sourceTableName, 
-                                        String destinationTableName) throws Exception {
-    // Parse source table name to handle schema
-    String sourceSchema = "public";
-    String sourceTable = sourceTableName;
-    if (sourceTableName.contains(".")) {
-      String[] parts = sourceTableName.split("\\.");
-      sourceSchema = parts[0];
-      sourceTable = parts[1];
-    }
-    
-    String sql = "SELECT c1.column_name " +
-                "FROM information_schema.columns c1 " +
-                "INNER JOIN information_schema.columns c2 " +
-                "  ON c1.column_name = c2.column_name " +
-                "WHERE c1.table_schema = ? AND c1.table_name = ? " +
-                "  AND c2.table_schema = 'public' AND c2.table_name = ? " +
-                "ORDER BY c1.ordinal_position";
-    
-    List<String> matchingColumns = new ArrayList<>();
-    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-      ps.setString(1, sourceSchema);
-      ps.setString(2, sourceTable.toLowerCase());
-      ps.setString(3, destinationTableName.toLowerCase());
-      
-      try (ResultSet rs = ps.executeQuery()) {
-        while (rs.next()) {
-          matchingColumns.add(rs.getString("column_name"));
-        }
-      }
-    }
-    
-    log4j.info("Found {} matching columns between {} and {}", 
-              matchingColumns.size(), sourceTableName, destinationTableName);
-    
-    return matchingColumns;
-  }
-
-
-
-
-
-
-
-
-
-
 }

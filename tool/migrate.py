@@ -238,6 +238,37 @@ def is_table_partitioned(conn, table_name, schema):
         print_message(f"Error checking if table {schema}.{table_name} is partitioned: {e}", "ERROR")
         return False
 
+def is_partition_child(conn, schema, table):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT 1
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_inherits i ON i.inhrelid = c.oid
+            WHERE n.nspname = %s AND c.relname = %s
+            LIMIT 1
+        """, (schema, table))
+        return cur.fetchone() is not None
+
+def get_partition_parent(conn, schema, table):
+    """
+    Si (schema.table) es una partición hija, devuelve (schema_padre, tabla_padre).
+    Si no, devuelve (schema, table).
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT pn.nspname, p.relname
+            FROM pg_class c
+            JOIN pg_namespace cn ON cn.oid = c.relnamespace
+            JOIN pg_inherits i ON i.inhrelid = c.oid
+            JOIN pg_class p ON p.oid = i.inhparent
+            JOIN pg_namespace pn ON pn.oid = p.relnamespace
+            WHERE cn.nspname = %s AND c.relname = %s
+            LIMIT 1
+        """, (schema, table))
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else (schema, table)
+
 def debug_table_status(conn, table_name, schema, step_description):
     """Debug function to check table existence and properties during migration"""
     try:
@@ -635,72 +666,70 @@ def validate_partition_field_population(conn, related_table_info, partition_fiel
 def populate_partition_field_in_related_table(conn, source_table, source_schema, related_table_info, partition_field, dry_run=False):
     """
     Populate the new 'etarc_PARTITIONFIELD' in related tables with data from source table's PARTITIONFIELD.
+    Returns:
+        int: número de filas afectadas (o estimadas en dry_run).
+    Raises:
+        psycopg2.Error / Exception en caso de error (el caller ya las maneja).
     """
+    table_schema = related_table_info['table_schema']
+    table_name   = related_table_info['table_name']
+    new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
+    fk_columns        = related_table_info['fk_columns']
+    referenced_columns = related_table_info['referenced_columns']
+
+    # (opcional) blindaje: si vino una hija, operar sobre el padre
+    if is_partition_child(conn, table_schema, table_name):
+        p_schema, p_table = get_partition_parent(conn, table_schema, table_name)
+        print_message(f"{table_schema}.{table_name} es una partición. Redirigiendo UPDATE al padre {p_schema}.{p_table}...", "INFO")
+        table_schema, table_name = p_schema, p_table
+
+    print_message(f"Populating '{new_field_name}' in {table_schema}.{table_name} from {source_schema}.{source_table}.{partition_field}...", "DEBUG")
+
+    # JOIN r (related) vs s (source)
+    join_conditions = [
+        sql.SQL("r.{} = s.{}").format(sql.Identifier(fk), sql.Identifier(ref))
+        for fk, ref in zip(fk_columns, referenced_columns)
+    ]
+    join_condition_sql = sql.SQL(" AND ").join(join_conditions)
+
+    triggers_disabled = False
+    if not dry_run:
+        with conn.cursor() as cur:
+            cur.execute("SELECT ad_disable_triggers()")
+        triggers_disabled = True
+
     try:
-        table_schema = related_table_info['table_schema']
-        table_name = related_table_info['table_name']
-        new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
-        fk_columns = related_table_info['fk_columns'] # Columns in related_table forming the FK
-        referenced_columns = related_table_info['referenced_columns'] # Columns in source_table referenced by FK
-
-        print_message(f"Populating '{new_field_name}' in {table_schema}.{table_name} from {source_schema}.{source_table}.{partition_field}...", "DEBUG")
-
-        # Disable trigger temporarily calling database funciont ad_disable_trigger
-        if not dry_run:
-            disable_trigger_stmt = sql.SQL("SELECT ad_disable_triggers()").format(
-                sql.Identifier(table_schema),
-                sql.Identifier(table_name)
-            )
-            with conn.cursor() as cur:
-                cur.execute(disable_trigger_stmt)
-                print_message(f"  {Style.INFO} Temporarily disabled triggers for {table_schema}.{table_name}.", "STEP_INFO")
-        # Build the JOIN conditions for the UPDATE statement
-        # r (related_table) JOIN s (source_table)
-        join_conditions = []
-        for fk_col, ref_col in zip(fk_columns, referenced_columns):
-            join_conditions.append(
-                sql.SQL("r.{} = s.{}").format(
-                    sql.Identifier(fk_col), # from related_table
-                    sql.Identifier(ref_col)  # from source_table
-                )
-            )
-        join_condition_sql = sql.SQL(" AND ").join(join_conditions)
-
-        # Build UPDATE statement
-        # UPDATE related_table r SET etarc_partition_field = s.partition_field FROM source_table s WHERE r.fk_col = s.pk_col;
         update_stmt = sql.SQL("""
-            UPDATE {related_schema}.{related_table} AS r
-            SET {new_partition_field_ident} = s.{source_partition_field_ident}
-            FROM {source_schema_ident}.{source_table_ident} AS s
-            WHERE {join_conditions} 
-            AND r.{new_partition_field_ident} IS DISTINCT FROM s.{source_partition_field_ident}
+            UPDATE {r_schema}.{r_table} AS r
+               SET {new_col} = s.{src_col}
+              FROM {s_schema}.{s_table} AS s
+             WHERE {join_cond}
+               AND r.{new_col} IS DISTINCT FROM s.{src_col}
         """).format(
-            related_schema=sql.Identifier(table_schema),
-            related_table=sql.Identifier(table_name),
-            new_partition_field_ident=sql.Identifier(new_field_name),
-            source_partition_field_ident=sql.Identifier(partition_field),
-            source_schema_ident=sql.Identifier(source_schema),
-            source_table_ident=sql.Identifier(source_table),
-            join_conditions=join_condition_sql
+            r_schema=sql.Identifier(table_schema),
+            r_table=sql.Identifier(table_name),
+            new_col=sql.Identifier(new_field_name),
+            src_col=sql.Identifier(partition_field),
+            s_schema=sql.Identifier(source_schema),
+            s_table=sql.Identifier(source_table),
+            join_cond=join_condition_sql
         )
-        # Added "IS DISTINCT FROM" to avoid updating rows that already have the correct value, reducing WAL.
 
         if dry_run:
             print_message(f"[Dry Run] Would execute population: {update_stmt.as_string(conn)}", "STEP_INFO")
-            # Simulate count for dry run (approximate, as it doesn't consider IS DISTINCT FROM easily here)
             count_stmt = sql.SQL("""
                 SELECT COUNT(1)
-                FROM {related_schema}.{related_table} AS r
-                JOIN {source_schema_ident}.{source_table_ident} AS s ON {join_conditions}
-                WHERE r.{new_partition_field_ident} IS NULL OR r.{new_partition_field_ident} != s.{source_partition_field_ident} 
+                  FROM {r_schema}.{r_table} AS r
+                  JOIN {s_schema}.{s_table} AS s ON {join_cond}
+                 WHERE NOT (r.{new_col} IS NOT DISTINCT FROM s.{src_col})
             """).format(
-                related_schema=sql.Identifier(table_schema),
-                related_table=sql.Identifier(table_name),
-                source_schema_ident=sql.Identifier(source_schema),
-                source_table_ident=sql.Identifier(source_table),
-                join_conditions=join_condition_sql,
-                new_partition_field_ident=sql.Identifier(new_field_name),
-                source_partition_field_ident=sql.Identifier(partition_field)
+                r_schema=sql.Identifier(table_schema),
+                r_table=sql.Identifier(table_name),
+                s_schema=sql.Identifier(source_schema),
+                s_table=sql.Identifier(source_table),
+                join_cond=join_condition_sql,
+                new_col=sql.Identifier(new_field_name),
+                src_col=sql.Identifier(partition_field)
             )
             with conn.cursor() as cur:
                 cur.execute(count_stmt)
@@ -712,19 +741,12 @@ def populate_partition_field_in_related_table(conn, source_table, source_schema,
                 cur.execute(update_stmt)
                 updated_count = cur.rowcount
             print_message(f"  {Style.SUCCESS} Populated/Updated {updated_count} record(s) in {table_schema}.{table_name}.{new_field_name}.", "STEP_INFO")
-            enable_trigger_stmt = sql.SQL("SELECT ad_enable_triggers()")
-            with conn.cursor() as cur:
-                cur.execute(enable_trigger_stmt)
-                print_message(f"  {Style.INFO} Re-enabled triggers for {table_schema}.{table_name}.", "STEP_INFO")
             return updated_count
-        
 
-    except psycopg2.Error as db_err:
-        print_message(f"Database error populating field in {table_schema}.{table_name}: {db_err}", "ERROR")
-        return -1 # Indicate error
-    except Exception as e:
-        print_message(f"Error populating field in {table_schema}.{table_name}: {e}", "ERROR")
-        return -1 # Indicate error
+    finally:
+        if triggers_disabled:
+            with conn.cursor() as cur:
+                cur.execute("SELECT ad_enable_triggers()")
 
 def add_partition_field_to_related_table(conn, related_table_info, partition_field, field_type_info, dry_run=False):
     """
@@ -736,11 +758,15 @@ def add_partition_field_to_related_table(conn, related_table_info, partition_fie
         new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
         print_message(f"Ensuring field '{new_field_name}' in {table_schema}.{table_name}...", "DEBUG")
 
+        if is_partition_child(conn, table_schema, table_name):
+            p_schema, p_table = get_partition_parent(conn, table_schema, table_name)
+            print_message(f"{table_schema}.{table_name} es una partición. Redirigiendo alter al padre {p_schema}.{p_table}...", "INFO")
+            table_schema, table_name = p_schema, p_table
+
         # Check if field already exists
         with conn.cursor() as cur:
             if column_exists(conn, table_schema, table_name, new_field_name):
                 print_message(f"Field '{new_field_name}' already exists in {table_schema}.{table_name}. Verifying type...", "INFO")
-                new_field_name += "_1"
                 # Optional: Add type verification here if needed, though get_partition_field_type should be robust.
                 # For now, assume if it exists, it's likely from a previous run and hopefully correct.
                 return True # Field exists, proceed
@@ -845,31 +871,26 @@ def get_partition_field_type(conn, table_name, schema, field_name):
         raise
 
 def get_related_tables(conn, table_name, schema):
-    """
-    Discover all tables that have foreign key relationships pointing TO the source table.
-    (i.e., source_table is the REFERENCED table).
-    """
     related_tables = []
+    seen = set()
     try:
         print_message(f"Discovering tables with FKs referencing {schema}.{table_name}...", "DEBUG")
         with conn.cursor() as cur:
-            # Query to find tables (referencing_table) that have FKs pointing to the given table_name (referenced_table)
             query = """
-                SELECT 
+                SELECT
                     tc.table_schema AS referencing_table_schema,
-                    tc.table_name AS referencing_table_name,
+                    tc.table_name   AS referencing_table_name,
                     tc.constraint_name,
                     ARRAY_AGG(kcu.column_name::TEXT ORDER BY kcu.ordinal_position) AS fk_columns_in_referencing_table,
-                    ARRAY_AGG(ccu.column_name::TEXT) AS referenced_columns_in_source_table 
-                        -- ccu.column_name should be from the primary/unique key of the source_table
-                FROM information_schema.table_constraints AS tc 
-                JOIN information_schema.key_column_usage AS kcu 
+                    ARRAY_AGG(ccu.column_name::TEXT) AS referenced_columns_in_source_table
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
                     ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-                JOIN information_schema.constraint_column_usage AS ccu 
+                JOIN information_schema.constraint_column_usage AS ccu
                     ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.constraint_schema
                 WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND ccu.table_schema = %s  -- Schema of the referenced (source) table
-                  AND ccu.table_name = %s    -- Name of the referenced (source) table
+                  AND ccu.table_schema = %s
+                  AND ccu.table_name  = %s
                 GROUP BY tc.table_schema, tc.table_name, tc.constraint_name
                 ORDER BY tc.table_schema, tc.table_name;
             """
@@ -877,16 +898,24 @@ def get_related_tables(conn, table_name, schema):
             results = cur.fetchall()
 
             for row in results:
+                child_schema, child_table = row[0], row[1]
+                parent_schema, parent_table = get_partition_parent(conn, child_schema, child_table)
+
+                dedup_key = (parent_schema, parent_table, row[2])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
                 related_table_info = {
-                    'table_schema': row[0],       # Schema of the table that has the FK
-                    'table_name': row[1],         # Name of the table that has the FK
-                    'constraint_name': row[2],    # Name of the FK constraint
-                    'fk_columns': list(row[3]),   # Columns in the related_table that form the FK
-                    'referenced_columns': list(row[4]) # Columns in the source_table that are referenced
+                    'table_schema': parent_schema,
+                    'table_name': parent_table,
+                    'constraint_name': row[2],
+                    'fk_columns': list(row[3]),
+                    'referenced_columns': list(row[4])
                 }
                 related_tables.append(related_table_info)
                 print_message(
-                    f"  Found related: {row[0]}.{row[1]} via FK '{row[2]}' "
+                    f"  Found related: {parent_schema}.{parent_table} (from {child_schema}.{child_table}) via FK '{row[2]}' "
                     f"({list(row[3])} -> {schema}.{table_name}{list(row[4])})",
                     "DEBUG"
                 )
@@ -1015,14 +1044,14 @@ def get_year_range(conn, table_name_for_range, schema_for_range, partition_by_fi
         current_year = datetime.now().year
         return current_year, current_year # Default to a single year partition for current year
 
-def validate_database_connection(conn):
-    """Validates the database connection and returns True if successful"""
+def validate_database_connection(conn) -> None:
+    """Valida la conexión. Lanza si no puede ejecutar SELECT 1 ni siquiera luego de rollback."""
     try:
         with conn.cursor() as test_cur:
             test_cur.execute("SELECT 1")
             result = test_cur.fetchone()
             print_message(f"DEBUG: Database connection test successful: {result[0]}", "DEBUG")
-            return True
+            # No return: éxito silencioso
     except (psycopg2.Error, psycopg2.DatabaseError) as e:
         print_message(f"ERROR: Database connection test failed: {e}", "ERROR")
         print_message("Attempting to rollback and retry connection test...", "INFO")
@@ -1032,10 +1061,10 @@ def validate_database_connection(conn):
                 test_cur.execute("SELECT 1")
                 result = test_cur.fetchone()
                 print_message(f"DEBUG: Database connection test successful after rollback: {result[0]}", "DEBUG")
-                return True
+                # No return: éxito tras retry
         except (psycopg2.Error, psycopg2.DatabaseError) as e2:
             print_message(f"ERROR: Database connection test failed even after rollback: {e2}", "ERROR")
-            raise
+            raise  # Propaga el error para que el caller lo maneje
 
 def validate_table_prerequisites(conn, table_to_partition_name, partition_by_field, actual_schema):
     """Validates table exists and is ready for partitioning"""
@@ -1414,16 +1443,24 @@ def execute_partition_steps(conn, table_to_partition_name, partition_by_field, d
                 sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)
             )
             try:
-                # Dropping table often needs to be outside transaction or in its own.
                 with conn.cursor() as cur:
                     cur.execute(stmt_drop_tmp_table)
-                print_message(f"Successfully dropped temporary table {actual_schema}.{tmp_table_name}.", "SUCCESS")
+                conn.commit()
+
+                if table_exists(conn, tmp_table_name, actual_schema):
+                    print_message(
+                        f"Warning: {actual_schema}.{tmp_table_name} still appears to exist after DROP+COMMIT. "
+                        "Check schema/search_path or concurrent sessions.",
+                        "WARNING"
+                    )
+                else:
+                    print_message(f"Successfully dropped temporary table {actual_schema}.{tmp_table_name}.", "SUCCESS")
             except (psycopg2.Error, psycopg2.DatabaseError) as e_drop_tmp:
+                conn.rollback()
                 print_message(f"Error dropping temporary table {actual_schema}.{tmp_table_name}: {e_drop_tmp}", "ERROR")
                 print_message(f"  You may need to drop it manually: {stmt_drop_tmp_table.as_string(conn)}", "INFO")
         else:
             print_message(f"\n[Step 15] [Dry Run] Would drop temporary table {actual_schema}.{tmp_table_name}.", "STEP_INFO")
-
 
         print_message(f"\n{Style.SUCCESS} Full partitioning process for {actual_schema}.{new_partitioned_table_name} {'simulated.' if dry_run else 'completed successfully.'}", "SUCCESS")
         return related_tables_result # Return the result from Step 1.5 (should be success if we got here)
@@ -1587,6 +1624,7 @@ def main_flow(dry_run=False):
     finally:
         print_final_summary(migration_summary)
         close_connection_if_open(locals().get('conn'))
+        print_message("Execute './gradlew update.database -Dforce=yes' to complete the operation", "IMPORTANT")
 
     return all(entry['status'] == 'SUCCESS' for entry in migration_summary)
 
