@@ -38,7 +38,6 @@ public class ConstraintManagementUtils {
       log4j.info("No constraints to handle for the provided configurations.");
       return;
     }
-
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
       ps.executeUpdate();
     }

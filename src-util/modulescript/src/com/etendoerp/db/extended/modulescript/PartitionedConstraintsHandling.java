@@ -343,8 +343,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         if (dryRun) {
           log4j.info("[DRY-RUN] Would restore partitioning for table {} (partitionCol={}, pkCol={})", tableName, partitionCol, pkCol);
         } else {
-          long migrated = restorePartitioningWithData(cp, tableName, partitionCol, pkCol);
-          tm.migratedRows = migrated;
+          tm.migratedRows = restorePartitioningWithData(cp, tableName, partitionCol, pkCol);
         }
       }
       // If the table is partitioned AND has structural changes, perform full migration
@@ -354,8 +353,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         if (dryRun) {
           log4j.info("[DRY-RUN] Would perform full migration for table {} (partitionCol={}, pkCol={})", tableName, partitionCol, pkCol);
         } else {
-          long migrated = performPartitionedTableMigration(cp, tableName, partitionCol, pkCol);
-          tm.migratedRows = migrated;
+          tm.migratedRows = performPartitionedTableMigration(cp, tableName, partitionCol, pkCol);
         }
       } else {
         // Otherwise, just recreate constraints (existing behavior)
@@ -461,11 +459,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       // Step 6: Migrate data from temporary table to new partitioned table
       log4j.info("Step 6: Migrating data from {} to {}", tempTableName, tableName);
-      
-      // Check if temporary table has data, if not try to use backup
       long tempTableRows = backupManager.getTableRowCount(cp, tempTableName);
-      dataSourceTable = tempTableName; // Reset to temp table name
-      
+      dataSourceTable = tempTableName;
       if (tempTableRows == 0) {
         log4j.warn("Temporary table {} is empty, checking for backup data...", tempTableName);
         String backupTableName = backupManager.getLatestBackupTable(cp, tableName);
@@ -473,13 +468,12 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           String fullBackupTableName = BACKUP_SCHEMA + "." + backupTableName;
           long backupRows = backupManager.getTableRowCount(cp, fullBackupTableName);
           if (backupRows > 0) {
-            log4j.info("Found backup table {} with {} rows. Using backup for data migration.", 
+            log4j.info("Found backup table {} with {} rows. Using backup for data migration.",
                       backupTableName, backupRows);
             dataSourceTable = fullBackupTableName;
             tempTableRows = backupRows;
           }
         }
-        
         if (tempTableRows == 0) {
           log4j.warn("No backup data found. Table {} will be empty after migration.", tableName);
         }
@@ -488,8 +482,23 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (dryRun) {
         log4j.info("[DRY-RUN] Would migrate data from {} to {}", dataSourceTable, tableName);
       } else {
-        migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
-        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+        try {
+          // Intento principal
+          migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
+          LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+        } catch (Exception ex) {
+          final String srcFqn = dataSourceTable.contains(".") ? dataSourceTable : ("public." + dataSourceTable);
+          final String dstFqn = "public." + tableName;
+          log4j.warn("Primary migration failed ({}). Falling back to column intersection between {} and {}",
+                     ex.getMessage(), srcFqn, dstFqn);
+          List<String> matchingCols = findMatchingColumnsPortable(cp, srcFqn, dstFqn);
+          if (matchingCols.isEmpty()) {
+            log4j.error("Fallback failed: no matching columns found between {} and {}", srcFqn, dstFqn);
+            throw ex;
+          }
+          migratedRows = insertByColumnIntersection(cp, srcFqn, dstFqn, matchingCols);
+          LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+        }
       }
 
       // Step 7: Verify the new table exists and is properly partitioned before proceeding
@@ -1271,6 +1280,57 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         int year = testRs.getInt(2);
         log4j.info("  Sample: {} (year {}) should go to partition {}_y{}", dateValue, year, newTableName.toLowerCase(), year);
       }
+    }
+  }
+
+  private boolean relationExists(ConnectionProvider cp, String schema, String relName) throws Exception {
+    String fqn = (schema + "." + relName).toLowerCase();
+    try (PreparedStatement ps = cp.getPreparedStatement("SELECT to_regclass(?) IS NOT NULL")) {
+      ps.setString(1, fqn);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next() && rs.getBoolean(1);
+      }
+    }
+  }
+
+  private List<String> listColumnsForRelation(ConnectionProvider cp, String fqName) throws Exception {
+    String fqn = fqName.toLowerCase();
+    List<String> cols = new ArrayList<>();
+    String sql = ""
+      + "SELECT attname "
+      + "FROM pg_attribute "
+      + "WHERE attrelid = to_regclass(?) "
+      + "  AND attnum > 0 "
+      + "  AND NOT attisdropped "
+      + "ORDER BY attnum";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, fqn);
+      try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) cols.add(rs.getString(1));
+      }
+    }
+    return cols;
+  }
+
+  private List<String> findMatchingColumnsPortable(ConnectionProvider cp, String srcFqn, String dstFqn) throws Exception {
+    List<String> srcCols = listColumnsForRelation(cp, srcFqn);
+    List<String> dstCols = listColumnsForRelation(cp, dstFqn);
+    if (srcCols.isEmpty() || dstCols.isEmpty()) return Collections.emptyList();
+    java.util.Set<String> srcSet = new java.util.HashSet<>(srcCols);
+    List<String> intersection = new ArrayList<>();
+    for (String d : dstCols) {
+      if (srcSet.contains(d)) intersection.add(d);
+    }
+    log4j.info("Matching columns between {} and {}: {}", srcFqn, dstFqn, intersection);
+    return intersection;
+  }
+
+  private long insertByColumnIntersection(ConnectionProvider cp, String srcFqn, String dstFqn, List<String> cols) throws Exception {
+    if (cols.isEmpty()) return 0L;
+    String colList = String.join(", ", cols);
+    String sql = "INSERT INTO " + dstFqn + " (" + colList + ") SELECT " + colList + " FROM " + srcFqn;
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      return ps.executeUpdate();
     }
   }
 }

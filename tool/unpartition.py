@@ -104,7 +104,7 @@ def parse_db_params(properties):
         'password': properties.get('bbdd.password')
     }
 
-# ─── Unpartitioning Logic ───
+# ─── Unpartitioning Helpers ───
 
 def get_schema(conn, table_name):
     with conn.cursor() as cur:
@@ -295,15 +295,31 @@ def unpartition_table(conn, table_name):
         delete_table_config_entry(conn, table_name)
     conn.commit()
 
+# ─── New: fetch tables from etarc_table_config ───
+
+def fetch_tables_from_config(conn):
+    """
+    Devuelve la lista de tablas (lower(tablename)) que están en etarc_table_config.
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT lower(tablename)
+            FROM ad_table
+            WHERE ad_table_id IN (SELECT ad_table_id FROM etarc_table_config)
+        """)
+        rows = cur.fetchall()
+        tables = [r[0] for r in rows]
+        if tables:
+            print_message(f"Found {len(tables)} table(s) to unpartition from etarc_table_config.", "INFO")
+        else:
+            print_message("No tables found in etarc_table_config.", "SKIP")
+        return tables
+
 # ─── Main Entry ───
 
 def main():
     success = True
     summary = []
-
-    if len(sys.argv) < 2:
-        print(f"{Style.YELLOW}Usage:{Style.RESET} python unpartition.py \"table1,table2,...\"")
-        return False
 
     props_path = Path("config/Openbravo.properties")
     if not props_path.exists():
@@ -316,10 +332,26 @@ def main():
             print_message("Missing connection parameters in Openbravo.properties", "ERROR")
             return False
 
+        # Conexión
         conn = psycopg2.connect(**parse_db_params(props))
         print_message("Connection established successfully", "SUCCESS")
 
-        for t in [x.strip() for x in sys.argv[1].split(",")]:
+        # Determinar tablas a procesar:
+        if len(sys.argv) >= 2 and sys.argv[1].strip():
+            # Modo explícito: "t1,t2,..."
+            tables = [x.strip().lower() for x in sys.argv[1].split(",") if x.strip()]
+            print_message(f"Using tables from command-line: {', '.join(tables)}", "INFO")
+        else:
+            # Modo automático: leer de etarc_table_config
+            print_message("No tables provided. Fetching from etarc_table_config…", "INFO")
+            tables = fetch_tables_from_config(conn)
+            if not tables:
+                conn.close()
+                print_unpartition_summary(summary)
+                return False
+
+        # Ejecutar desparticionado
+        for t in tables:
             try:
                 unpartition_table(conn, t)
                 summary.append({'table': t, 'status': 'SUCCESS', 'message': 'Table correctly despartitioned.'})
@@ -335,7 +367,6 @@ def main():
         success = False
 
     print_unpartition_summary(summary)
-
     return success
 
 if __name__ == "__main__":
