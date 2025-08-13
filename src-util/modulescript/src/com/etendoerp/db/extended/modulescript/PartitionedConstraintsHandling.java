@@ -20,15 +20,15 @@ package com.etendoerp.db.extended.modulescript;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.openbravo.base.exception.*;
 import org.openbravo.database.ConnectionProvider;
 import org.openbravo.modulescript.ModuleScript;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import java.io.File;
+import javax.xml.parsers.*;
+import java.io.*;
 import java.nio.file.NoSuchFileException;
 import java.sql.*;
 import java.util.ArrayList;
@@ -50,23 +50,17 @@ import com.etendoerp.db.extended.utils.TableAnalyzer;
 import com.etendoerp.db.extended.utils.ConstraintManagementUtils;
 import com.etendoerp.db.extended.utils.LoggingUtils;
 import com.etendoerp.db.extended.utils.XmlParsingUtils;
+import org.xml.sax.*;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
 
-  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
-  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   private static final Logger log4j = LogManager.getLogger();
-  public static final String MODULES_JAR  = "build/etendo/modules";
-  public static final String MODULES_BASE = "modules";
-  public static final String MODULES_CORE = "modules_core";
-  private static final String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
 
   // Schema for backup tables to preserve data during structural changes
   private static final String BACKUP_SCHEMA = "etarc_backup";
   
-  // Performance optimization constants
-  private static final int DEFAULT_BATCH_SIZE = 50000;
+  // Performance optimization constants  
   private static final int LARGE_TABLE_THRESHOLD = 1000000;
   
   // Constants for commonly used strings to avoid duplication
@@ -76,8 +70,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private static final String CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS %s";
   private static final String DROP_TABLE_CASCADE_SQL = "DROP TABLE IF EXISTS public.%s CASCADE";
   private static final String ALTER_TABLE_RENAME_SQL = "ALTER TABLE IF EXISTS public.%s RENAME TO %s";
-  private static final String VARCHAR_PREFIX = "VARCHAR(";
-  private static final String VARCHAR_255 = "VARCHAR(255)";
 
   // Utility classes for better code organization
   private final TableBackupManager backupManager;
@@ -86,8 +78,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private final TableAnalyzer tableAnalyzer;
   private final ConstraintManagementUtils constraintUtils;
   
-  // Execution controls and metrics
-  private boolean dryRun = false;
+  // Execution metrics
   private final List<TableMetrics> runMetrics = new ArrayList<>();
 
   public PartitionedConstraintsHandling() {
@@ -103,10 +94,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     public TableMigrationException(String message) {
       super(message);
     }
-    
-    public TableMigrationException(String message, Throwable cause) {
-      super(message, cause);
-    }
   }
   
   public static class PartitioningException extends Exception {
@@ -119,25 +106,13 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
   }
 
-  public static boolean isBlank(String str) {
-    return StringUtils.isBlank(str);
-  }
 
-  public static boolean isEqualsIgnoreCase(String str1, String str2) {
-    return str1 != null && str1.equalsIgnoreCase(str2);
-  }
 
   public void execute() {
     try {
       ConnectionProvider cp = getConnectionProvider();
-      // Enable dry-run if system property or environment variable is set
-      this.dryRun = isDryRunEnabled();
       long runStart = System.nanoTime();
-      if (dryRun) {
-        LoggingUtils.logSeparator();
-        log4j.info("[DRY-RUN] Enabled. No changes will be applied to the database.");
-        LoggingUtils.logSeparator();
-      }
+      
       List<Map<String, String>> tableConfigs = loadTableConfigs(cp);
 
       if (!tableConfigs.isEmpty()) {
@@ -166,13 +141,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         LoggingUtils.logSeparator();
         
         // STEP 2: After processing, clean up old backups (older than 7 days)
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Skipping cleanup of old backups.");
-        } else {
-          backupManager.cleanupOldBackups(cp);
-        }
+        backupManager.cleanupOldBackups(cp);
       }
-      safeExecuteConstraintSqlIfNeeded(cp, sql.toString());
+      constraintUtils.executeConstraintSqlIfNeeded(cp, sql.toString());
 
       // Summary
       logRunMetricsSummary(runStart);
@@ -194,7 +165,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     log4j.info("========== CHECKING FOR PARTITIONED TABLES NEEDING BACKUP ==========");
     
     // Ensure backup schema exists
-    safeConstraintExecuteUpdate(cp, String.format(CREATE_SCHEMA_SQL, BACKUP_SCHEMA));
+    constraintUtils.executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, BACKUP_SCHEMA));
 
     for (Map<String, String> cfg : tableConfigs) {
       if (!isValidTableConfig(cfg)) {
@@ -211,16 +182,12 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
       
       // Check if there will be structural changes
-      List<File> xmlFiles = findTableXmlFiles(tableName);
+      List<File> xmlFiles = XmlParsingUtils.findTableXmlFiles(tableName, getSourcePath());
       boolean willHaveStructuralChanges = (new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
       
       if (willHaveStructuralChanges) {
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Table {} is partitioned and will have structural changes. Would create backup.", tableName);
-        } else {
           log4j.info("Table {} is partitioned and will have structural changes. Creating backup...", tableName);
           backupManager.backupTableData(cp, tableName);
-        }
       } else {
         log4j.info("Table {} is partitioned but has no structural changes, no backup needed", tableName);
       }
@@ -239,7 +206,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     String tableName = cfg.get(TABLE_NAME_KEY);
     String partitionCol = cfg.get(COLUMN_NAME_KEY);
     String pkCol = cfg.get(PK_COLUMN_NAME_KEY);
-    return !isBlank(tableName) && !isBlank(partitionCol) && !isBlank(pkCol);
+    return !StringUtils.isBlank(tableName) && !StringUtils.isBlank(partitionCol) && !StringUtils.isBlank(pkCol);
   }
 
   /**
@@ -292,8 +259,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
     log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", tableName, partitionCol, pkCol);
 
-    boolean isIncomplete = isBlank(tableName) || isBlank(partitionCol) || isBlank(pkCol);
-    List<File> xmlFiles = isIncomplete ? Collections.emptyList() : findTableXmlFiles(tableName);
+    boolean isIncomplete = StringUtils.isBlank(tableName) || StringUtils.isBlank(partitionCol) || StringUtils.isBlank(pkCol);
+    List<File> xmlFiles = isIncomplete ? Collections.emptyList() : XmlParsingUtils.findTableXmlFiles(tableName, getSourcePath());
 
     boolean isStructuralChange = !isIncomplete &&
             (new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
@@ -327,12 +294,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     tm.largeTable = isLargeTable;
     if (isLargeTable) {
       log4j.info("Large table detected ({}), applying performance optimizations", tableName);
-      if (!dryRun) {
-        dbOptimizer.optimizeDatabaseForLargeOperations(cp);
-        dbOptimizer.logPerformanceMetrics(cp, "Pre-partition " + tableName);
-      } else {
-        log4j.info("[DRY-RUN] Skipping DB optimizations.");
-      }
+      dbOptimizer.optimizeDatabaseForLargeOperations(cp);
+      dbOptimizer.logPerformanceMetrics(cp, "Pre-partition " + tableName);
+
     }
 
     try {
@@ -340,47 +304,30 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (needsPartitionRestoration) {
         tm.action = "restore-partitioning";
         log4j.info("Table {} should be partitioned but isn't. Restoring partitioning with current data...", tableName);
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Would restore partitioning for table {} (partitionCol={}, pkCol={})", tableName, partitionCol, pkCol);
-        } else {
-          tm.migratedRows = restorePartitioningWithData(cp, tableName, partitionCol, pkCol);
-        }
+        tm.migratedRows = restorePartitioningWithData(cp, tableName, partitionCol, pkCol);
       }
       // If the table is partitioned AND has structural changes, perform full migration
       else if (isPartitioned && isStructuralChange) {
         tm.action = "migrate-structural";
         log4j.info("Structural changes detected in partitioned table {}. Performing full migration...", tableName);
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Would perform full migration for table {} (partitionCol={}, pkCol={})", tableName, partitionCol, pkCol);
-        } else {
-          tm.migratedRows = performPartitionedTableMigration(cp, tableName, partitionCol, pkCol);
-        }
+        tm.migratedRows = performPartitionedTableMigration(cp, tableName, partitionCol, pkCol);
       } else {
         // Otherwise, just recreate constraints (existing behavior)
         tm.action = "recreate-constraints";
         log4j.info("Recreating constraints for {} (firstRun = {}, structuralChanges = {})", 
                    tableName, firstPartitionRun, isStructuralChange);
-        if (dryRun) {
-          String ddl = constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath());
-          log4j.info("[DRY-RUN] Would execute constraint SQL for {} ({} chars)", tableName, ddl.length());
-        } else {
-          sql.append(constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath()));
-        }
+        sql.append(constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath()));
       }
       // Post-processing optimizations for large tables
       if (isLargeTable) {
-        if (!dryRun) {
-          dbOptimizer.createOptimizedIndexes(cp, tableName, partitionCol);
-          dbOptimizer.analyzePartitionedTable(cp, tableName);
-          dbOptimizer.logPerformanceMetrics(cp, "Post-partition " + tableName);
-        } else {
-          log4j.info("[DRY-RUN] Skipping index creation and ANALYZE.");
-        }
+        dbOptimizer.createOptimizedIndexes(cp, tableName, partitionCol);
+        dbOptimizer.analyzePartitionedTable(cp, tableName);
+        dbOptimizer.logPerformanceMetrics(cp, "Post-partition " + tableName);
       }
       
     } finally {
       // Restore database settings if they were modified
-      if (isLargeTable && !dryRun) {
+      if (isLargeTable) {
         dbOptimizer.restoreDatabaseSettings(cp);
       }
     }
@@ -426,36 +373,24 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     try {
       // Step 1: Drop dependent views (they'll be recreated by Etendo's process)
       log4j.info("Step 1: Dropping dependent views and foreign keys for table {}", tableName);
-      if (dryRun) {
-        log4j.info("[DRY-RUN] Would drop dependent views and constraints for {}", tableName);
-      } else {
-        constraintUtils.dropDependentViewsAndConstraints(cp, tableName);
-      }
+      constraintUtils.dropDependentViewsAndConstraints(cp, tableName);
       
       // Step 2: Rename current partitioned table to temporary name
       log4j.info("Step 2: Renaming {} to {}", tableName, tempTableName);
-      safeConstraintExecuteUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+      constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
                                      tableName, tempTableName));
       
       // Step 3: Create new partitioned table with updated structure based on XML
       log4j.info("Step 3: Creating new partitioned table {} with updated structure", tableName);
-      if (dryRun) {
-        log4j.info("[DRY-RUN] Would create new partitioned table {} with updated structure", tableName);
-      } else {
-        createUpdatedPartitionedTable(cp, tableName, partitionCol);
-      }
+      createUpdatedPartitionedTable(cp, tableName, partitionCol);
       
       // Step 4: Ensure partitions schema exists
       log4j.info("Step 4: Ensuring partitions schema '{}' exists", partitionsSchema);
-      safeExecuteUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
+      constraintUtils.executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
       
       // Step 5: Create partitions for the new table
       log4j.info("Step 5: Creating partitions for new table {}", tableName);
-      if (dryRun) {
-        log4j.info("[DRY-RUN] Would create partitions for {} based on {}", tableName, tempTableName);
-      } else {
-        createPartitionsForTable(cp, tableName, tempTableName, partitionCol, partitionsSchema);
-      }
+      createPartitionsForTable(cp, tableName, tempTableName, partitionCol, partitionsSchema);
       
       // Step 6: Migrate data from temporary table to new partitioned table
       log4j.info("Step 6: Migrating data from {} to {}", tempTableName, tableName);
@@ -479,14 +414,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         }
       }
       
-      if (dryRun) {
-        log4j.info("[DRY-RUN] Would migrate data from {} to {}", dataSourceTable, tableName);
-      } else {
-        try {
-          // Intento principal
-          migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
-          LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
-        } catch (Exception ex) {
+      try {
+        // Intento principal
+        migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
+        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+      } catch (Exception ex) {
           final String srcFqn = dataSourceTable.contains(".") ? dataSourceTable : ("public." + dataSourceTable);
           final String dstFqn = "public." + tableName;
           log4j.warn("Primary migration failed ({}). Falling back to column intersection between {} and {}",
@@ -495,15 +427,12 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           if (matchingCols.isEmpty()) {
             log4j.error("Fallback failed: no matching columns found between {} and {}", srcFqn, dstFqn);
             throw ex;
-          }
-          migratedRows = insertByColumnIntersection(cp, srcFqn, dstFqn, matchingCols);
-          LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
         }
-      }
-
-      // Step 7: Verify the new table exists and is properly partitioned before proceeding
+        migratedRows = insertByColumnIntersection(cp, srcFqn, dstFqn, matchingCols);
+        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+      }      // Step 7: Verify the new table exists and is properly partitioned before proceeding
       log4j.info("Step 7: Verifying new partitioned table {} was created successfully", tableName);
-      if (!dryRun && !isTablePartitioned(cp, tableName)) {
+      if (!tableAnalyzer.isTablePartitioned(cp, tableName)) {
         throw new TableMigrationException("New table " + tableName + " is not properly partitioned after migration");
       }
       
@@ -511,11 +440,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       log4j.info("Step 8: Recreating constraints for {}", tableName);
       try {
         String constraintSql = constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath());
-        if (!isBlank(constraintSql)) {
-          safeConstraintExecuteUpdate(cp, constraintSql);
-          if (!dryRun) {
-            LoggingUtils.logSuccessRecreatedConstraints(tableName);
-          }
+        if (!StringUtils.isBlank(constraintSql)) {
+          constraintUtils.executeUpdate(cp, constraintSql);
+          LoggingUtils.logSuccessRecreatedConstraints(tableName);
         }
       } catch (Exception constraintError) {
         log4j.error("WARNING: Failed to recreate constraints for {}: {}", tableName, constraintError.getMessage());
@@ -535,7 +462,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       // Step 9: Only drop temporary table after everything succeeds
       log4j.info("Step 9: Dropping temporary table {} (migration completed successfully)", tempTableName);
-      safeExecuteUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tempTableName));
+      constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tempTableName));
       
       // Step 10: Clean up backup if we used it
       if (!dataSourceTable.equals(tempTableName)) {
@@ -543,11 +470,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         String backupTableName = dataSourceTable.substring(dataSourceTable.lastIndexOf(".") + 1);
         log4j.info("Step 10: Cleaning up backup table {} (migration completed successfully)", backupTableName);
         try {
-          if (dryRun) {
-            log4j.info("[DRY-RUN] Would cleanup backup table {}", backupTableName);
-          } else {
-            backupManager.cleanupBackup(cp, tableName, backupTableName);
-          }
+          backupManager.cleanupBackup(cp, tableName, backupTableName);
         } catch (Exception backupCleanupError) {
           log4j.warn("Failed to cleanup backup table {}: {}", backupTableName, backupCleanupError.getMessage());
           // Don't fail the migration for backup cleanup errors
@@ -574,8 +497,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         if (tempTableExists) {
           LoggingUtils.logRestoreOriginalTable(tableName, tempTableName);
-          safeExecuteUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tableName));
-          safeExecuteUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+          constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tableName));
+          constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
                                          tempTableName, tableName));
           LoggingUtils.logSuccessRestoredTable(tableName);
         } else {
@@ -642,11 +565,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (rowCount == 0 && !usingBackup) {
         // No data, we can simply convert to partitioned table directly
         log4j.info("Table is empty, converting directly to partitioned table");
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Would convert empty table {} to partitioned.", tableName);
-        } else {
-          migrationService.convertEmptyTableToPartitioned(tableName);
-        }
+        migrationService.convertEmptyTableToPartitioned(tableName);
       } else {
         // Has data (either original or from backup), need to migrate safely
         log4j.info("Table has data{}, performing safe migration to restore partitioning", 
@@ -654,65 +573,47 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         // Step 3: Rename current table to temporary name
         log4j.info("Step 3: Renaming {} to {}", tableName, tempTableName);
-        safeExecuteUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+        constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
                                        tableName, tempTableName));
         
         // Step 4: Create new partitioned table with same structure
         log4j.info("Step 4: Creating new partitioned table {} with same structure", tableName);
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Would create new partitioned table {} from template {}", tableName, usingBackup ? backupTableName : tempTableName);
+        if (usingBackup) {
+          migrationService.createPartitionedTableFromTemplate(cp, tableName, backupTableName, partitionCol);
         } else {
-          if (usingBackup) {
-            migrationService.createPartitionedTableFromTemplate(cp, tableName, backupTableName, partitionCol);
-          } else {
-            migrationService.createPartitionedTableFromTemplate(cp, tableName, tempTableName, partitionCol);
-          }
+          migrationService.createPartitionedTableFromTemplate(cp, tableName, tempTableName, partitionCol);
         }
         
         // Step 5: Ensure partitions schema exists
         log4j.info("Step 5: Ensuring partitions schema '{}' exists", partitionsSchema);
-        safeExecuteUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
+        constraintUtils.executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
         
         // Step 6: Create partitions based on data source
         log4j.info("Step 6: Creating partitions for table {}", tableName);
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Would create partitions for {} based on {}", tableName, dataSourceTable);
-        } else {
-          createPartitionsForTable(cp, tableName, dataSourceTable, partitionCol, partitionsSchema);
-        }
+        createPartitionsForTable(cp, tableName, dataSourceTable, partitionCol, partitionsSchema);
         
         // Step 7: Migrate data to new partitioned table
         log4j.info("Step 7: Migrating data from {} to {}", dataSourceTable, tableName);
-        if (dryRun) {
-          log4j.info("[DRY-RUN] Would migrate data from {} to {}", dataSourceTable, tableName);
-        } else {
-          migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
-          LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
-        }
+        migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
+        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
 
         // Step 8: Drop temporary table
         log4j.info("Step 8: Dropping temporary table {} (restoration completed successfully)", tempTableName);
-        safeExecuteUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tempTableName));
+        constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tempTableName));
         
         // Step 9: Clean up backup if used
         if (usingBackup) {
           log4j.info("Step 9: Cleaning up backup table {}", dataSourceTable);
-          if (dryRun) {
-            log4j.info("[DRY-RUN] Would cleanup backup {}", dataSourceTable);
-          } else {
-            backupManager.cleanupBackup(cp, tableName, backupTableName);
-          }
+          backupManager.cleanupBackup(cp, tableName, backupTableName);
         }
       }
       
       // Step 10: Recreate constraints for the now-partitioned table
       log4j.info("Step 10: Recreating constraints for restored partitioned table {}", tableName);
       String constraintSql = constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath());
-      if (!isBlank(constraintSql)) {
-        safeConstraintExecuteUpdate(cp, constraintSql);
-        if (!dryRun) {
-          LoggingUtils.logSuccessRecreatedConstraints(tableName);
-        }
+      if (!StringUtils.isBlank(constraintSql)) {
+        constraintUtils.executeUpdate(cp, constraintSql);
+        LoggingUtils.logSuccessRecreatedConstraints(tableName);
       }
       
       log4j.info("========== COMPLETED PARTITIONING RESTORATION FOR {} ==========", tableName);
@@ -727,8 +628,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         if (tempTableExists) {
           LoggingUtils.logRestoreOriginalTable(tableName, tempTableName);
-          safeExecuteUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tableName));
-          safeExecuteUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+          constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tableName));
+          constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
                                          tempTableName, tableName));
           LoggingUtils.logSuccessRestoredTable(tableName);
         }
@@ -738,86 +639,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       throw new PartitioningException("Partitioning restoration failed for " + tableName, e);
     }
-  }
-
-  /**
-   * Executes a SQL update statement and returns the number of affected rows.
-   *
-   * @param cp the connection provider
-   * @param sql the SQL statement to execute
-   * @return the number of affected rows
-   * @throws Exception if execution fails
-   */
-  private int executeUpdateWithRowCount(ConnectionProvider cp, String sql) throws Exception {
-    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-      return ps.executeUpdate();
-    }
-  }
-
-  /**
-   * Executes a SQL update statement.
-   *
-   * @param cp the connection provider
-   * @param sql the SQL statement to execute
-   * @throws Exception if execution fails
-   */
-  private void executeUpdate(ConnectionProvider cp, String sql) throws Exception {
-    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-      ps.executeUpdate();
-    }
-  }
-
-  // Safe wrappers honoring dry-run
-  private void safeExecuteUpdate(ConnectionProvider cp, String sql) throws Exception {
-    if (dryRun) {
-      log4j.info("[DRY-RUN] SQL: {}", sql);
-      return;
-    }
-    executeUpdate(cp, sql);
-  }
-
-  private void safeConstraintExecuteUpdate(ConnectionProvider cp, String sql) throws Exception {
-    if (StringUtils.isBlank(sql)) return;
-    if (dryRun) {
-      log4j.info("[DRY-RUN] Constraints SQL ({} chars) would be executed", sql.length());
-      return;
-    }
-    constraintUtils.executeUpdate(cp, sql);
-  }
-
-  private void safeExecuteConstraintSqlIfNeeded(ConnectionProvider cp, String sql) throws Exception {
-    if (StringUtils.isBlank(sql)) return;
-    if (dryRun) {
-      log4j.info("[DRY-RUN] Accumulated constraint SQL ({} chars) would be executed.", sql.length());
-      return;
-    }
-    constraintUtils.executeConstraintSqlIfNeeded(cp, sql);
-  }
-
-  /**
-   * Logs the creation of a partitioned table.
-   *
-   * @param createTableSql the SQL statement being executed
-   */
-  private void logCreatingPartitionedTable(String createTableSql) {
-    log4j.info("Creating partitioned table with SQL: {}", createTableSql);
-  }
-
-  /**
-   * Gets a Document from an XML file with XXE protection.
-   *
-   * @param xmlFile the XML file to parse
-   * @return the parsed Document
-   * @throws Exception if parsing fails
-   */
-  private static Document getDocument(File xmlFile) throws Exception {
-    return XmlParsingUtils.getDocument(xmlFile);
-  }
-
-  private boolean isDryRunEnabled() {
-    String sys = System.getProperty("etarc.dryRun", System.getProperty("dryRun", "false"));
-    String env = System.getenv("ETARC_DRY_RUN");
-    return "true".equalsIgnoreCase(sys) || "1".equals(env) || "true".equalsIgnoreCase(env);
   }
 
   // Basic per-table metrics holder
@@ -840,14 +661,14 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    */
   private void handleError(Exception e) {
     log4j.error("Error in PartitionedConstraintsHandling: {}", e.getMessage(), e);
-    throw new RuntimeException("Module script execution failed", e);
+    throw new OBException("Module script execution failed", e);
   }
 
   // Summary logging
   private void logRunMetricsSummary(long runStartNs) {
     long totalMs = (System.nanoTime() - runStartNs) / 1_000_000;
     LoggingUtils.logSeparator();
-    log4j.info("Partitioning run summary{}: {} ms", dryRun ? " (DRY-RUN)" : "", totalMs);
+    log4j.info("Partitioning run summary: {} ms", totalMs);
     for (TableMetrics tm : runMetrics) {
       long durMs = Math.max(0, (tm.endNs - tm.startNs) / 1_000_000);
       log4j.info("- {} | action={} | durationMs={} | estimatedRows={}{}{}",
@@ -862,131 +683,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Checks whether the given table is currently partitioned in the PostgreSQL database.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param tableName the name of the table to check.
-   * @return true if the table is partitioned, false otherwise.
-   * @throws Exception if a database access error occurs.
-   */
-  private boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws Exception {
-    try (PreparedStatement ps = cp.getPreparedStatement(
-            "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)")) {
-      ps.setString(1, tableName);
-      try (ResultSet rs = ps.executeQuery()) {
-        return rs.next();
-      }
-    }
-  }
-
-  /**
-   * Searches the provided list of XML table definition files for the "primaryKey"
-   * attribute on the single <table> element in each file.
-   * <p>
-   * For each XML file:
-   * <ul>
-   *   <li>If the file does not exist, logs an error and returns null.</li>
-   *   <li>If exactly one <table> element is found, and it has a "primaryKey" attribute,
-   *       returns that attribute’s value.</li>
-   *   <li>If no <table> elements or multiple <table> elements are found, or if the
-   *       attribute is missing, logs the appropriate warning/error and returns null.</li>
-   * </ul>
-   *
-   * @param xmlFiles the list of XML files to inspect
-   * @return the name of the primary key if found, or null if missing or on error
-   */
-  public static String findPrimaryKey(List<File> xmlFiles) {
-    try {
-      for (File xml : xmlFiles) {
-        if (StringUtils.contains(xml.getAbsolutePath(), "modifiedTables")) {
-          continue;
-        }
-        if (!xml.exists()) {
-          log4j.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
-          return null;
-        }
-        Document doc = getDocument(xml);
-        NodeList tableList = doc.getElementsByTagName("table");
-
-        if (tableList.getLength() == 1) {
-          Element tableEl = (Element) tableList.item(0);
-          if (tableEl.hasAttribute("primaryKey")) {
-            return tableEl.getAttribute("primaryKey");
-          } else {
-            log4j.warn("Warning: Missing 'primaryKey' attribute in: {}", xml.getAbsolutePath());
-            return null;
-          }
-        } else if (tableList.getLength() == 0) {
-          log4j.error("Error: No <table> tag found in: {}", xml.getAbsolutePath());
-          return null;
-        } else {
-          log4j.error("Error: Found {} <table> tags in: {}", tableList.getLength(),
-              xml.getAbsolutePath());
-          return null;
-        }
-      }
-    } catch (Exception e) {
-      log4j.error("Error processing XML: {}", e.getMessage(), e);
-    }
-    return null;
-  }
-
-  /**
-   * Gathers all directories that potentially contain table XML files.
-   * <p>
-   * Scans each module directory under the project root (as defined by ModulesUtil),
-   * adding:
-   * <ul>
-   *   <li>The module’s own “src-db/database/model/tables” directory, if present.</li>
-   *   <li>That same tables directory under each immediate subdirectory of the module.</li>
-   * </ul>
-   * Finally, adds the project‐root “src-db/database/model/tables” directory.
-   * Only existing directories are returned.
-   *
-   * @return a List of File objects representing each valid tables directory
-   */
-  private List<File> collectTableDirs() throws NoSuchFileException {
-    List<File> dirs = new ArrayList<>();
-    File root = new File(getSourcePath());
-    for (String mod : moduleDirs) {
-      File modBase = new File(root, mod);
-      if (!modBase.isDirectory()) continue;
-      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
-      for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
-      }
-      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
-      for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
-      }
-    }
-    dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
-    return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
-  }
-
-  /**
-   * Finds the .xml file(s) matching the given table name (case-insensitive)
-   * under each module’s “tables” directory and under the project's root.
-   * <p>
-   * Constructs a target filename of the form {@code tableName + ".xml"}, then
-   * filters all XMLs in the discovered directories to only those whose name
-   * equals the target.
-   *
-   * @param tableName the base name of the table (without the .xml extension)
-   * @return a List of matching XML files (maybe empty if none found)
-   */
-  public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
-    String target = tableName.toLowerCase() + ".xml";
-    return collectTableDirs().stream()
-        .flatMap(dir -> {
-          File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
-          return files == null ? Stream.empty() : Arrays.stream(files);
-        })
-        .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
-        .collect(Collectors.toList());
-  }
-
-  /**
    * Creates a new partitioned table with updated structure based on the temporary table
    * but without the constraints that will be recreated later.
    *
@@ -998,15 +694,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private void createUpdatedPartitionedTable(ConnectionProvider cp, String newTableName,
                                              String partitionCol) throws Exception {
     // Create the new partitioned table based on XML definitions, not the old table structure
-    List<File> xmlFiles = findTableXmlFiles(newTableName);
+    List<File> xmlFiles = XmlParsingUtils.findTableXmlFiles(newTableName, getSourcePath());
     if (xmlFiles.isEmpty()) {
-      throw new Exception("No XML definition files found for table " + newTableName);
+      throw new OBException("No XML definition files found for table " + newTableName);
     }
     
     String createTableSql = generateCreateTableFromXml(newTableName, xmlFiles, partitionCol);
 
-    logCreatingPartitionedTable(createTableSql);
-  safeExecuteUpdate(cp, createTableSql);
+    LoggingUtils.logCreatingPartitionedTable(createTableSql);
+  constraintUtils.executeUpdate(cp, createTableSql);
     log4j.info("Created new partitioned table: public.{}", newTableName);
   }
 
@@ -1045,7 +741,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       first = false;
       
       sql.append("  ").append(column.name()).append(" ");
-      sql.append(mapXmlTypeToPostgreSQL(column.dataType(), column.length()));
+      sql.append(XmlParsingUtils.mapXmlTypeToPostgreSQL(column.dataType(), column.length()));
+
       
       if (Boolean.FALSE.equals(column.isNullable())) {
         sql.append(" NOT NULL");
@@ -1060,7 +757,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   /**
    * Helper method to access parseXmlDefinition from TableDefinitionComparator
    */
-  private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile) throws Exception {
+  private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile) throws ParserConfigurationException, IOException, SAXException {
     // We need to use reflection or create a public method in TableDefinitionComparator
     // For now, let's implement our own XML parsing here
     Map<String, ColumnDefinition> columns = new LinkedHashMap<>();
@@ -1123,52 +820,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Maps XML data types to PostgreSQL data types
-   */
-  private String mapXmlTypeToPostgreSQL(String xmlType, Integer length) {
-    switch (xmlType.toLowerCase()) {
-      case "id", "varchar", "nvarchar", "string":
-        if (length != null && length > 0) {
-          return VARCHAR_PREFIX + length + ")";
-        }
-        return VARCHAR_255; // default length
-      case "text":
-        return "TEXT";
-      case "bigint":
-        return "BIGINT";
-      case "integer":
-        return "INTEGER";
-      case "numeric":
-        if (length != null && length > 0) {
-          return "NUMERIC(" + length + ")";
-        }
-        return "NUMERIC";
-      case "decimal":
-        if (length != null && length > 0) {
-          return "DECIMAL(" + length + ")";
-        }
-        return "DECIMAL";
-      case "timestamp":
-        return "TIMESTAMP WITHOUT TIME ZONE";
-      case "date":
-        return "DATE";
-      case "boolean":
-        return "BOOLEAN";
-      case "char":
-        if (length != null && length > 0) {
-          return "CHAR(" + length + ")";
-        }
-        return "CHAR(1)";
-      default:
-        // Default fallback
-        if (length != null && length > 0) {
-          return VARCHAR_PREFIX + length + ")";
-        }
-        return VARCHAR_255;
-    }
-  }
-
-  /**
    * Inner class to represent column definitions (similar to TableDefinitionComparator's)
    */
     private record ColumnDefinition(String name, String dataType, Integer length, Boolean isNullable,
@@ -1204,7 +855,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       while (dropRs.next()) {
         String dropStmt = dropRs.getString(1);
         log4j.info("Executing: {}", dropStmt);
-  safeExecuteUpdate(cp, dropStmt);
+        constraintUtils.executeUpdate(cp, dropStmt);
       }
     }
     
@@ -1254,7 +905,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       try {
         log4j.info("Creating partition: {}", createPartitionSql);
-        safeExecuteUpdate(cp, createPartitionSql);
+        constraintUtils.executeUpdate(cp, createPartitionSql);
         log4j.info("Successfully created partition {}.{}", partitionsSchema, partitionName);
       } catch (Exception e) {
         if (e.getMessage().contains("already exists")) {
@@ -1279,16 +930,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         Object dateValue = testRs.getObject(1);
         int year = testRs.getInt(2);
         log4j.info("  Sample: {} (year {}) should go to partition {}_y{}", dateValue, year, newTableName.toLowerCase(), year);
-      }
-    }
-  }
-
-  private boolean relationExists(ConnectionProvider cp, String schema, String relName) throws Exception {
-    String fqn = (schema + "." + relName).toLowerCase();
-    try (PreparedStatement ps = cp.getPreparedStatement("SELECT to_regclass(?) IS NOT NULL")) {
-      ps.setString(1, fqn);
-      try (ResultSet rs = ps.executeQuery()) {
-        return rs.next() && rs.getBoolean(1);
       }
     }
   }

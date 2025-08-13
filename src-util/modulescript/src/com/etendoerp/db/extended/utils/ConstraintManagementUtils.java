@@ -13,7 +13,7 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
-import com.etendoerp.db.extended.modulescript.PartitionedConstraintsHandling;
+import org.apache.commons.lang3.StringUtils;
 import com.etendoerp.db.extended.utils.XmlParsingUtils;
 
 /**
@@ -34,7 +34,7 @@ public class ConstraintManagementUtils {
    * @throws Exception if a database access error occurs.
    */
   public void executeConstraintSqlIfNeeded(ConnectionProvider cp, String sql) throws Exception {
-    if (PartitionedConstraintsHandling.isBlank(sql)) {
+    if (StringUtils.isBlank(sql)) {
       log4j.info("No constraints to handle for the provided configurations.");
       return;
     }
@@ -131,7 +131,7 @@ public class ConstraintManagementUtils {
             Element column = (Element) columnNodes.item(i);
 
             if (column.hasAttribute("reference") &&
-                PartitionedConstraintsHandling.isEqualsIgnoreCase(column.getAttribute("reference"), tableName)) {
+                column.getAttribute("reference").equalsIgnoreCase(tableName)) {
 
               // Found a foreign key reference to our target table
               NodeList tableNodes = doc.getElementsByTagName("table");
@@ -140,8 +140,8 @@ public class ConstraintManagementUtils {
                 String referencingTableName = tableElement.getAttribute("name");
                 String referencingColumnName = column.getAttribute("name");
 
-                if (!PartitionedConstraintsHandling.isBlank(referencingTableName) &&
-                    !PartitionedConstraintsHandling.isBlank(referencingColumnName)) {
+                if (!StringUtils.isBlank(referencingTableName) &&
+                    !StringUtils.isBlank(referencingColumnName)) {
 
                   String constraintName = referencingTableName + "_" + referencingColumnName + "_fkey";
 
