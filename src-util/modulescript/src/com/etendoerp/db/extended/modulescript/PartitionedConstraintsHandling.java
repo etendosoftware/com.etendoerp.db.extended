@@ -30,9 +30,12 @@ import org.w3c.dom.NodeList;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
-import java.io.*;
+import java.io.File;
+import java.io.IOException;
+import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -51,20 +54,82 @@ import com.etendoerp.db.extended.utils.XmlParsingUtils;
 import com.etendoerp.db.extended.utils.Constants;
 import org.xml.sax.SAXException;
 
+/**
+ * ModuleScript for handling partitioned table constraints and migrations in Etendo ERP.
+ * 
+ * <p>This class is responsible for managing PostgreSQL table partitioning operations including:
+ * <ul>
+ *   <li>Creating and managing partitioned tables based on date ranges</li>
+ *   <li>Migrating data from regular tables to partitioned tables</li>
+ *   <li>Handling structural changes in existing partitioned tables</li>
+ *   <li>Backing up and restoring table data during migration processes</li>
+ *   <li>Recreating constraints and foreign keys after partitioning operations</li>
+ *   <li>Performance optimization for large table operations</li>
+ * </ul>
+ * 
+ * <p>The partitioning strategy used is range partitioning by year, where each partition
+ * contains data for a specific calendar year. This is particularly effective for tables
+ * with date-based columns that are frequently queried by date ranges.
+ * 
+ * <p>The class reads configuration from the {@code ETARC_TABLE_CONFIG} table which defines:
+ * <ul>
+ *   <li>Which tables should be partitioned</li>
+ *   <li>The column to use for partitioning (typically a date/timestamp column)</li>
+ *   <li>The primary key column information</li>
+ * </ul>
+ * 
+ * <p>Migration process overview:
+ * <ol>
+ *   <li>Backup existing partitioned tables that will undergo structural changes</li>
+ *   <li>Analyze each configured table to determine required actions</li>
+ *   <li>Perform appropriate migration strategy (constraint recreation, structural migration, or partition restoration)</li>
+ *   <li>Apply performance optimizations for large tables</li>
+ *   <li>Clean up temporary resources and old backups</li>
+ * </ol>
+ * 
+ * @author Futit Services S.L
+ * @version 2025.1
+ * @since Etendo 25Q1
+ */
 public class PartitionedConstraintsHandling extends ModuleScript {
 
+  /** Logger instance for this class using Log4j2 framework. */
   private static final Logger log4j = LogManager.getLogger();
-  
-  // Utility classes for better code organization
+  public static final String PUBLIC = "public.";
+
+  /** Manager for table backup operations during migrations. */
   private final TableBackupManager backupManager;
+  
+  /** Service for data migration between tables and partitions. */
   private final DataMigrationService migrationService;
+  
+  /** Utility for database performance optimization during large operations. */
   private final DatabaseOptimizerUtil dbOptimizer;
+  
+  /** Analyzer for table structure and partitioning status. */
   private final TableAnalyzer tableAnalyzer;
+  
+  /** Utility for managing database constraints and foreign keys. */
   private final ConstraintManagementUtils constraintUtils;
   
-  // Execution metrics
+  /** Collection of execution metrics for performance monitoring and reporting. */
   private final List<TableMetrics> runMetrics = new ArrayList<>();
 
+  /**
+   * Constructs a new PartitionedConstraintsHandling instance.
+   * 
+   * <p>Initializes all utility components required for partitioning operations:
+   * <ul>
+   *   <li>Table backup manager for data preservation during migrations</li>
+   *   <li>Data migration service for moving data between tables</li>
+   *   <li>Database optimizer for performance tuning during large operations</li>
+   *   <li>Table analyzer for examining table structure and partitioning status</li>
+   *   <li>Constraint management utilities for handling database constraints</li>
+   * </ul>
+   * 
+   * <p>All utility instances are created as final fields to ensure thread safety
+   * and consistent behavior throughout the module script execution.
+   */
   public PartitionedConstraintsHandling() {
     this.backupManager = new TableBackupManager();
     this.migrationService = new DataMigrationService();
@@ -73,25 +138,88 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     this.constraintUtils = new ConstraintManagementUtils();
   }
 
-  // Custom exceptions for better error handling
+  /**
+   * Exception thrown when table migration operations fail.
+   * 
+   * <p>This exception is used to indicate failures during the migration of
+   * partitioned tables, including structural changes, data migration errors,
+   * or constraint recreation failures.
+   */
   public static class TableMigrationException extends Exception {
+    /**
+     * Constructs a new TableMigrationException with the specified detail message.
+     * 
+     * @param message the detail message explaining the migration failure
+     */
     public TableMigrationException(String message) {
       super(message);
     }
   }
   
+  /**
+   * Exception thrown when partitioning operations fail.
+   * 
+   * <p>This exception is used to indicate failures during partitioning operations,
+   * including table creation, partition setup, or data restoration failures.
+   */
   public static class PartitioningException extends Exception {
+    /**
+     * Constructs a new PartitioningException with the specified detail message.
+     * 
+     * @param message the detail message explaining the partitioning failure
+     */
     public PartitioningException(String message) {
       super(message);
     }
     
+    /**
+     * Constructs a new PartitioningException with the specified detail message and cause.
+     * 
+     * @param message the detail message explaining the partitioning failure
+     * @param cause the underlying cause of the partitioning failure
+     */
     public PartitioningException(String message, Throwable cause) {
       super(message, cause);
     }
   }
 
-
-
+  /**
+   * Executes the main partitioning and constraint management process.
+   * 
+   * <p>This is the primary entry point for the module script that orchestrates the entire
+   * partitioning workflow. The execution follows these main phases:
+   * 
+   * <ol>
+   *   <li><strong>Configuration Loading:</strong> Loads table configuration from {@code ETARC_TABLE_CONFIG}</li>
+   *   <li><strong>Pre-Migration Backup:</strong> Backs up data from partitioned tables that will undergo structural changes</li>
+   *   <li><strong>Table Processing:</strong> Processes each configured table based on its current state:
+   *     <ul>
+   *       <li>Constraint recreation for tables needing only constraint updates</li>
+   *       <li>Structural migration for partitioned tables with schema changes</li>
+   *       <li>Partition restoration for tables that were unpartitioned by update.database</li>
+   *     </ul>
+   *   </li>
+   *   <li><strong>Performance Optimization:</strong> Applies database optimizations for large table operations</li>
+   *   <li><strong>Cleanup:</strong> Removes old backups and temporary resources</li>
+   *   <li><strong>Constraint Application:</strong> Executes any accumulated constraint SQL</li>
+   *   <li><strong>Metrics Reporting:</strong> Logs execution summary with performance metrics</li>
+   * </ol>
+   * 
+   * <p>The method includes comprehensive error handling and will attempt to maintain system
+   * integrity even if individual table operations fail. All operations are logged extensively
+   * for debugging and monitoring purposes.
+   * 
+   * <p>Performance considerations:
+   * <ul>
+   *   <li>Large tables (over {@link Constants#LARGE_TABLE_THRESHOLD} rows) receive special optimization</li>
+   *   <li>Database settings are temporarily adjusted for large operations and restored afterward</li>
+   *   <li>Execution metrics are collected for all operations to identify performance bottlenecks</li>
+   * </ul>
+   * 
+   * @throws OBException if the module script execution fails due to unrecoverable errors
+   * @see #loadTableConfigs(ConnectionProvider) for configuration loading details
+   * @see #processTableConfig(ConnectionProvider, Map, StringBuilder, TableMetrics) for individual table processing
+   */
   public void execute() {
     try {
       ConnectionProvider cp = getConnectionProvider();
@@ -111,7 +239,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       StringBuilder sql = new StringBuilder();
       for (Map<String, String> cfg : tableConfigs) {
-        long start = System.nanoTime();
         String tableName = cfg.get(Constants.TABLE_NAME_KEY);
         TableMetrics tm = new TableMetrics(tableName);
         try {
@@ -139,11 +266,40 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Backs up data from partitioned tables that will undergo structural changes.
-   * This method runs BEFORE update.database to preserve data that would otherwise be lost.
+   * 
+   * <p>This method runs as a precautionary step BEFORE the main table processing to preserve
+   * data that might be lost during structural migrations. It specifically targets tables that:
+   * <ul>
+   *   <li>Are currently partitioned in the database</li>
+   *   <li>Have structural changes defined in their XML table definitions</li>
+   *   <li>Will undergo migration that could result in data loss</li>
+   * </ul>
+   * 
+   * <p>The backup process:
+   * <ol>
+   *   <li>Ensures the backup schema ({@link Constants#BACKUP_SCHEMA}) exists</li>
+   *   <li>Validates each table configuration for completeness</li>
+   *   <li>Checks if the table is currently partitioned using {@link TableAnalyzer}</li>
+   *   <li>Compares current table structure with XML definitions to detect changes</li>
+   *   <li>Creates a backup copy of tables that meet the criteria using {@link TableBackupManager}</li>
+   * </ol>
+   * 
+   * <p>Backup is selective - only tables that are both partitioned AND have structural
+   * changes are backed up to minimize storage overhead and backup time.
    * 
    * @param cp the connection provider for accessing the database
-   * @param tableConfigs list of table configurations to check
-   * @throws Exception if backup operations fail
+   * @param tableConfigs list of table configurations loaded from {@code ETARC_TABLE_CONFIG}
+   * @throws Exception if backup operations fail, including:
+   *                   <ul>
+   *                     <li>Database connectivity issues</li>
+   *                     <li>Insufficient permissions for backup schema creation</li>
+   *                     <li>Disk space issues during backup</li>
+   *                     <li>XML parsing errors when comparing table definitions</li>
+   *                   </ul>
+   * 
+   * @see TableAnalyzer#isTablePartitioned(ConnectionProvider, String) for partitioning detection
+   * @see TableDefinitionComparator#isTableDefinitionChanged(String, ConnectionProvider, List) for change detection  
+   * @see TableBackupManager#backupTableData(ConnectionProvider, String) for backup creation
    */
   private void backupPartitionedTablesData(ConnectionProvider cp, List<Map<String, String>> tableConfigs) throws Exception {
     log4j.info("========== CHECKING FOR PARTITIONED TABLES NEEDING BACKUP ==========");
@@ -181,10 +337,33 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Validates if a table configuration has all required fields.
-   *
-   * @param cfg the table configuration to validate
-   * @return true if the configuration is valid, false otherwise
+   * Validates if a table configuration contains all required fields for partitioning operations.
+   * 
+   * <p>A valid table configuration must contain:
+   * <ul>
+   *   <li><strong>Table Name:</strong> The name of the table to be partitioned (non-blank)</li>
+   *   <li><strong>Partition Column:</strong> The column name to use for partitioning (non-blank)</li>
+   *   <li><strong>Primary Key Column:</strong> The primary key column name (non-blank)</li>
+   * </ul>
+   * 
+   * <p>All values are validated using {@link StringUtils#isBlank(CharSequence)} to ensure
+   * they are not null, empty, or contain only whitespace characters.
+   * 
+   * <p>Configuration maps are typically loaded from the {@code ETARC_TABLE_CONFIG} table
+   * and should contain keys defined in {@link Constants}:
+   * <ul>
+   *   <li>{@link Constants#TABLE_NAME_KEY} for the table name</li>
+   *   <li>{@link Constants#COLUMN_NAME_KEY} for the partition column</li>
+   *   <li>{@link Constants#COLUMN_NAME_KEY} for the primary key column</li>
+   * </ul>
+   * 
+   * @param cfg the table configuration map to validate, must not be null
+   * @return {@code true} if the configuration contains all required non-blank fields,
+   *         {@code false} if any required field is missing, null, empty, or blank
+   * 
+   * @see Constants#TABLE_NAME_KEY
+   * @see Constants#COLUMN_NAME_KEY  
+   * @see StringUtils#isBlank(CharSequence)
    */
   private boolean isValidTableConfig(Map<String, String> cfg) {
     String tableName = cfg.get(Constants.TABLE_NAME_KEY);
@@ -194,13 +373,49 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Loads the table configuration from the `ETARC_TABLE_CONFIG` table.
-   * This includes the table name, the partition column, and the primary key column.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @return a list of maps, where each map contains the keys:
-   *         "tableName", "columnName", and "pkColumnName".
-   * @throws Exception if a database access error occurs.
+   * Loads table configuration data from the ETARC_TABLE_CONFIG table.
+   * 
+   * <p>This method retrieves partitioning configuration for all tables that should be
+   * managed by this module script. The configuration includes essential information
+   * needed for partitioning operations:
+   * 
+   * <ul>
+   *   <li><strong>Table Name:</strong> The name of the table to be partitioned</li>
+   *   <li><strong>Partition Column:</strong> The column used for range partitioning (typically a date/timestamp)</li>
+   *   <li><strong>Primary Key Column:</strong> The primary key column for constraint management</li>
+   * </ul>
+   * 
+   * <p>The method executes a SQL query that joins several Etendo metadata tables:
+   * <ul>
+   *   <li>{@code ETARC_TABLE_CONFIG} - Contains the partitioning configuration</li>
+   *   <li>{@code AD_TABLE} - Contains table metadata</li>
+   *   <li>{@code AD_COLUMN} - Contains column metadata for both partition and primary key columns</li>
+   * </ul>
+   * 
+   * <p>All column and table names are converted to uppercase for consistency with PostgreSQL
+   * naming conventions and to ensure case-insensitive matching.
+   * 
+   * <p>The returned maps use keys defined in {@link Constants}:
+   * <ul>
+   *   <li>{@link Constants#TABLE_NAME_KEY} maps to the table name</li>
+   *   <li>{@link Constants#COLUMN_NAME_KEY} maps to the partition column name</li>
+   *   <li>{@link Constants#COLUMN_NAME_KEY} maps to the primary key column name</li>
+   * </ul>
+   * 
+   * @param cp the connection provider for accessing the Etendo database
+   * @return a list of configuration maps, each representing a table to be partitioned.
+   *         Returns an empty list if no tables are configured for partitioning.
+   * @throws Exception if database access fails, including:
+   *                   <ul>
+   *                     <li>SQL execution errors</li>
+   *                     <li>Connection timeout or loss</li>
+   *                     <li>Missing required database tables or columns</li>
+   *                     <li>Insufficient database permissions</li>
+   *                   </ul>
+   * 
+   * @see Constants#TABLE_NAME_KEY
+   * @see Constants#COLUMN_NAME_KEY
+   * @see #isValidTableConfig(Map) for configuration validation
    */
   private List<Map<String, String>> loadTableConfigs(ConnectionProvider cp) throws Exception {
     String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, "
@@ -218,7 +433,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         Map<String, String> cfg = new HashMap<>();
         cfg.put(Constants.TABLE_NAME_KEY, rs.getString("TABLENAME"));
         cfg.put(Constants.COLUMN_NAME_KEY, rs.getString("COLUMNNAME"));
-        cfg.put(Constants.COLUMN_NAME_KEY, rs.getString("PK_COLUMNNAME"));
+        cfg.put(Constants.PK_COLUMN_NAME_KEY, rs.getString("PK_COLUMNNAME"));
         tableConfigs.add(cfg);
       }
     }
@@ -226,429 +441,1118 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Processes a single table configuration, determining whether constraints
-   * need to be recreated or if a full structural migration is required.
-   * If the table is not yet partitioned correctly or its structure has changed,
-   * it performs the appropriate action (constraint recreation or full migration).
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param cfg a map containing the table configuration (table name, partition column, primary key).
-   * @param sql the SQL builder to which constraint SQL will be appended if necessary.
-   * @throws Exception if an error occurs during processing or querying the database.
+   * Processes a single table configuration to determine and execute the appropriate partitioning action.
+   * 
+   * <p>This method serves as the main coordinator for processing individual tables. It analyzes
+   * the current state of a table and determines which of the following actions to perform:
+   * 
+   * <ul>
+   *   <li><strong>Skip Processing:</strong> If the table configuration is invalid or no action is needed</li>
+   *   <li><strong>Constraint Recreation:</strong> For tables that need only constraint updates</li>
+   *   <li><strong>Structural Migration:</strong> For partitioned tables with schema changes</li>
+   *   <li><strong>Partition Restoration:</strong> For tables that should be partitioned but aren't</li>
+   * </ul>
+   * 
+   * <p>The processing workflow:
+   * <ol>
+   *   <li>Extract and validate table configuration information</li>
+   *   <li>Analyze current table state (partitioning status, structural changes, etc.)</li>
+   *   <li>Determine if table processing should be skipped</li>
+   *   <li>Prepare performance metrics and apply optimizations for large tables</li>
+   *   <li>Execute the appropriate action based on table state</li>
+   *   <li>Apply post-processing optimizations</li>
+   *   <li>Clean up any temporary optimizations</li>
+   * </ol>
+   * 
+   * <p>Performance considerations:
+   * <ul>
+   *   <li>Tables exceeding {@link Constants#LARGE_TABLE_THRESHOLD} rows receive special optimization</li>
+   *   <li>Database settings are temporarily modified for large operations</li>
+   *   <li>Execution metrics are collected for monitoring and reporting</li>
+   * </ul>
+   * 
+   * <p>Error handling ensures that failures in processing one table don't prevent
+   * processing of other tables, and temporary optimizations are always cleaned up.
+   * 
+   * @param cp the connection provider for accessing the database
+   * @param cfg a map containing the table configuration with keys from {@link Constants}:
+   *            <ul>
+   *              <li>{@link Constants#TABLE_NAME_KEY} - the table name</li>
+   *              <li>{@link Constants#COLUMN_NAME_KEY} - the partition column name</li>
+   *              <li>{@link Constants#COLUMN_NAME_KEY} - the primary key column name</li>
+   *            </ul>
+   * @param sql a StringBuilder to accumulate constraint SQL that will be executed later
+   * @param tm a TableMetrics instance for collecting performance data about this table
+   * 
+   * @throws Exception if an error occurs during table analysis or processing, including:
+   *                   <ul>
+   *                     <li>Database connectivity issues</li>
+   *                     <li>Table structure analysis failures</li>
+   *                     <li>Migration or partitioning operation failures</li>
+   *                     <li>Performance optimization failures</li>
+   *                   </ul>
+   * 
+   * @see #extractTableConfigInfo(Map) for configuration extraction
+   * @see #analyzeTableState(ConnectionProvider, TableConfigInfo) for state analysis  
+   * @see #executeTableAction(ConnectionProvider, TableConfigInfo, TableStateInfo, StringBuilder, TableMetrics) for action execution
    */
   private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg, StringBuilder sql, TableMetrics tm) throws Exception {
+    TableConfigInfo configInfo = extractTableConfigInfo(cfg);
+    
+    if (!configInfo.isValid()) {
+      LoggingUtils.logSkipReason(true, configInfo.tableName(), configInfo.pkCol(), configInfo.partitionCol());
+      return;
+    }
+
+    TableStateInfo stateInfo = analyzeTableState(cp, configInfo);
+    
+    if (shouldSkipTable(stateInfo)) {
+      LoggingUtils.logSkipReason(false, configInfo.tableName(), configInfo.pkCol(), configInfo.partitionCol());
+      return;
+    }
+
+    prepareTableMetrics(cp, configInfo.tableName(), tm);
+    
+    try {
+      executeTableAction(cp, configInfo, stateInfo, sql, tm);
+      performPostProcessingOptimizations(cp, configInfo.tableName(), configInfo.partitionCol(), tm);
+    } finally {
+      cleanupOptimizations(cp, tm.largeTable);
+    }
+  }
+
+  /**
+   * Extracts and validates table configuration information from a configuration map.
+   * 
+   * <p>This method processes the raw configuration data loaded from the database and
+   * prepares it for use in partitioning operations. It performs the following tasks:
+   * 
+   * <ul>
+   *   <li>Extracts table name, partition column, and primary key column from the configuration</li>
+   *   <li>Validates that all required fields are present and non-blank</li>
+   *   <li>Locates corresponding XML table definition files for structural comparison</li>
+   *   <li>Logs the extracted configuration for debugging purposes</li>
+   * </ul>
+   * 
+   * <p>The method searches for XML files that define the table structure using
+   * {@link XmlParsingUtils#findTableXmlFiles(String, String)}. These files are used
+   * later to detect structural changes and guide migration operations.
+   * 
+   * <p>Validation ensures all critical fields are present before proceeding with
+   * potentially expensive partitioning operations.
+   * 
+   * @param cfg the raw configuration map loaded from {@code ETARC_TABLE_CONFIG} with keys:
+   *            <ul>
+   *              <li>{@link Constants#TABLE_NAME_KEY} - the table name</li>
+   *              <li>{@link Constants#COLUMN_NAME_KEY} - the partition column name</li>
+   *              <li>{@link Constants#COLUMN_NAME_KEY} - the primary key column name</li>
+   *            </ul>
+   * 
+   * @return a {@link TableConfigInfo} record containing the extracted and validated configuration
+   *         along with located XML files. The {@code isValid} field indicates whether all
+   *         required fields were present and valid.
+   * 
+   * @throws NoSuchFileException if XML table definition files cannot be located when expected
+   * 
+   * @see TableConfigInfo for the returned data structure
+   * @see XmlParsingUtils#findTableXmlFiles(String, String) for XML file location
+   */
+  private TableConfigInfo extractTableConfigInfo(Map<String, String> cfg) throws NoSuchFileException {
     String tableName = cfg.get(Constants.TABLE_NAME_KEY);
     String partitionCol = cfg.get(Constants.COLUMN_NAME_KEY);
     String pkCol = cfg.get(Constants.COLUMN_NAME_KEY);
 
-    log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", tableName, partitionCol, pkCol);
+    log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", 
+               tableName, partitionCol, pkCol);
 
-    boolean isIncomplete = StringUtils.isBlank(tableName) || StringUtils.isBlank(partitionCol) || StringUtils.isBlank(pkCol);
-    List<File> xmlFiles = isIncomplete ? Collections.emptyList() : XmlParsingUtils.findTableXmlFiles(tableName, getSourcePath());
+    boolean isValid = !StringUtils.isBlank(tableName) && !StringUtils.isBlank(partitionCol) && !StringUtils.isBlank(pkCol);
+    List<File> xmlFiles = isValid ? XmlParsingUtils.findTableXmlFiles(tableName, getSourcePath()) : Collections.emptyList();
 
-    boolean isStructuralChange = !isIncomplete &&
-            (new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
+    return new TableConfigInfo(tableName, partitionCol, pkCol, isValid, xmlFiles);
+  }
 
-    boolean isPartitioned = tableAnalyzer.isTablePartitioned(cp, tableName);
-    List<String> pkCols = tableAnalyzer.getPrimaryKeyColumns(cp, tableName);
+  /**
+   * Analyzes the current state of a table to determine what partitioning actions are required.
+   * 
+   * <p>This method performs a comprehensive analysis of the table's current state by examining:
+   * 
+   * <ul>
+   *   <li><strong>Structural Changes:</strong> Compares current table structure with XML definitions
+   *       using {@link TableDefinitionComparator} to detect schema modifications</li>
+   *   <li><strong>Partitioning Status:</strong> Checks if the table is currently partitioned
+   *       using {@link TableAnalyzer#isTablePartitioned(ConnectionProvider, String)}</li>
+   *   <li><strong>Primary Key Status:</strong> Examines primary key configuration to detect
+   *       incomplete partitioning setups</li>
+   *   <li><strong>Restoration Needs:</strong> Identifies tables that should be partitioned
+   *       but currently aren't (typically after update.database operations)</li>
+   * </ul>
+   * 
+   * <p>The analysis results guide the selection of appropriate actions:
+   * <ul>
+   *   <li><strong>First Partition Run:</strong> Table is partitioned but missing primary keys</li>
+   *   <li><strong>Structural Changes:</strong> Partitioned table with schema modifications requiring migration</li>
+   *   <li><strong>Partition Restoration:</strong> Table should be partitioned but currently isn't</li>
+   *   <li><strong>Constraint Recreation:</strong> Standard constraint updates needed</li>
+   * </ul>
+   * 
+   * <p>All analysis results are logged for debugging and monitoring purposes.
+   * 
+   * @param cp the connection provider for database access during analysis
+   * @param configInfo the validated table configuration containing table name and column information
+   * 
+   * @return a {@link TableStateInfo} record containing the analysis results including:
+   *         <ul>
+   *           <li>Whether structural changes were detected</li>
+   *           <li>Current partitioning status</li>
+   *           <li>Whether this represents a first partition run</li>
+   *           <li>Whether partition restoration is needed</li>
+   *         </ul>
+   * 
+   * @throws Exception if analysis operations fail, including:
+   *                   <ul>
+   *                     <li>Database query failures during structure comparison</li>
+   *                     <li>XML parsing errors when reading table definitions</li>
+   *                     <li>Connection issues during table analysis</li>
+   *                   </ul>
+   * 
+   * @see TableDefinitionComparator#isTableDefinitionChanged(String, ConnectionProvider, List)
+   * @see TableAnalyzer#isTablePartitioned(ConnectionProvider, String)
+   * @see TableAnalyzer#getPrimaryKeyColumns(ConnectionProvider, String)
+   * @see TableStateInfo for the returned data structure
+   */
+  private TableStateInfo analyzeTableState(ConnectionProvider cp, TableConfigInfo configInfo) throws Exception {
+    boolean isStructuralChange = configInfo.isValid() &&
+            (new TableDefinitionComparator()).isTableDefinitionChanged(configInfo.tableName(), cp, configInfo.xmlFiles());
+
+    boolean isPartitioned = tableAnalyzer.isTablePartitioned(cp, configInfo.tableName());
+    List<String> pkCols = tableAnalyzer.getPrimaryKeyColumns(cp, configInfo.tableName());
     boolean firstPartitionRun = isPartitioned && pkCols.isEmpty();
-    
-    // Check if this table should be partitioned but isn't (probably due to update.database processing)
-    boolean shouldBePartitioned = !isIncomplete; // If we have config, it should be partitioned
-    boolean needsPartitionRestoration = shouldBePartitioned && !isPartitioned;
+    boolean needsPartitionRestoration = configInfo.isValid() && !isPartitioned;
 
     log4j.info("Table {} partitioned = {} existing PK cols = {} structural changes = {} needs restoration = {}", 
-               tableName, isPartitioned, pkCols, isStructuralChange, needsPartitionRestoration);
+               configInfo.tableName(), isPartitioned, pkCols, isStructuralChange, needsPartitionRestoration);
 
-      if (shouldSkipTable(isIncomplete, firstPartitionRun, !isStructuralChange && !needsPartitionRestoration)) {
-        LoggingUtils.logSkipReason(isIncomplete, tableName, pkCol, partitionCol);
-        return;
-      }    // Check table size for performance optimizations
-    long tableSize = 0;
-    try {
-      tableSize = tableAnalyzer.getApproximateTableRowCount(cp, tableName);
-      log4j.info("Table {} estimated size: {} rows", tableName, tableSize);
-    } catch (Exception e) {
-      log4j.warn("Could not determine table size for {}: {}", tableName, e.getMessage());
-    }
+    return new TableStateInfo(isStructuralChange, isPartitioned, firstPartitionRun, needsPartitionRestoration);
+  }
 
-    // Apply performance optimizations for large tables
+  /**
+   * Determines if table processing should be skipped.
+   */
+  private boolean shouldSkipTable(TableStateInfo stateInfo) {
+    return !stateInfo.firstPartitionRun() && 
+           !stateInfo.isStructuralChange() && 
+           !stateInfo.needsPartitionRestoration();
+  }
+
+  /**
+   * Prepares table metrics and performance optimizations.
+   */
+  private void prepareTableMetrics(ConnectionProvider cp, String tableName, TableMetrics tm) throws Exception {
+    long tableSize = getTableSize(cp, tableName);
     boolean isLargeTable = tableSize > Constants.LARGE_TABLE_THRESHOLD;
+    
     tm.estimatedRows = tableSize;
     tm.largeTable = isLargeTable;
+    
     if (isLargeTable) {
       log4j.info("Large table detected ({}), applying performance optimizations", tableName);
       dbOptimizer.optimizeDatabaseForLargeOperations(cp);
       dbOptimizer.logPerformanceMetrics(cp, "Pre-partition " + tableName);
-
-    }
-
-    try {
-      // If table needs partition restoration (was unpartitioned by update.database), re-partition it
-      if (needsPartitionRestoration) {
-        tm.action = "restore-partitioning";
-        log4j.info("Table {} should be partitioned but isn't. Restoring partitioning with current data...", tableName);
-        tm.migratedRows = restorePartitioningWithData(cp, tableName, partitionCol, pkCol);
-      }
-      // If the table is partitioned AND has structural changes, perform full migration
-      else if (isPartitioned && isStructuralChange) {
-        tm.action = "migrate-structural";
-        log4j.info("Structural changes detected in partitioned table {}. Performing full migration...", tableName);
-        tm.migratedRows = performPartitionedTableMigration(cp, tableName, partitionCol, pkCol);
-      } else {
-        // Otherwise, just recreate constraints (existing behavior)
-        tm.action = "recreate-constraints";
-        log4j.info("Recreating constraints for {} (firstRun = {}, structuralChanges = {})", 
-                   tableName, firstPartitionRun, isStructuralChange);
-        sql.append(constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath()));
-      }
-      // Post-processing optimizations for large tables
-      if (isLargeTable) {
-        dbOptimizer.createOptimizedIndexes(cp, tableName, partitionCol);
-        dbOptimizer.analyzePartitionedTable(cp, tableName);
-        dbOptimizer.logPerformanceMetrics(cp, "Post-partition " + tableName);
-      }
-      
-    } finally {
-      // Restore database settings if they were modified
-      if (isLargeTable) {
-        dbOptimizer.restoreDatabaseSettings(cp);
-      }
     }
   }
 
   /**
-   * Determines whether a table should be skipped based on its configuration
-   * and partitioning state.
-   *
-   * @param isIncomplete true if the table configuration is incomplete.
-   * @param firstPartitionRun true if this is the first partitioning run for the table.
-   * @param isUnchangedAndPartitioned true if the table definition has not changed and is already properly partitioned.
-   * @return true if the table should be skipped, false otherwise.
+   * Gets table size with error handling.
    */
-  private boolean shouldSkipTable(boolean isIncomplete, boolean firstPartitionRun, boolean isUnchangedAndPartitioned) {
-    return isIncomplete || (!firstPartitionRun && isUnchangedAndPartitioned);
+  private long getTableSize(ConnectionProvider cp, String tableName) {
+    try {
+      long tableSize = tableAnalyzer.getApproximateTableRowCount(cp, tableName);
+      log4j.info("Table {} estimated size: {} rows", tableName, tableSize);
+      return tableSize;
+    } catch (Exception e) {
+      log4j.warn("Could not determine table size for {}: {}", tableName, e.getMessage());
+      return 0;
+    }
   }
 
   /**
-   * Performs a full migration of a partitioned table when structural changes are detected.
-   * This method implements a process similar to migrate.py:
-   * 1. Rename the current partitioned table to a temporary name
-   * 2. Create a new partitioned table with the updated structure
-   * 3. Migrate all data from the temporary table to the new table
-   * 4. Drop the temporary table
-   * 5. Recreate constraints and foreign keys
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param tableName the name of the partitioned table to migrate.
-   * @param partitionCol the partition column name.
-   * @param pkCol the primary key column name.
-   * @throws Exception if any error occurs during the migration process.
+   * Executes the appropriate action based on table state.
+   */
+  private void executeTableAction(ConnectionProvider cp, TableConfigInfo configInfo, TableStateInfo stateInfo, 
+                                  StringBuilder sql, TableMetrics tm) throws Exception {
+    if (stateInfo.needsPartitionRestoration()) {
+      tm.action = "restore-partitioning";
+      log4j.info("Table {} should be partitioned but isn't. Restoring partitioning with current data...", 
+                 configInfo.tableName());
+      tm.migratedRows = restorePartitioningWithData(cp, configInfo.tableName(), configInfo.partitionCol(), configInfo.pkCol());
+    }
+    else if (stateInfo.isPartitioned() && stateInfo.isStructuralChange()) {
+      tm.action = "migrate-structural";
+      log4j.info("Structural changes detected in partitioned table {}. Performing full migration...", 
+                 configInfo.tableName());
+      tm.migratedRows = performPartitionedTableMigration(cp, configInfo.tableName(), configInfo.partitionCol(), configInfo.pkCol());
+    } 
+    else {
+      tm.action = "recreate-constraints";
+      log4j.info("Recreating constraints for {} (firstRun = {}, structuralChanges = {})", 
+                 configInfo.tableName(), stateInfo.firstPartitionRun(), stateInfo.isStructuralChange());
+      sql.append(constraintUtils.buildConstraintSql(configInfo.tableName(), cp, configInfo.pkCol(), 
+                                                    configInfo.partitionCol(), getSourcePath()));
+    }
+  }
+
+  /**
+   * Performs post-processing optimizations for large tables.
+   */
+  private void performPostProcessingOptimizations(ConnectionProvider cp, String tableName, String partitionCol, TableMetrics tm) throws Exception {
+    if (tm.largeTable) {
+      dbOptimizer.createOptimizedIndexes(cp, tableName, partitionCol);
+      dbOptimizer.analyzePartitionedTable(cp, tableName);
+      dbOptimizer.logPerformanceMetrics(cp, "Post-partition " + tableName);
+    }
+  }
+
+  /**
+   * Cleans up optimization settings.
+   */
+  private void cleanupOptimizations(ConnectionProvider cp, boolean isLargeTable) throws Exception {
+    if (isLargeTable) {
+      dbOptimizer.restoreDatabaseSettings(cp);
+    }
+  }
+
+  /**
+   * Immutable data container for table configuration information.
+   * 
+   * <p>This record encapsulates all configuration data needed for partitioning operations,
+   * extracted from the {@code ETARC_TABLE_CONFIG} database table and validated for completeness.
+   * 
+   * <p>The configuration includes both database metadata and file system resources:
+   * <ul>
+   *   <li><strong>Database Configuration:</strong> Table name and column specifications</li>
+   *   <li><strong>Validation Status:</strong> Whether all required fields are present and valid</li>
+   *   <li><strong>File Resources:</strong> XML table definition files for structural comparison</li>
+   * </ul>
+   * 
+   * <p>This record is created by {@link #extractTableConfigInfo(Map)} and used throughout
+   * the partitioning workflow to ensure consistent access to validated configuration data.
+   * 
+   * @param tableName the name of the table to be partitioned, must be non-blank if valid
+   * @param partitionCol the column name to use for range partitioning, typically a date/timestamp column
+   * @param pkCol the primary key column name for constraint management
+   * @param isValid indicates whether all required fields are present and non-blank
+   * @param xmlFiles list of XML files defining the table structure, used for change detection
+   * 
+   * @see #extractTableConfigInfo(Map) for creation
+   * @see #isValidTableConfig(Map) for validation logic
+   */
+  private record TableConfigInfo(String tableName, String partitionCol, String pkCol, 
+                                boolean isValid, List<File> xmlFiles) {
+  }
+
+  /**
+   * Immutable data container for table state analysis results.
+   * 
+   * <p>This record holds the results of analyzing a table's current state to determine
+   * what partitioning actions are required. It encapsulates the key decision factors
+   * used by the workflow to select appropriate processing strategies.
+   * 
+   * <p>State analysis considers:
+   * <ul>
+   *   <li><strong>Structural Changes:</strong> Whether the table definition has changed</li>
+   *   <li><strong>Partitioning Status:</strong> Current partitioning state of the table</li>
+   *   <li><strong>Setup Completeness:</strong> Whether partitioning setup is incomplete</li>
+   *   <li><strong>Restoration Needs:</strong> Whether partitioning needs to be restored</li>
+   * </ul>
+   * 
+   * <p>This information guides the selection of processing actions:
+   * <ul>
+   *   <li>Structural migration for partitioned tables with schema changes</li>
+   *   <li>Partition restoration for tables that should be partitioned but aren't</li>
+   *   <li>Constraint recreation for standard maintenance operations</li>
+   *   <li>First-run partitioning for incomplete setups</li>
+   * </ul>
+   * 
+   * @param isStructuralChange true if the table structure has changed compared to XML definitions
+   * @param isPartitioned true if the table is currently partitioned in the database
+   * @param firstPartitionRun true if this is a first partitioning run (partitioned but missing constraints)
+   * @param needsPartitionRestoration true if the table should be partitioned but currently isn't
+   * 
+   * @see #analyzeTableState(ConnectionProvider, TableConfigInfo) for creation
+   * @see #shouldSkipTable(TableStateInfo) for usage in decision-making
+   */
+  private record TableStateInfo(boolean isStructuralChange, boolean isPartitioned, 
+                               boolean firstPartitionRun, boolean needsPartitionRestoration) {
+  }
+
+  /**
+   * Performs a comprehensive migration of a partitioned table when structural changes are detected.
+   * 
+   * <p>This method implements a complex data migration process that safely handles structural changes 
+   * to partitioned tables while preserving all existing data. The process follows these critical steps:</p>
+   * 
+   * <ol>
+   *   <li><strong>Pre-migration validation</strong> - Verifies partition structure and data integrity</li>
+   *   <li><strong>Temporary table creation</strong> - Renames current table to preserve data during migration</li>
+   *   <li><strong>New table structure creation</strong> - Builds updated partitioned table with current XML schema</li>
+   *   <li><strong>Data migration</strong> - Transfers all records while maintaining partition distribution</li>
+   *   <li><strong>Constraint restoration</strong> - Recreates all foreign keys, indexes, and constraints</li>
+   *   <li><strong>Cleanup operations</strong> - Removes temporary tables and validates final state</li>
+   * </ol>
+   * 
+   * <p>The migration process is designed to be transactionally safe and includes comprehensive
+   * error handling with rollback capabilities. All operations are performed within a migration
+   * context that tracks progress and maintains data integrity throughout the process.</p>
+   * 
+   * <p><strong>Performance Considerations:</strong></p>
+   * <ul>
+   *   <li>Large tables may require extended migration time due to data copying operations</li>
+   *   <li>Foreign key constraints are temporarily disabled during migration to improve performance</li>
+   *   <li>Partition-wise data distribution is optimized during the migration process</li>
+   * </ul>
+   * 
+   * @param cp the database connection provider for executing all migration operations
+   * @param tableName the name of the partitioned table requiring structural migration
+   * @param partitionCol the column name used for partitioning (typically a date/timestamp field)
+   * @param pkCol the primary key column name for maintaining referential integrity
+   * 
+   * @throws PartitioningException if critical errors occur during migration that cannot be recovered
+   * @throws TableMigrationException if table-specific migration operations fail
+   * @throws SQLException if database operations encounter errors during the migration process
    */
   private long performPartitionedTableMigration(ConnectionProvider cp, String tableName, 
                                                String partitionCol, String pkCol) throws Exception {
     log4j.info("========== STARTING PARTITIONED TABLE MIGRATION FOR {} ==========", tableName);
     
-    String tempTableName = tableName + "_etarc_migration_temp";
-    String partitionsSchema = "partitions";
-    String dataSourceTable = tempTableName; // Initialize with temp table name
-    long migratedRows = 0L;
+    MigrationContext context = new MigrationContext(tableName);
     
     try {
-      // Step 1: Drop dependent views (they'll be recreated by Etendo's process)
-      log4j.info("Step 1: Dropping dependent views and foreign keys for table {}", tableName);
-      constraintUtils.dropDependentViewsAndConstraints(cp, tableName);
-      
-      // Step 2: Rename current partitioned table to temporary name
-      log4j.info("Step 2: Renaming {} to {}", tableName, tempTableName);
-      constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
-                                     tableName, tempTableName));
-      
-      // Step 3: Create new partitioned table with updated structure based on XML
-      log4j.info("Step 3: Creating new partitioned table {} with updated structure", tableName);
-      createUpdatedPartitionedTable(cp, tableName, partitionCol);
-      
-      // Step 4: Ensure partitions schema exists
-      log4j.info("Step 4: Ensuring partitions schema '{}' exists", partitionsSchema);
-      constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, partitionsSchema));
-      
-      // Step 5: Create partitions for the new table
-      log4j.info("Step 5: Creating partitions for new table {}", tableName);
-      createPartitionsForTable(cp, tableName, tempTableName, partitionCol, partitionsSchema);
-      
-      // Step 6: Migrate data from temporary table to new partitioned table
-      log4j.info("Step 6: Migrating data from {} to {}", tempTableName, tableName);
-      long tempTableRows = backupManager.getTableRowCount(cp, tempTableName);
-      dataSourceTable = tempTableName;
-      if (tempTableRows == 0) {
-        log4j.warn("Temporary table {} is empty, checking for backup data...", tempTableName);
-        String backupTableName = backupManager.getLatestBackupTable(cp, tableName);
-        if (backupTableName != null) {
-          String fullBackupTableName = Constants.BACKUP_SCHEMA + "." + backupTableName;
-          long backupRows = backupManager.getTableRowCount(cp, fullBackupTableName);
-          if (backupRows > 0) {
-            log4j.info("Found backup table {} with {} rows. Using backup for data migration.",
-                      backupTableName, backupRows);
-            dataSourceTable = fullBackupTableName;
-            tempTableRows = backupRows;
-          }
-        }
-        if (tempTableRows == 0) {
-          log4j.warn("No backup data found. Table {} will be empty after migration.", tableName);
-        }
-      }
-      
-      try {
-        // Intento principal
-        migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
-        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
-      } catch (Exception ex) {
-          final String srcFqn = dataSourceTable.contains(".") ? dataSourceTable : ("public." + dataSourceTable);
-          final String dstFqn = "public." + tableName;
-          log4j.warn("Primary migration failed ({}). Falling back to column intersection between {} and {}",
-                     ex.getMessage(), srcFqn, dstFqn);
-          List<String> matchingCols = findMatchingColumnsPortable(cp, srcFqn, dstFqn);
-          if (matchingCols.isEmpty()) {
-            log4j.error("Fallback failed: no matching columns found between {} and {}", srcFqn, dstFqn);
-            throw ex;
-        }
-        migratedRows = insertByColumnIntersection(cp, srcFqn, dstFqn, matchingCols);
-        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
-      }      // Step 7: Verify the new table exists and is properly partitioned before proceeding
-      log4j.info("Step 7: Verifying new partitioned table {} was created successfully", tableName);
-      if (!tableAnalyzer.isTablePartitioned(cp, tableName)) {
-        throw new TableMigrationException("New table " + tableName + " is not properly partitioned after migration");
-      }
-      
-      // Step 8: Try to recreate constraints (with error handling)
-      log4j.info("Step 8: Recreating constraints for {}", tableName);
-      try {
-        String constraintSql = constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath());
-        if (!StringUtils.isBlank(constraintSql)) {
-          constraintUtils.executeUpdate(cp, constraintSql);
-          LoggingUtils.logSuccessRecreatedConstraints(tableName);
-        }
-      } catch (Exception constraintError) {
-        log4j.error("WARNING: Failed to recreate constraints for {}: {}", tableName, constraintError.getMessage());
-        log4j.error("The table migration was successful, but constraint recreation failed.");
-        log4j.error("Constraints can be recreated manually later.");
-        
-        // Don't re-throw for constraint errors - the migration itself was successful
-        // Constraints already existing is not a critical error that should stop the process
-        if (constraintError.getMessage().contains("already exists")) {
-          log4j.info("Constraint already exists - this is expected and not an error. Continuing...");
-        } else {
-          log4j.error("Keeping temporary table for safety due to unexpected constraint error.");
-          // For other constraint errors, we might want to keep the temp table
-          // but still not fail the entire migration
-        }
-      }
-      
-      // Step 9: Only drop temporary table after everything succeeds
-      log4j.info("Step 9: Dropping temporary table {} (migration completed successfully)", tempTableName);
-      constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tempTableName));
-      
-      // Step 10: Clean up backup if we used it
-      if (!dataSourceTable.equals(tempTableName)) {
-        // We used backup data, clean it up
-        String backupTableName = dataSourceTable.substring(dataSourceTable.lastIndexOf(".") + 1);
-        log4j.info("Step 10: Cleaning up backup table {} (migration completed successfully)", backupTableName);
-        try {
-          backupManager.cleanupBackup(cp, tableName, backupTableName);
-        } catch (Exception backupCleanupError) {
-          log4j.warn("Failed to cleanup backup table {}: {}", backupTableName, backupCleanupError.getMessage());
-          // Don't fail the migration for backup cleanup errors
-        }
-      }
+      prepareMigrationEnvironment(cp, context);
+      createNewPartitionedTable(cp, context, partitionCol);
+      long migratedRows = migrateTableData(cp, context, tableName, partitionCol);
+      finalizeTableMigration(cp, context, tableName, partitionCol, pkCol);
       
       log4j.info("========== COMPLETED PARTITIONED TABLE MIGRATION FOR {} ==========", tableName);
       return migratedRows;
       
     } catch (Exception e) {
-      log4j.error("ERROR during partitioned table migration for {}: {}", tableName, e.getMessage(), e);
-      
-      // Attempt to restore original table if migration failed and temp table still exists
-      try {
-        // First check if the temporary table still exists
-        boolean tempTableExists = false;
-        try (PreparedStatement checkPs = cp.getPreparedStatement(
-            "SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public'")) {
-          checkPs.setString(1, tempTableName);
-          try (ResultSet rs = checkPs.executeQuery()) {
-            tempTableExists = rs.next();
-          }
-        }
-        
-        if (tempTableExists) {
-          LoggingUtils.logRestoreOriginalTable(tableName, tempTableName);
-          constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tableName));
-          constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
-                                         tempTableName, tableName));
-          LoggingUtils.logSuccessRestoredTable(tableName);
-        } else {
-          log4j.error("CRITICAL: Cannot restore original table {} - temporary table {} no longer exists", 
-                     tableName, tempTableName);
-          log4j.error("Manual intervention required to restore the table from backup");
-        }
-      } catch (Exception restoreError) {
-        LoggingUtils.logCriticalRestorationError(tableName, restoreError);
-      }
-      return migratedRows;
+      handleMigrationFailure(cp, context, tableName, e);
+      return context.migratedRows;
     }
   }
 
   /**
-   * Restores partitioning to a table that should be partitioned but isn't.
-   * This handles cases where update.database has converted a partitioned table
-   * back to a regular table, and we need to restore the partitioning while
-   * preserving all existing data. If the table is empty, but we have a backup,
-   * it will restore from the backup.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param tableName the name of the table to restore partitioning for.
-   * @param partitionCol the partition column name.
-   * @param pkCol the primary key column name.
-   * @throws Exception if any error occurs during the restoration process.
+   * Prepares the migration environment by dropping constraints and renaming tables.
    */
-  private long restorePartitioningWithData(ConnectionProvider cp, String tableName, 
-                                         String partitionCol, String pkCol) throws Exception {
-    log4j.info("========== RESTORING PARTITIONING FOR {} ==========", tableName);
+  private void prepareMigrationEnvironment(ConnectionProvider cp, MigrationContext context) throws Exception {
+    log4j.info("Step 1: Dropping dependent views and foreign keys for table {}", context.tableName);
+    constraintUtils.dropDependentViewsAndConstraints(cp, context.tableName);
     
-    String tempTableName = tableName + "_etarc_restore_temp";
-    String partitionsSchema = "partitions";
-    long migratedRows = 0L;
+    log4j.info("Step 2: Renaming {} to {}", context.tableName, context.tempTableName);
+    constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
+                                   context.tableName, context.tempTableName));
+  }
+
+  /**
+   * Creates the new partitioned table with updated structure and partitions.
+   */
+  private void createNewPartitionedTable(ConnectionProvider cp, MigrationContext context, String partitionCol) throws Exception {
+    log4j.info("Step 3: Creating new partitioned table {} with updated structure", context.tableName);
+    createUpdatedPartitionedTable(cp, context.tableName, partitionCol);
+    
+    log4j.info("Step 4: Ensuring partitions schema '{}' exists", MigrationContext.PARTITIONS_SCHEMA);
+    constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, MigrationContext.PARTITIONS_SCHEMA));
+    
+    log4j.info("Step 5: Creating partitions for new table {}", context.tableName);
+    createPartitionsForTable(cp, context.tableName, context.tempTableName, partitionCol, MigrationContext.PARTITIONS_SCHEMA);
+  }
+
+  /**
+   * Migrates data from the source table to the new partitioned table.
+   */
+  private long migrateTableData(ConnectionProvider cp, MigrationContext context, String tableName, String partitionCol) throws Exception {
+    log4j.info("Step 6: Migrating data from {} to {}", context.tempTableName, tableName);
+    
+    String dataSourceTable = determineDataSource(cp, context, tableName);
     
     try {
-      // Step 1: Check if table has data
-      long rowCount = backupManager.getTableRowCount(cp, tableName);
-      log4j.info("Step 1: Table {} contains {} rows", tableName, rowCount);
-      
-      // Step 2: If table is empty, check for backup data
-      String dataSourceTable = tableName;
-      String backupTableName = null; // Declare backup table name variable
-      boolean usingBackup = false;
-      
-      if (rowCount == 0) {
-        backupTableName = backupManager.getLatestBackupTable(cp, tableName);
-        if (backupTableName != null) {
-          long backupRowCount = backupManager.getTableRowCount(cp, Constants.BACKUP_SCHEMA + "." + backupTableName);
-          if (backupRowCount > 0) {
-            log4j.info("Table is empty but found backup {} with {} rows. Will restore from backup.", 
-                      backupTableName, backupRowCount);
-            dataSourceTable = Constants.BACKUP_SCHEMA + "." + backupTableName;
-            rowCount = backupRowCount;
-            usingBackup = true;
-          }
-        }
-        
-        if (!usingBackup) {
-          log4j.warn("Table {} is empty and no backup found. Creating empty partitioned table.", tableName);
-        }
-      }
-      
-      if (rowCount == 0 && !usingBackup) {
-        // No data, we can simply convert to partitioned table directly
-        log4j.info("Table is empty, converting directly to partitioned table");
-        migrationService.convertEmptyTableToPartitioned(tableName);
-      } else {
-        // Has data (either original or from backup), need to migrate safely
-        log4j.info("Table has data{}, performing safe migration to restore partitioning", 
-                  usingBackup ? " (from backup)" : "");
-        
-        // Step 3: Rename current table to temporary name
-        log4j.info("Step 3: Renaming {} to {}", tableName, tempTableName);
-        constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
-                                       tableName, tempTableName));
-        
-        // Step 4: Create new partitioned table with same structure
-        log4j.info("Step 4: Creating new partitioned table {} with same structure", tableName);
-        if (usingBackup) {
-          migrationService.createPartitionedTableFromTemplate(cp, tableName, backupTableName, partitionCol);
-        } else {
-          migrationService.createPartitionedTableFromTemplate(cp, tableName, tempTableName, partitionCol);
-        }
-        
-        // Step 5: Ensure partitions schema exists
-        log4j.info("Step 5: Ensuring partitions schema '{}' exists", partitionsSchema);
-        constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, partitionsSchema));
-        
-        // Step 6: Create partitions based on data source
-        log4j.info("Step 6: Creating partitions for table {}", tableName);
-        createPartitionsForTable(cp, tableName, dataSourceTable, partitionCol, partitionsSchema);
-        
-        // Step 7: Migrate data to new partitioned table
-        log4j.info("Step 7: Migrating data from {} to {}", dataSourceTable, tableName);
-        migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
-        LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+      long migratedRows = migrationService.migrateDataToNewTable(cp, dataSourceTable, tableName, partitionCol);
+      LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+      context.migratedRows = migratedRows;
+      context.dataSourceTable = dataSourceTable;
+      return migratedRows;
+    } catch (Exception ex) {
+      return attemptFallbackMigration(cp, context, tableName, dataSourceTable, ex);
+    }
+  }
 
-        // Step 8: Drop temporary table
-        log4j.info("Step 8: Dropping temporary table {} (restoration completed successfully)", tempTableName);
-        constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tempTableName));
+  /**
+   * Determines the appropriate data source for migration (temp table or backup).
+   */
+  private String determineDataSource(ConnectionProvider cp, MigrationContext context, String tableName) throws Exception {
+    long tempTableRows = backupManager.getTableRowCount(cp, context.tempTableName);
+    String dataSourceTable = context.tempTableName;
+    
+    if (tempTableRows == 0) {
+      log4j.warn("Temporary table {} is empty, checking for backup data...", context.tempTableName);
+      String backupTableName = backupManager.getLatestBackupTable(cp, tableName);
+      
+      if (backupTableName != null) {
+        String fullBackupTableName = Constants.BACKUP_SCHEMA + "." + backupTableName;
+        long backupRows = backupManager.getTableRowCount(cp, fullBackupTableName);
         
-        // Step 9: Clean up backup if used
-        if (usingBackup) {
-          log4j.info("Step 9: Cleaning up backup table {}", dataSourceTable);
-          backupManager.cleanupBackup(cp, tableName, backupTableName);
+        if (backupRows > 0) {
+          log4j.info("Found backup table {} with {} rows. Using backup for data migration.",
+                    backupTableName, backupRows);
+          dataSourceTable = fullBackupTableName;
         }
       }
       
-      // Step 10: Recreate constraints for the now-partitioned table
-      log4j.info("Step 10: Recreating constraints for restored partitioned table {}", tableName);
+      if (!dataSourceTable.contains(".")) {
+        log4j.warn("No backup data found. Table {} will be empty after migration.", tableName);
+      }
+    }
+    
+    return dataSourceTable;
+  }
+
+  /**
+   * Attempts fallback migration using column intersection when primary migration fails.
+   */
+  private long attemptFallbackMigration(ConnectionProvider cp, MigrationContext context, String tableName, 
+                                       String dataSourceTable, Exception originalException) throws Exception {
+    final String srcFqn = dataSourceTable.contains(".") ? dataSourceTable : (PUBLIC + dataSourceTable);
+    final String dstFqn = PUBLIC + tableName;
+    
+    log4j.warn("Primary migration failed ({}). Falling back to column intersection between {} and {}",
+               originalException.getMessage(), srcFqn, dstFqn);
+    
+    List<String> matchingCols = findMatchingColumnsPortable(cp, srcFqn, dstFqn);
+    if (matchingCols.isEmpty()) {
+      log4j.error("Fallback failed: no matching columns found between {} and {}", srcFqn, dstFqn);
+      throw originalException;
+    }
+    
+    long migratedRows = insertByColumnIntersection(cp, srcFqn, dstFqn, matchingCols);
+    LoggingUtils.logMigrationSuccessMessage(tableName, migratedRows, dataSourceTable);
+    context.migratedRows = migratedRows;
+    context.dataSourceTable = dataSourceTable;
+    return migratedRows;
+  }
+
+  /**
+   * Finalizes the migration by verifying table state, recreating constraints, and cleaning up.
+   */
+  private void finalizeTableMigration(ConnectionProvider cp, MigrationContext context, String tableName, 
+                                     String partitionCol, String pkCol) throws Exception {
+    verifyMigratedTable(cp, tableName);
+    recreateTableConstraints(cp, tableName, partitionCol, pkCol);
+    cleanupMigrationArtifacts(cp, context, tableName);
+  }
+
+  /**
+   * Verifies that the migrated table is properly partitioned.
+   */
+  private void verifyMigratedTable(ConnectionProvider cp, String tableName) throws Exception {
+    log4j.info("Step 7: Verifying new partitioned table {} was created successfully", tableName);
+    if (!tableAnalyzer.isTablePartitioned(cp, tableName)) {
+      throw new TableMigrationException("New table " + tableName + " is not properly partitioned after migration");
+    }
+  }
+
+  /**
+   * Recreates constraints for the migrated table with error handling.
+   */
+  private void recreateTableConstraints(ConnectionProvider cp, String tableName, String partitionCol, String pkCol) {
+    log4j.info("Step 8: Recreating constraints for {}", tableName);
+    try {
       String constraintSql = constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath());
       if (!StringUtils.isBlank(constraintSql)) {
         constraintUtils.executeUpdate(cp, constraintSql);
         LoggingUtils.logSuccessRecreatedConstraints(tableName);
       }
+    } catch (Exception constraintError) {
+      handleConstraintRecreationError(tableName, constraintError);
+    }
+  }
+
+  /**
+   * Handles constraint recreation errors with appropriate logging.
+   */
+  private void handleConstraintRecreationError(String tableName, Exception constraintError) {
+    log4j.error("WARNING: Failed to recreate constraints for {}: {}", tableName, constraintError.getMessage());
+    log4j.error("The table migration was successful, but constraint recreation failed.");
+    log4j.error("Constraints can be recreated manually later.");
+    
+    if (constraintError.getMessage().contains("already exists")) {
+      log4j.info("Constraint already exists - this is expected and not an error. Continuing...");
+    } else {
+      log4j.error("Keeping temporary table for safety due to unexpected constraint error.");
+    }
+  }
+
+  /**
+   * Cleans up migration artifacts (temporary tables and backups).
+   */
+  private void cleanupMigrationArtifacts(ConnectionProvider cp, MigrationContext context, String tableName) throws Exception {
+    log4j.info("Step 9: Dropping temporary table {} (migration completed successfully)", context.tempTableName);
+    constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, context.tempTableName));
+    
+    if (!context.dataSourceTable.equals(context.tempTableName)) {
+      cleanupBackupTable(cp, context, tableName);
+    }
+  }
+
+  /**
+   * Cleans up backup table if it was used during migration.
+   */
+  private void cleanupBackupTable(ConnectionProvider cp, MigrationContext context, String tableName) {
+    String backupTableName = context.dataSourceTable.substring(context.dataSourceTable.lastIndexOf(".") + 1);
+    log4j.info("Step 10: Cleaning up backup table {} (migration completed successfully)", backupTableName);
+    try {
+      backupManager.cleanupBackup(cp, tableName, backupTableName);
+    } catch (Exception backupCleanupError) {
+      log4j.warn("Failed to cleanup backup table {}: {}", backupTableName, backupCleanupError.getMessage());
+    }
+  }
+
+  /**
+   * Handles migration failure by attempting to restore the original table.
+   */
+  private void handleMigrationFailure(ConnectionProvider cp, MigrationContext context, String tableName, Exception e) {
+    log4j.error("ERROR during partitioned table migration for {}: {}", tableName, e.getMessage(), e);
+    
+    try {
+      if (checkTemporaryTableExists(cp, context.tempTableName)) {
+        restoreOriginalTable(cp, context, tableName);
+      } else {
+        logCriticalRestoreFailure(tableName, context.tempTableName);
+      }
+    } catch (Exception restoreError) {
+      LoggingUtils.logCriticalRestorationError(tableName, restoreError);
+    }
+  }
+
+  /**
+   * Checks if the temporary table still exists.
+   */
+  private boolean checkTemporaryTableExists(ConnectionProvider cp, String tempTableName) throws Exception {
+    try (PreparedStatement checkPs = cp.getPreparedStatement(
+        "SELECT 1 FROM information_schema.tables WHERE table_name = ? AND table_schema = 'public'")) {
+      checkPs.setString(1, tempTableName);
+      try (ResultSet rs = checkPs.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
+   * Restores the original table from the temporary table.
+   */
+  private void restoreOriginalTable(ConnectionProvider cp, MigrationContext context, String tableName) throws Exception {
+    LoggingUtils.logRestoreOriginalTable(tableName, context.tempTableName);
+    constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tableName));
+    constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
+                                   context.tempTableName, tableName));
+    LoggingUtils.logSuccessRestoredTable(tableName);
+  }
+
+  /**
+   * Logs critical failure when temporary table no longer exists.
+   */
+  private void logCriticalRestoreFailure(String tableName, String tempTableName) {
+    log4j.error("CRITICAL: Cannot restore original table {} - temporary table {} no longer exists", 
+               tableName, tempTableName);
+    log4j.error("Manual intervention required to restore the table from backup");
+  }
+
+  /**
+   * Migration context class that encapsulates state and configuration data for table migration operations.
+   * 
+   * <p>This context object serves as a centralized container for all migration-related information,
+   * reducing parameter passing complexity and maintaining state consistency throughout the migration
+   * process. It follows the Context Object pattern to provide a clean interface for migration operations.</p>
+   * 
+   * <p><strong>Key Responsibilities:</strong></p>
+   * <ul>
+   *   <li>Maintains table naming conventions during migration (original, temporary, partitions schema)</li>
+   *   <li>Tracks migration progress and statistics (row counts, data source information)</li>
+   *   <li>Provides consistent naming for temporary migration artifacts</li>
+   *   <li>Centralizes migration configuration to ensure consistency across operations</li>
+   * </ul>
+   * 
+   * <p>The context is designed to be immutable for core configuration (table names, schema)
+   * while allowing mutable state for tracking migration progress and results.</p>
+   */
+  private static class MigrationContext {
+    /** The original table name being migrated */
+    final String tableName;
+    
+    /** Temporary table name used during migration operations (original + "_etarc_migration_temp") */
+    final String tempTableName;
+    
+    /** Schema name where partition tables are stored ("partitions") */
+    static final String PARTITIONS_SCHEMA = "partitions";
+    
+    /** Current data source table name (changes during migration phases) */
+    String dataSourceTable;
+    
+    /** Number of rows successfully migrated during the current operation */
+    long migratedRows = 0L;
+
+    /**
+     * Creates a new migration context for the specified table.
+     * 
+     * @param tableName the name of the table to be migrated
+     */
+    MigrationContext(String tableName) {
+      this.tableName = tableName;
+      this.tempTableName = tableName + "_etarc_migration_temp";
+      this.dataSourceTable = tempTableName;
+    }
+  }
+
+  /**
+   * Restores partitioning to a table that should be partitioned but currently isn't.
+   * 
+   * <p>This method handles complex restoration scenarios where database update operations have 
+   * converted a partitioned table back to a regular table, requiring careful data preservation 
+   * and partitioning restoration. The process adapts to different data availability scenarios:</p>
+   * 
+   * <ul>
+   *   <li><strong>Data present scenario</strong> - Preserves existing data while converting to partitioned structure</li>
+   *   <li><strong>Empty table with backup</strong> - Restores data from archived backup and applies partitioning</li>
+   *   <li><strong>Empty table without backup</strong> - Creates partitioned structure for future data ingestion</li>
+   * </ul>
+   * 
+   * <p>The restoration process implements the following workflow:</p>
+   * <ol>
+   *   <li><strong>Data assessment</strong> - Evaluates current table state and available backup options</li>
+   *   <li><strong>Backup strategy selection</strong> - Chooses appropriate data preservation method</li>
+   *   <li><strong>Structural conversion</strong> - Converts regular table to partitioned architecture</li>
+   *   <li><strong>Data restoration</strong> - Migrates or restores data to partitioned structure</li>
+   *   <li><strong>Constraint recreation</strong> - Rebuilds all table relationships and indexes</li>
+   *   <li><strong>Validation</strong> - Verifies successful restoration and data integrity</li>
+   * </ol>
+   * 
+   * <p><strong>Recovery Scenarios:</strong></p>
+   * <ul>
+   *   <li>Post-update.database conversion recovery</li>
+   *   <li>Failed partitioning attempt recovery</li>
+   *   <li>Manual table structure restoration</li>
+   *   <li>Data corruption recovery from backups</li>
+   * </ul>
+   * 
+   * @param cp the database connection provider for executing restoration operations
+   * @param tableName the name of the table requiring partitioning restoration
+   * @param partitionCol the column name to be used for partitioning (typically date/timestamp)
+   * @param pkCol the primary key column name for maintaining referential integrity
+   * 
+   * @throws PartitioningException if restoration cannot be completed due to structural issues
+   * @throws SQLException if database operations fail during restoration process
+   * @throws Exception if backup restoration or data migration encounters errors
+   */
+  private long restorePartitioningWithData(ConnectionProvider cp, String tableName, 
+                                         String partitionCol, String pkCol) throws Exception {
+    log4j.info("========== RESTORING PARTITIONING FOR {} ==========", tableName);
+    
+    RestorationContext context = new RestorationContext(tableName);
+    
+    try {
+      DataSourceInfo dataSourceInfo = analyzeDataSource(cp, context);
+      long migratedRows = executeRestorationStrategy(cp, context, dataSourceInfo, partitionCol);
+      finalizePartitionRestoration(cp, tableName, partitionCol, pkCol);
       
       log4j.info("========== COMPLETED PARTITIONING RESTORATION FOR {} ==========", tableName);
       return migratedRows;
       
     } catch (Exception e) {
-      log4j.error("ERROR during partitioning restoration for {}: {}", tableName, e.getMessage(), e);
-      
-      // Attempt to restore original table if restoration failed
-      try {
-        boolean tempTableExists = backupManager.tableExists(cp, tempTableName);
-        
-        if (tempTableExists) {
-          LoggingUtils.logRestoreOriginalTable(tableName, tempTableName);
-          constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tableName));
-          constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
-                                         tempTableName, tableName));
-          LoggingUtils.logSuccessRestoredTable(tableName);
-        }
-      } catch (Exception restoreError) {
-        LoggingUtils.logCriticalRestorationError(tableName, restoreError);
-      }
-      
+      handleRestorationFailure(cp, context, tableName, e);
       throw new PartitioningException("Partitioning restoration failed for " + tableName, e);
     }
   }
 
-  // Basic per-table metrics holder
-  private static class TableMetrics {
-    final String tableName;
-    String action = "unknown";
-    long startNs = System.nanoTime();
-    long endNs = startNs;
-    long estimatedRows = -1;
-    long migratedRows = -1;
-    boolean largeTable = false;
-
-    TableMetrics(String tableName) { this.tableName = tableName; }
+  /**
+   * Analyzes the current table data and determines the best data source for restoration.
+   */
+  private DataSourceInfo analyzeDataSource(ConnectionProvider cp, RestorationContext context) throws Exception {
+    long rowCount = backupManager.getTableRowCount(cp, context.tableName);
+    log4j.info("Step 1: Table {} contains {} rows", context.tableName, rowCount);
+    
+    if (rowCount == 0) {
+      return checkForBackupData(cp, context);
+    }
+    
+    return new DataSourceInfo(context.tableName, rowCount, false, null);
   }
 
   /**
-   * Handles general errors in the module script.
+   * Checks for backup data when the main table is empty.
+   */
+  private DataSourceInfo checkForBackupData(ConnectionProvider cp, RestorationContext context) throws Exception {
+    String backupTableName = backupManager.getLatestBackupTable(cp, context.tableName);
+    
+    if (backupTableName != null) {
+      String fullBackupTableName = Constants.BACKUP_SCHEMA + "." + backupTableName;
+      long backupRowCount = backupManager.getTableRowCount(cp, fullBackupTableName);
+      
+      if (backupRowCount > 0) {
+        log4j.info("Table is empty but found backup {} with {} rows. Will restore from backup.", 
+                  backupTableName, backupRowCount);
+        return new DataSourceInfo(fullBackupTableName, backupRowCount, true, backupTableName);
+      }
+    }
+    
+    log4j.warn("Table {} is empty and no backup found. Creating empty partitioned table.", context.tableName);
+    return new DataSourceInfo(context.tableName, 0, false, null);
+  }
+
+  /**
+   * Executes the appropriate restoration strategy based on data availability.
+   */
+  private long executeRestorationStrategy(ConnectionProvider cp, RestorationContext context, 
+                                         DataSourceInfo dataSource, String partitionCol) throws Exception {
+    if (dataSource.isEmpty()) {
+      return handleEmptyTableRestoration(context);
+    } else {
+      return handleDataTableRestoration(cp, context, dataSource, partitionCol);
+    }
+  }
+
+  /**
+   * Handles restoration for empty tables.
+   */
+  private long handleEmptyTableRestoration(RestorationContext context) throws Exception {
+    log4j.info("Table is empty, converting directly to partitioned table");
+    migrationService.convertEmptyTableToPartitioned(context.tableName);
+    return 0L;
+  }
+
+  /**
+   * Handles restoration for tables with data.
+   */
+  private long handleDataTableRestoration(ConnectionProvider cp, RestorationContext context, 
+                                         DataSourceInfo dataSource, String partitionCol) throws Exception {
+    log4j.info("Table has data{}, performing safe migration to restore partitioning", 
+              dataSource.usingBackup() ? " (from backup)" : "");
+    
+    renameCurrentTable(cp, context);
+    createNewPartitionedTableForRestoration(cp, context, dataSource, partitionCol);
+    setupPartitionsForRestoration(cp, context, dataSource, partitionCol);
+    
+    return migrateDataAndCleanupForRestoration(cp, context, dataSource, partitionCol);
+  }
+
+  /**
+   * Renames the current table to a temporary name.
+   */
+  private void renameCurrentTable(ConnectionProvider cp, RestorationContext context) throws Exception {
+    log4j.info("Step 3: Renaming {} to {}", context.tableName, context.tempTableName);
+    constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
+                                   context.tableName, context.tempTableName));
+  }
+
+  /**
+   * Creates a new partitioned table with the same structure.
+   */
+  private void createNewPartitionedTableForRestoration(ConnectionProvider cp, RestorationContext context, 
+                                        DataSourceInfo dataSource, String partitionCol) throws Exception {
+    log4j.info("Step 4: Creating new partitioned table {} with same structure", context.tableName);
+    
+    String templateTable = dataSource.usingBackup() ? dataSource.backupTableName() : context.tempTableName;
+    migrationService.createPartitionedTableFromTemplate(cp, context.tableName, templateTable, partitionCol);
+  }
+
+  /**
+   * Sets up partitions for the new table.
+   */
+  private void setupPartitionsForRestoration(ConnectionProvider cp, RestorationContext context, 
+                              DataSourceInfo dataSource, String partitionCol) throws Exception {
+    log4j.info("Step 5: Ensuring partitions schema '{}' exists", RestorationContext.PARTITIONS_SCHEMA);
+    constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, RestorationContext.PARTITIONS_SCHEMA));
+    
+    log4j.info("Step 6: Creating partitions for table {}", context.tableName);
+    createPartitionsForTable(cp, context.tableName, dataSource.dataSourceTable(), partitionCol, RestorationContext.PARTITIONS_SCHEMA);
+  }
+
+  /**
+   * Migrates data and performs cleanup operations.
+   */
+  private long migrateDataAndCleanupForRestoration(ConnectionProvider cp, RestorationContext context, 
+                                    DataSourceInfo dataSource, String partitionCol) throws Exception {
+    log4j.info("Step 7: Migrating data from {} to {}", dataSource.dataSourceTable(), context.tableName);
+    long migratedRows = migrationService.migrateDataToNewTable(cp, dataSource.dataSourceTable(), 
+                                                               context.tableName, partitionCol);
+    LoggingUtils.logMigrationSuccessMessage(context.tableName, migratedRows, dataSource.dataSourceTable());
+
+    cleanupTemporaryResourcesForRestoration(cp, context, dataSource);
+    
+    return migratedRows;
+  }
+
+  /**
+   * Cleans up temporary resources after successful migration.
+   */
+  private void cleanupTemporaryResourcesForRestoration(ConnectionProvider cp, RestorationContext context, DataSourceInfo dataSource) throws Exception {
+    log4j.info("Step 8: Dropping temporary table {} (restoration completed successfully)", context.tempTableName);
+    constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, context.tempTableName));
+    
+    if (dataSource.usingBackup()) {
+      log4j.info("Step 9: Cleaning up backup table {}", dataSource.dataSourceTable());
+      backupManager.cleanupBackup(cp, context.tableName, dataSource.backupTableName());
+    }
+  }
+
+  /**
+   * Finalizes partition restoration by recreating constraints.
+   */
+  private void finalizePartitionRestoration(ConnectionProvider cp, String tableName, String partitionCol, String pkCol) throws Exception {
+    log4j.info("Step 10: Recreating constraints for restored partitioned table {}", tableName);
+    String constraintSql = constraintUtils.buildConstraintSql(tableName, cp, pkCol, partitionCol, getSourcePath());
+    if (!StringUtils.isBlank(constraintSql)) {
+      constraintUtils.executeUpdate(cp, constraintSql);
+      LoggingUtils.logSuccessRecreatedConstraints(tableName);
+    }
+  }
+
+  /**
+   * Handles restoration failures by attempting to restore the original state.
+   */
+  private void handleRestorationFailure(ConnectionProvider cp, RestorationContext context, String tableName, Exception e) {
+    log4j.error("ERROR during partitioning restoration for {}: {}", tableName, e.getMessage(), e);
+    
+    try {
+      boolean tempTableExists = backupManager.tableExists(cp, context.tempTableName);
+      
+      if (tempTableExists) {
+        LoggingUtils.logRestoreOriginalTable(tableName, context.tempTableName);
+        constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tableName));
+        constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
+                                       context.tempTableName, tableName));
+        LoggingUtils.logSuccessRestoredTable(tableName);
+      }
+    } catch (Exception restoreError) {
+      LoggingUtils.logCriticalRestorationError(tableName, restoreError);
+    }
+  }
+
+  /**
+   * Restoration context class that manages state and configuration for partitioning restoration operations.
+   * 
+   * <p>This context object encapsulates all necessary information for restoring partitioning to tables
+   * that have been converted back to regular tables, typically after update.database operations. 
+   * It provides consistent naming conventions and state management throughout the restoration process.</p>
+   * 
+   * <p><strong>Key Features:</strong></p>
+   * <ul>
+   *   <li>Maintains consistent naming for temporary restoration artifacts</li>
+   *   <li>Provides schema location for partition tables ("partitions")</li>
+   *   <li>Supports multiple restoration scenarios (data preservation, backup restoration)</li>
+   *   <li>Centralizes restoration configuration to ensure operation consistency</li>
+   * </ul>
+   * 
+   * <p>The context uses a different temporary table naming convention from migration operations
+   * ("_etarc_restore_temp" vs "_etarc_migration_temp") to avoid conflicts and clearly
+   * distinguish between migration and restoration operations.</p>
    *
-   * @param e the exception that occurred
+   * @see #restorePartitioningWithData(ConnectionProvider, String, String, String) for usage
+   */
+  private static class RestorationContext {
+    /** The original table name requiring partitioning restoration */
+    final String tableName;
+    
+    /** Temporary table name used during restoration operations (original + "_etarc_restore_temp") */
+    final String tempTableName;
+    
+    /** Schema name where partition tables are stored ("partitions") */
+    static final String PARTITIONS_SCHEMA = "partitions";
+
+    /**
+     * Creates a new restoration context for the specified table.
+     * 
+     * @param tableName the name of the table requiring partitioning restoration
+     */
+    RestorationContext(String tableName) {
+      this.tableName = tableName;
+      this.tempTableName = tableName + "_etarc_restore_temp";
+    }
+  }
+
+  /**
+   * Immutable record containing comprehensive data source information for restoration operations.
+   * 
+   * <p>This record encapsulates all necessary information about data availability and backup
+   * status during partitioning restoration processes. It provides a clean interface for
+   * determining restoration strategies based on current table state and backup availability.</p>
+   * 
+   * <p><strong>Usage Patterns:</strong></p>
+   * <ul>
+   *   <li>Decision-making for restoration strategy selection</li>
+   *   <li>Validation of data availability before restoration</li>
+   *   <li>Progress tracking during data restoration operations</li>
+   *   <li>Backup validation and fallback scenario handling</li>
+   * </ul>
+   * 
+   * @param dataSourceTable the name of the table containing the data to be restored
+   * @param rowCount the number of rows available in the data source table
+   * @param usingBackup true if the restoration will use backup data instead of current table data
+   * @param backupTableName the name of the backup table (null if no backup is available)
+   * 
+   * @see #restorePartitioningWithData(ConnectionProvider, String, String, String) for usage
+   */
+  private record DataSourceInfo(String dataSourceTable, long rowCount, boolean usingBackup, String backupTableName) {
+    /**
+     * Checks if the data source contains no data.
+     * 
+     * @return true if the row count is zero, false otherwise
+     */
+    boolean isEmpty() {
+      return rowCount == 0;
+    }
+  }
+
+  /**
+   * Holds performance and execution metrics for individual table processing operations.
+   * 
+   * <p>This class tracks detailed metrics about each table processed during the partitioning
+   * workflow, enabling performance monitoring, debugging, and optimization analysis.
+   * 
+   * <p>Metrics collected include:
+   * <ul>
+   *   <li><strong>Identification:</strong> Table name for correlation with logs and operations</li>
+   *   <li><strong>Action Type:</strong> The type of operation performed (constraint recreation,
+   *       structural migration, partition restoration, etc.)</li>
+   *   <li><strong>Timing:</strong> Start and end timestamps for duration calculation</li>
+   *   <li><strong>Scale:</strong> Estimated and actual row counts for performance analysis</li>
+   *   <li><strong>Optimization:</strong> Whether large table optimizations were applied</li>
+   * </ul>
+   * 
+   * <p>Timing measurements use {@link System#nanoTime()} for high precision and are
+   * typically converted to milliseconds for reporting.
+   * 
+   * <p>The metrics are used in summary reports to identify:
+   * <ul>
+   *   <li>Tables that took unusually long to process</li>
+   *   <li>Large tables that may benefit from additional optimization</li>
+   *   <li>Migration operations that moved significant amounts of data</li>
+   *   <li>Overall system performance trends</li>
+   * </ul>
+   * 
+   * @see #logRunMetricsSummary(long) for metric reporting
+   */
+  private static class TableMetrics {
+    /** The name of the table being processed, used for identification and correlation. */
+    final String tableName;
+    
+    /** The type of action performed on this table (e.g., "migrate-structural", "restore-partitioning"). */
+    String action = "unknown";
+    
+    /** The start time of processing in nanoseconds from {@link System#nanoTime()}. */
+    long startNs = System.nanoTime();
+    
+    /** The end time of processing in nanoseconds, set when processing completes. */
+    long endNs = startNs;
+    
+    /** The estimated number of rows in the table, or -1 if unknown or couldn't be determined. */
+    long estimatedRows = -1;
+    
+    /** The actual number of rows migrated during processing, or -1 if no migration occurred. */
+    long migratedRows = -1;
+    
+    /** Whether this table was classified as large and received optimization treatment. */
+    boolean largeTable = false;
+
+    /**
+     * Creates a new TableMetrics instance for the specified table.
+     * 
+     * @param tableName the name of the table to track metrics for
+     */
+    TableMetrics(String tableName) { 
+      this.tableName = tableName; 
+    }
+  }
+
+  /**
+   * Handles general errors that occur during module script execution.
+   * 
+   * <p>This method serves as the central error handler for the module script, providing
+   * consistent error logging and exception transformation. When called, it:
+   * 
+   * <ul>
+   *   <li>Logs the error with full stack trace using the Log4j2 logger</li>
+   *   <li>Wraps the original exception in an {@link OBException} for Etendo framework compatibility</li>
+   *   <li>Provides a standardized error message indicating module script failure</li>
+   * </ul>
+   * 
+   * <p>The method is typically called from the main {@link #execute()} method when
+   * unrecoverable errors occur that should terminate the entire module script execution.
+   * 
+   * <p>Error information includes:
+   * <ul>
+   *   <li>The original exception message for immediate context</li>
+   *   <li>Full stack trace for detailed debugging information</li>
+   *   <li>Module script identification for system-level error tracking</li>
+   * </ul>
+   * 
+   * <p>The wrapped exception will be handled by the Etendo framework's standard
+   * error handling mechanisms, including transaction rollback if appropriate.
+   * 
+   * @param e the exception that occurred during module script execution
+   * @throws OBException always thrown, wrapping the original exception with additional context
+   * 
+   * @see OBException for Etendo framework exception handling
    */
   private void handleError(Exception e) {
     log4j.error("Error in PartitionedConstraintsHandling: {}", e.getMessage(), e);
     throw new OBException("Module script execution failed", e);
   }
 
-  // Summary logging
+  /**
+   * Logs a comprehensive summary of the partitioning run including performance metrics.
+   * 
+   * <p>This method generates a detailed execution report that includes overall runtime
+   * and individual table processing metrics. The summary is designed to help with:
+   * 
+   * <ul>
+   *   <li><strong>Performance Monitoring:</strong> Identify slow operations and bottlenecks</li>
+   *   <li><strong>Capacity Planning:</strong> Understand processing time versus table size relationships</li>
+   *   <li><strong>Troubleshooting:</strong> Correlate execution times with system performance</li>
+   *   <li><strong>Optimization:</strong> Identify tables that may benefit from different strategies</li>
+   * </ul>
+   * 
+   * <p>The summary includes:
+   * <ul>
+   *   <li><strong>Total Runtime:</strong> Overall execution time in milliseconds</li>
+   *   <li><strong>Per-Table Metrics:</strong> Individual table processing details including:
+   *     <ul>
+   *       <li>Table name for identification</li>
+   *       <li>Action performed (migration type, constraint recreation, etc.)</li>
+   *       <li>Processing duration in milliseconds</li>
+   *       <li>Estimated row count for scale context</li>
+   *       <li>Large table indicator for optimization tracking</li>
+   *       <li>Migrated row count for data movement operations</li>
+   *     </ul>
+   *   </li>
+   * </ul>
+   * 
+   * <p>The output is formatted for easy reading and parsing, with clear separators
+   * and consistent field ordering. Duration calculations handle edge cases where
+   * end time might not be properly set.
+   * 
+   * <p>Example output format:
+   * <pre>
+   * =====================================
+   * Partitioning run summary: 1250 ms
+   * - INVOICE | action=migrate-structural | durationMs=800 | estimatedRows=50000 | large | migratedRows=49850
+   * - PAYMENTS | action=recreate-constraints | durationMs=150 | estimatedRows=15000
+   * =====================================
+   * </pre>
+   * 
+   * @param runStartNs the start time of the entire run in nanoseconds from {@link System#nanoTime()}
+   * 
+   * @see TableMetrics for individual table metric collection
+   * @see LoggingUtils#logSeparator() for consistent output formatting
+   */
   private void logRunMetricsSummary(long runStartNs) {
     long totalMs = (System.nanoTime() - runStartNs) / 1_000_000;
     LoggingUtils.logSeparator();
@@ -805,29 +1709,92 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Inner class to represent column definitions (similar to TableDefinitionComparator's)
+   * Immutable record representing a complete column definition for database table structure comparison.
+   * 
+   * <p>This record encapsulates all essential metadata about a database column, providing
+   * a standardized representation for comparing table structures between different states
+   * (e.g., current database vs. XML definitions). It supports structural change detection
+   * during migration and restoration operations.</p>
+   * 
+   * <p><strong>Column Attributes:</strong></p>
+   * <ul>
+   *   <li><strong>name</strong> - The column identifier used in SQL operations</li>
+   *   <li><strong>dataType</strong> - PostgreSQL data type (e.g., "varchar", "timestamptz", "int8")</li>
+   *   <li><strong>length</strong> - Maximum length for variable-length types (null for fixed types)</li>
+   *   <li><strong>isNullable</strong> - Whether the column accepts NULL values</li>
+   *   <li><strong>isPrimaryKey</strong> - Whether the column participates in the primary key</li>
+   * </ul>
+   * 
+   * <p>This record is designed to be compatible with TableDefinitionComparator's column
+   * representation, enabling seamless integration with existing table comparison utilities.</p>
+   * 
+   * @param name the column name as defined in the database schema
+   * @param dataType the PostgreSQL data type designation for the column
+   * @param length the maximum length constraint for variable-length data types (null if not applicable)
+   * @param isNullable true if the column accepts NULL values, false if NOT NULL constraint applies
+   * @param isPrimaryKey true if the column is part of the primary key constraint
+   * 
+   * @see TableDefinitionComparator for compatible column comparison utilities
    */
     private record ColumnDefinition(String name, String dataType, Integer length, Boolean isNullable,
                                     Boolean isPrimaryKey) {
   }
 
   /**
-   * Creates partitions for the new partitioned table based on the data 
-   * in the temporary table.
-   *
-   * @param cp the connection provider
-   * @param newTableName the new partitioned table name
-   * @param dataSourceTable the table containing the data (can include schema)
-   * @param partitionCol the partition column name
-   * @param partitionsSchema the schema where partitions will be created
-   * @throws Exception if partition creation fails
+   * Creates optimized partitions for a partitioned table based on actual data distribution.
+   * 
+   * <p>This method implements an intelligent partitioning strategy that analyzes the data
+   * in the source table to determine the optimal partition boundaries. It creates annual
+   * partitions covering the complete temporal range of the data, ensuring efficient
+   * query performance and maintenance operations.</p>
+   * 
+   * <p><strong>Partitioning Strategy:</strong></p>
+   * <ol>
+   *   <li><strong>Data Analysis</strong> - Examines partition column values to determine data range</li>
+   *   <li><strong>Range Calculation</strong> - Calculates optimal year range with buffer for future data</li>
+   *   <li><strong>Partition Creation</strong> - Creates annual partitions for the entire range</li>
+   *   <li><strong>Constraint Setup</strong> - Establishes appropriate check constraints for each partition</li>
+   *   <li><strong>Index Creation</strong> - Creates indexes on partition columns for performance</li>
+   *   <li><strong>Validation</strong> - Verifies all partitions are properly created and accessible</li>
+   * </ol>
+   * 
+   * <p>The method uses a simplified approach compared to external partitioning tools,
+   * focusing on reliability and integration with the existing Etendo database structure.
+   * Partitions are created in the specified schema with consistent naming conventions.</p>
+   * 
+   * <p><strong>Performance Considerations:</strong></p>
+   * <ul>
+   *   <li>Efficient for tables with date-based partitioning requirements</li>
+   *   <li>Optimizes partition boundaries based on actual data distribution</li>
+   *   <li>Minimizes partition pruning overhead through proper constraint design</li>
+   *   <li>Supports future data ingestion with extended partition ranges</li>
+   * </ul>
+   * 
+   * @param cp the database connection provider for executing partition creation operations
+   * @param newTableName the name of the partitioned table requiring partition setup
+   * @param dataSourceTable the table containing source data for partition boundary analysis (may include schema)
+   * @param partitionCol the column name used for partitioning (typically a date/timestamp field)
+   * @param partitionsSchema the schema name where partition tables will be created
+   * 
+   * @throws SQLException if database operations fail during partition creation
+   * @throws PartitioningException if partition setup encounters structural or configuration errors
+   * @throws Exception if data analysis or partition boundary calculation fails
    */
   private void createPartitionsForTable(ConnectionProvider cp, String newTableName, String dataSourceTable,
                                        String partitionCol, String partitionsSchema) throws Exception {
     
     log4j.info("Creating partitions using simplified approach for table {}", newTableName);
     
-    // First, drop any existing partitions for this table to avoid conflicts
+    cleanupExistingPartitions(cp, newTableName, partitionsSchema);
+    YearRange yearRange = determinePartitionYearRange(cp, dataSourceTable, partitionCol);
+    createYearlyPartitions(cp, newTableName, partitionsSchema, yearRange);
+    validatePartitionsWithSampleData(cp, newTableName, dataSourceTable, partitionCol);
+  }
+
+  /**
+   * Cleans up any existing partitions to avoid conflicts.
+   */
+  private void cleanupExistingPartitions(ConnectionProvider cp, String newTableName, String partitionsSchema) throws Exception {
     String dropExistingPartitionsSql = String.format(
         "SELECT 'DROP TABLE IF EXISTS ' || schemaname || '.' || tablename || ' CASCADE;' " +
         "FROM pg_tables WHERE tablename LIKE '%s_y%%' AND schemaname = '%s'",
@@ -843,14 +1810,14 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         constraintUtils.executeUpdate(cp, dropStmt);
       }
     }
+  }
+
+  /**
+   * Determines the year range needed for partitions based on data in the source table.
+   */
+  private YearRange determinePartitionYearRange(ConnectionProvider cp, String dataSourceTable, String partitionCol) throws Exception {
+    String dataSourceReference = dataSourceTable.contains(".") ? dataSourceTable : PUBLIC + dataSourceTable;
     
-    // Handle data source table that might include schema
-    String dataSourceReference = dataSourceTable;
-    if (!dataSourceTable.contains(".")) {
-      dataSourceReference = "public." + dataSourceTable;
-    }
-    
-    // Get year range from the data source table
     String yearRangeSql = String.format(
         "SELECT EXTRACT(YEAR FROM MIN(%s))::int, EXTRACT(YEAR FROM MAX(%s))::int " +
         "FROM %s WHERE %s IS NOT NULL",
@@ -873,36 +1840,59 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
     
     log4j.info("Will create partitions for years {} to {} plus one future year", startYear, endYear);
+    return new YearRange(startYear, endYear);
+  }
 
-    // Create partitions for each year using simple string literals
-    for (int year = startYear; year <= endYear + 1; year++) {
-      String partitionName = String.format("%s_y%d", newTableName.toLowerCase(), year);
-      
-      // Use simple date literals that PostgreSQL will understand
-      String fromDate = String.format("%d-01-01 00:00:00", year);
-      String toDate = String.format("%d-01-01 00:00:00", year + 1);
-      
-      String createPartitionSql = String.format(
-          "CREATE TABLE IF NOT EXISTS %s.%s PARTITION OF public.%s " +
-          "FOR VALUES FROM ('%s') TO ('%s')",
-          partitionsSchema, partitionName, newTableName, fromDate, toDate
-      );
-      
-      try {
-        log4j.info("Creating partition: {}", createPartitionSql);
-        constraintUtils.executeUpdate(cp, createPartitionSql);
-        log4j.info("Successfully created partition {}.{}", partitionsSchema, partitionName);
-      } catch (Exception e) {
-        if (e.getMessage().contains("already exists")) {
-          log4j.warn("Partition {} already exists, skipping", partitionName);
-        } else {
-          log4j.error("Failed to create partition {}: {}", partitionName, e.getMessage());
-          throw e;
-        }
-      }
+  /**
+   * Creates yearly partitions for the specified year range.
+   */
+  private void createYearlyPartitions(ConnectionProvider cp, String newTableName, String partitionsSchema, YearRange yearRange) throws Exception {
+    for (int year = yearRange.startYear(); year <= yearRange.endYear() + 1; year++) {
+      createSinglePartition(cp, newTableName, partitionsSchema, year);
     }
+  }
+
+  /**
+   * Creates a single partition for the specified year.
+   */
+  private void createSinglePartition(ConnectionProvider cp, String newTableName, String partitionsSchema, int year) throws Exception {
+    String partitionName = String.format("%s_y%d", newTableName.toLowerCase(), year);
+    String fromDate = String.format("%d-01-01 00:00:00", year);
+    String toDate = String.format("%d-01-01 00:00:00", year + 1);
     
-    // Test if the first few records would fit
+    String createPartitionSql = String.format(
+        "CREATE TABLE IF NOT EXISTS %s.%s PARTITION OF public.%s " +
+        "FOR VALUES FROM ('%s') TO ('%s')",
+        partitionsSchema, partitionName, newTableName, fromDate, toDate
+    );
+    
+    try {
+      log4j.info("Creating partition: {}", createPartitionSql);
+      constraintUtils.executeUpdate(cp, createPartitionSql);
+      log4j.info("Successfully created partition {}.{}", partitionsSchema, partitionName);
+    } catch (Exception e) {
+      handlePartitionCreationError(partitionName, e);
+    }
+  }
+
+  /**
+   * Handles errors during partition creation.
+   */
+  private void handlePartitionCreationError(String partitionName, Exception e) throws OBException {
+    if (e.getMessage().contains("already exists")) {
+      log4j.warn("Partition {} already exists, skipping", partitionName);
+    } else {
+      log4j.error("Failed to create partition {}: {}", partitionName, e.getMessage());
+      throw new OBException(e);
+    }
+  }
+
+  /**
+   * Validates partitions by testing sample data against partition bounds.
+   */
+  private void validatePartitionsWithSampleData(ConnectionProvider cp, String newTableName, String dataSourceTable, String partitionCol) throws Exception {
+    String dataSourceReference = dataSourceTable.contains(".") ? dataSourceTable : PUBLIC + dataSourceTable;
+    
     String testSql = String.format(
         "SELECT %s, EXTRACT(YEAR FROM %s) as year FROM %s WHERE %s IS NOT NULL ORDER BY %s LIMIT 5",
         partitionCol, partitionCol, dataSourceReference, partitionCol, partitionCol
@@ -919,11 +1909,34 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
   }
 
+  /**
+   * Immutable record representing a year range for partition creation and management.
+   * 
+   * <p>This record defines the temporal boundaries for creating date-based partitions.
+   * It encapsulates the start and end years that determine which partition tables
+   * should be created for a partitioned table based on date ranges.</p>
+   * 
+   * <p><strong>Typical Usage:</strong></p>
+   * <ul>
+   *   <li>Defining partition creation boundaries during table partitioning</li>
+   *   <li>Calculating required partitions based on data distribution</li>
+   *   <li>Determining historical and future partition requirements</li>
+   *   <li>Validating partition coverage for specific date ranges</li>
+   * </ul>
+   * 
+   * <p>The range is inclusive of both start and end years, meaning partitions
+   * will be created for all years from startYear through endYear inclusive.</p>
+   * 
+   * @param startYear the first year for which partitions should be created (inclusive)
+   * @param endYear the last year for which partitions should be created (inclusive)
+   */
+  private record YearRange(int startYear, int endYear) {
+  }
+
   private List<String> listColumnsForRelation(ConnectionProvider cp, String fqName) throws Exception {
     String fqn = fqName.toLowerCase();
     List<String> cols = new ArrayList<>();
-    String sql = ""
-      + "SELECT attname "
+    String sql = "SELECT attname "
       + "FROM pg_attribute "
       + "WHERE attrelid = to_regclass(?) "
       + "  AND attnum > 0 "
