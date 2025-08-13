@@ -10,8 +10,6 @@ import org.apache.logging.log4j.Logger;
 public class LoggingUtils {
     
     private static final Logger log4j = LogManager.getLogger();
-    public static final String SEPARATOR = "=======================================================";
-    private static final String MIGRATION_SUCCESS_MSG = "Successfully migrated {} rows from {} to {}";
 
     /**
      * Logs a separator line to the application log using the info level.
@@ -20,14 +18,14 @@ public class LoggingUtils {
      * improving readability during debugging or tracing execution flow.
      */
     public static void logSeparator() {
-        log4j.info(SEPARATOR);
+        log4j.info(Constants.SEPARATOR);
     }
 
     /**
      * Logs a successful migration message with row count and source/target tables.
      */
     public static void logMigrationSuccessMessage(String tableName, long migratedRows, String dataSourceTable) {
-        log4j.info(MIGRATION_SUCCESS_MSG, migratedRows, dataSourceTable, tableName);
+        log4j.info(Constants.MIGRATION_SUCCESS_MSG, migratedRows, dataSourceTable, tableName);
     }
 
     /**

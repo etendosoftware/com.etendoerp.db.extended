@@ -20,27 +20,25 @@ package com.etendoerp.db.extended.modulescript;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.base.exception.*;
+import org.openbravo.base.exception.OBException;
 import org.openbravo.database.ConnectionProvider;
 import org.openbravo.modulescript.ModuleScript;
 import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
-import javax.xml.parsers.*;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
 import java.io.*;
-import java.nio.file.NoSuchFileException;
-import java.sql.*;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
-import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import com.etendoerp.db.extended.utils.TableBackupManager;
 import com.etendoerp.db.extended.utils.TableDefinitionComparator;
@@ -50,27 +48,13 @@ import com.etendoerp.db.extended.utils.TableAnalyzer;
 import com.etendoerp.db.extended.utils.ConstraintManagementUtils;
 import com.etendoerp.db.extended.utils.LoggingUtils;
 import com.etendoerp.db.extended.utils.XmlParsingUtils;
-import org.xml.sax.*;
+import com.etendoerp.db.extended.utils.Constants;
+import org.xml.sax.SAXException;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
 
-  public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   private static final Logger log4j = LogManager.getLogger();
-
-  // Schema for backup tables to preserve data during structural changes
-  private static final String BACKUP_SCHEMA = "etarc_backup";
   
-  // Performance optimization constants  
-  private static final int LARGE_TABLE_THRESHOLD = 1000000;
-  
-  // Constants for commonly used strings to avoid duplication
-  private static final String TABLE_NAME_KEY = "tableName";
-  private static final String COLUMN_NAME_KEY = "columnName";
-  private static final String PK_COLUMN_NAME_KEY = "pkColumnName";
-  private static final String CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS %s";
-  private static final String DROP_TABLE_CASCADE_SQL = "DROP TABLE IF EXISTS public.%s CASCADE";
-  private static final String ALTER_TABLE_RENAME_SQL = "ALTER TABLE IF EXISTS public.%s RENAME TO %s";
-
   // Utility classes for better code organization
   private final TableBackupManager backupManager;
   private final DataMigrationService migrationService;
@@ -128,7 +112,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       StringBuilder sql = new StringBuilder();
       for (Map<String, String> cfg : tableConfigs) {
         long start = System.nanoTime();
-        String tableName = cfg.get(TABLE_NAME_KEY);
+        String tableName = cfg.get(Constants.TABLE_NAME_KEY);
         TableMetrics tm = new TableMetrics(tableName);
         try {
           processTableConfig(cp, cfg, sql, tm);
@@ -165,14 +149,14 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     log4j.info("========== CHECKING FOR PARTITIONED TABLES NEEDING BACKUP ==========");
     
     // Ensure backup schema exists
-    constraintUtils.executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, BACKUP_SCHEMA));
+    constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, Constants.BACKUP_SCHEMA));
 
     for (Map<String, String> cfg : tableConfigs) {
       if (!isValidTableConfig(cfg)) {
         continue;
       }
       
-      String tableName = cfg.get(TABLE_NAME_KEY);
+      String tableName = cfg.get(Constants.TABLE_NAME_KEY);
       
       // Check if table is currently partitioned
       boolean isCurrentlyPartitioned = tableAnalyzer.isTablePartitioned(cp, tableName);
@@ -203,9 +187,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @return true if the configuration is valid, false otherwise
    */
   private boolean isValidTableConfig(Map<String, String> cfg) {
-    String tableName = cfg.get(TABLE_NAME_KEY);
-    String partitionCol = cfg.get(COLUMN_NAME_KEY);
-    String pkCol = cfg.get(PK_COLUMN_NAME_KEY);
+    String tableName = cfg.get(Constants.TABLE_NAME_KEY);
+    String partitionCol = cfg.get(Constants.COLUMN_NAME_KEY);
+    String pkCol = cfg.get(Constants.COLUMN_NAME_KEY);
     return !StringUtils.isBlank(tableName) && !StringUtils.isBlank(partitionCol) && !StringUtils.isBlank(pkCol);
   }
 
@@ -232,9 +216,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
          ResultSet rs = ps.executeQuery()) {
       while (rs.next()) {
         Map<String, String> cfg = new HashMap<>();
-        cfg.put(TABLE_NAME_KEY, rs.getString("TABLENAME"));
-        cfg.put(COLUMN_NAME_KEY, rs.getString("COLUMNNAME"));
-        cfg.put(PK_COLUMN_NAME_KEY, rs.getString("PK_COLUMNNAME"));
+        cfg.put(Constants.TABLE_NAME_KEY, rs.getString("TABLENAME"));
+        cfg.put(Constants.COLUMN_NAME_KEY, rs.getString("COLUMNNAME"));
+        cfg.put(Constants.COLUMN_NAME_KEY, rs.getString("PK_COLUMNNAME"));
         tableConfigs.add(cfg);
       }
     }
@@ -253,9 +237,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @throws Exception if an error occurs during processing or querying the database.
    */
   private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg, StringBuilder sql, TableMetrics tm) throws Exception {
-    String tableName = cfg.get(TABLE_NAME_KEY);
-    String partitionCol = cfg.get(COLUMN_NAME_KEY);
-    String pkCol = cfg.get(PK_COLUMN_NAME_KEY);
+    String tableName = cfg.get(Constants.TABLE_NAME_KEY);
+    String partitionCol = cfg.get(Constants.COLUMN_NAME_KEY);
+    String pkCol = cfg.get(Constants.COLUMN_NAME_KEY);
 
     log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", tableName, partitionCol, pkCol);
 
@@ -289,7 +273,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
 
     // Apply performance optimizations for large tables
-    boolean isLargeTable = tableSize > LARGE_TABLE_THRESHOLD;
+    boolean isLargeTable = tableSize > Constants.LARGE_TABLE_THRESHOLD;
     tm.estimatedRows = tableSize;
     tm.largeTable = isLargeTable;
     if (isLargeTable) {
@@ -377,7 +361,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       // Step 2: Rename current partitioned table to temporary name
       log4j.info("Step 2: Renaming {} to {}", tableName, tempTableName);
-      constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+      constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
                                      tableName, tempTableName));
       
       // Step 3: Create new partitioned table with updated structure based on XML
@@ -386,7 +370,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       // Step 4: Ensure partitions schema exists
       log4j.info("Step 4: Ensuring partitions schema '{}' exists", partitionsSchema);
-      constraintUtils.executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
+      constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, partitionsSchema));
       
       // Step 5: Create partitions for the new table
       log4j.info("Step 5: Creating partitions for new table {}", tableName);
@@ -400,7 +384,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         log4j.warn("Temporary table {} is empty, checking for backup data...", tempTableName);
         String backupTableName = backupManager.getLatestBackupTable(cp, tableName);
         if (backupTableName != null) {
-          String fullBackupTableName = BACKUP_SCHEMA + "." + backupTableName;
+          String fullBackupTableName = Constants.BACKUP_SCHEMA + "." + backupTableName;
           long backupRows = backupManager.getTableRowCount(cp, fullBackupTableName);
           if (backupRows > 0) {
             log4j.info("Found backup table {} with {} rows. Using backup for data migration.",
@@ -462,7 +446,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       
       // Step 9: Only drop temporary table after everything succeeds
       log4j.info("Step 9: Dropping temporary table {} (migration completed successfully)", tempTableName);
-      constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tempTableName));
+      constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tempTableName));
       
       // Step 10: Clean up backup if we used it
       if (!dataSourceTable.equals(tempTableName)) {
@@ -497,8 +481,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         if (tempTableExists) {
           LoggingUtils.logRestoreOriginalTable(tableName, tempTableName);
-          constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tableName));
-          constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+          constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tableName));
+          constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
                                          tempTableName, tableName));
           LoggingUtils.logSuccessRestoredTable(tableName);
         } else {
@@ -547,11 +531,11 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (rowCount == 0) {
         backupTableName = backupManager.getLatestBackupTable(cp, tableName);
         if (backupTableName != null) {
-          long backupRowCount = backupManager.getTableRowCount(cp, BACKUP_SCHEMA + "." + backupTableName);
+          long backupRowCount = backupManager.getTableRowCount(cp, Constants.BACKUP_SCHEMA + "." + backupTableName);
           if (backupRowCount > 0) {
             log4j.info("Table is empty but found backup {} with {} rows. Will restore from backup.", 
                       backupTableName, backupRowCount);
-            dataSourceTable = BACKUP_SCHEMA + "." + backupTableName;
+            dataSourceTable = Constants.BACKUP_SCHEMA + "." + backupTableName;
             rowCount = backupRowCount;
             usingBackup = true;
           }
@@ -573,7 +557,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         // Step 3: Rename current table to temporary name
         log4j.info("Step 3: Renaming {} to {}", tableName, tempTableName);
-        constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+        constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
                                        tableName, tempTableName));
         
         // Step 4: Create new partitioned table with same structure
@@ -586,7 +570,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         // Step 5: Ensure partitions schema exists
         log4j.info("Step 5: Ensuring partitions schema '{}' exists", partitionsSchema);
-        constraintUtils.executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
+        constraintUtils.executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, partitionsSchema));
         
         // Step 6: Create partitions based on data source
         log4j.info("Step 6: Creating partitions for table {}", tableName);
@@ -599,7 +583,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
         // Step 8: Drop temporary table
         log4j.info("Step 8: Dropping temporary table {} (restoration completed successfully)", tempTableName);
-        constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tempTableName));
+        constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tempTableName));
         
         // Step 9: Clean up backup if used
         if (usingBackup) {
@@ -628,8 +612,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         
         if (tempTableExists) {
           LoggingUtils.logRestoreOriginalTable(tableName, tempTableName);
-          constraintUtils.executeUpdate(cp, String.format(DROP_TABLE_CASCADE_SQL, tableName));
-          constraintUtils.executeUpdate(cp, String.format(ALTER_TABLE_RENAME_SQL, 
+          constraintUtils.executeUpdate(cp, String.format(Constants.DROP_TABLE_CASCADE_SQL, tableName));
+          constraintUtils.executeUpdate(cp, String.format(Constants.ALTER_TABLE_RENAME_SQL, 
                                          tempTableName, tableName));
           LoggingUtils.logSuccessRestoredTable(tableName);
         }
@@ -757,7 +741,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   /**
    * Helper method to access parseXmlDefinition from TableDefinitionComparator
    */
-  private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile) throws ParserConfigurationException, IOException, SAXException {
+  private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile) throws ParserConfigurationException,
+      SAXException, IOException {
     // We need to use reflection or create a public method in TableDefinitionComparator
     // For now, let's implement our own XML parsing here
     Map<String, ColumnDefinition> columns = new LinkedHashMap<>();

@@ -19,12 +19,6 @@ public class TableBackupManager {
   
   private static final Logger log4j = LogManager.getLogger();
   
-  // Constants
-  private static final String BACKUP_SCHEMA = "etarc_backup";
-  private static final int LARGE_TABLE_THRESHOLD = 1000000;
-  private static final String CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS %s";
-  private static final String VARCHAR_255 = "VARCHAR(255)";
-  
   /**
    * Creates backup of table data with performance optimizations for large tables.
    * 
@@ -38,7 +32,7 @@ public class TableBackupManager {
     try {
       // Use approximate row count for performance on large tables
       long rowCount = getApproximateTableRowCount(cp, tableName);
-      log4j.info("Creating backup for table {} (~{} rows) as {}.{}", tableName, rowCount, BACKUP_SCHEMA, backupTableName);
+      log4j.info("Creating backup for table {} (~{} rows) as {}.{}", tableName, rowCount, Constants.BACKUP_SCHEMA, backupTableName);
       
       if (rowCount == 0) {
         log4j.info("Table {} is empty, skipping data backup", tableName);
@@ -46,7 +40,7 @@ public class TableBackupManager {
       }
       
       // For large tables, use optimized backup strategy
-      if (rowCount > LARGE_TABLE_THRESHOLD) {
+      if (rowCount > Constants.LARGE_TABLE_THRESHOLD) {
         createLargeTableBackup(cp, tableName, backupTableName, rowCount);
       } else {
         createStandardBackup(cp, tableName, backupTableName);
@@ -70,7 +64,7 @@ public class TableBackupManager {
     // First, create empty backup table structure
     String createStructureSql = String.format(
         "CREATE TABLE %s.%s (LIKE public.%s INCLUDING ALL)",
-        BACKUP_SCHEMA, backupTableName, tableName
+        Constants.BACKUP_SCHEMA, backupTableName, tableName
     );
     executeUpdate(cp, createStructureSql);
     
@@ -91,7 +85,7 @@ public class TableBackupManager {
       while (true) {
         String batchSql = String.format(
             "INSERT INTO %s.%s SELECT * FROM public.%s LIMIT %d OFFSET %d",
-            BACKUP_SCHEMA, backupTableName, tableName, batchSize, offset
+            Constants.BACKUP_SCHEMA, backupTableName, tableName, batchSize, offset
         );
         
         int rowsCopied = executeUpdateWithRowCount(cp, batchSql);
@@ -107,7 +101,7 @@ public class TableBackupManager {
         conn.commit();
         
         if (totalCopied % (batchSize * 10) == 0) {
-          log4j.info("Backup progress: {} rows copied to {}.{}", totalCopied, BACKUP_SCHEMA, backupTableName);
+          log4j.info("Backup progress: {} rows copied to {}.{}", totalCopied, Constants.BACKUP_SCHEMA, backupTableName);
         }
         
         // Break if we copied fewer rows than batch size (last batch)
@@ -116,7 +110,7 @@ public class TableBackupManager {
         }
       }
       
-      log4j.info("Successfully backed up {} rows from {} to {}.{}", totalCopied, tableName, BACKUP_SCHEMA, backupTableName);
+      log4j.info("Successfully backed up {} rows from {} to {}.{}", totalCopied, tableName, Constants.BACKUP_SCHEMA, backupTableName);
       
     } finally {
       conn.setAutoCommit(originalAutoCommit);
@@ -129,14 +123,14 @@ public class TableBackupManager {
   private void createStandardBackup(ConnectionProvider cp, String tableName, String backupTableName) throws Exception {
     String backupSql = String.format(
         "CREATE TABLE %s.%s AS SELECT * FROM public.%s",
-        BACKUP_SCHEMA, backupTableName, tableName
+        Constants.BACKUP_SCHEMA, backupTableName, tableName
     );
     
     executeUpdate(cp, backupSql);
     
     // Get actual row count after backup
-    long backupRowCount = getTableRowCount(cp, BACKUP_SCHEMA + "." + backupTableName);
-    log4j.info("Successfully backed up {} rows from {} to {}.{}", backupRowCount, tableName, BACKUP_SCHEMA, backupTableName);
+    long backupRowCount = getTableRowCount(cp, Constants.BACKUP_SCHEMA + "." + backupTableName);
+    log4j.info("Successfully backed up {} rows from {} to {}.{}", backupRowCount, tableName, Constants.BACKUP_SCHEMA, backupTableName);
   }
 
   /**
@@ -183,15 +177,15 @@ public class TableBackupManager {
    */
   private void storeBackupInfo(ConnectionProvider cp, String originalTableName, String backupTableName) throws Exception {
     // Ensure backup schema exists
-    executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, BACKUP_SCHEMA));
+    executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, Constants.BACKUP_SCHEMA));
     
     // Create a simple table to track backups if it doesn't exist
     String createBackupTrackingTable = String.format(
         "CREATE TABLE IF NOT EXISTS %s.backup_tracking (" +
-        "original_table " + VARCHAR_255 + ", " +
-        "backup_table " + VARCHAR_255 + ", " +
+        "original_table " + Constants.VARCHAR_255 + ", " +
+        "backup_table " + Constants.VARCHAR_255 + ", " +
         "backup_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP" +
-        ")", BACKUP_SCHEMA
+        ")", Constants.BACKUP_SCHEMA
     );
     
     executeUpdate(cp, createBackupTrackingTable);
@@ -199,7 +193,7 @@ public class TableBackupManager {
     // Store backup info
     String insertBackupInfo = String.format(
         "INSERT INTO %s.backup_tracking (original_table, backup_table) VALUES (?, ?)",
-        BACKUP_SCHEMA
+        Constants.BACKUP_SCHEMA
     );
     
     try (PreparedStatement ps = cp.getPreparedStatement(insertBackupInfo)) {
@@ -217,7 +211,7 @@ public class TableBackupManager {
         "SELECT backup_table FROM %s.backup_tracking " +
         "WHERE original_table = ? " +
         "ORDER BY backup_timestamp DESC LIMIT 1",
-        BACKUP_SCHEMA
+        Constants.BACKUP_SCHEMA
     );
     
     try (PreparedStatement ps = cp.getPreparedStatement(query)) {
@@ -240,12 +234,12 @@ public class TableBackupManager {
   public void cleanupBackup(ConnectionProvider cp, String originalTableName, String backupTableName) throws Exception {
     try {
       // Drop the backup table
-      executeUpdate(cp, String.format("DROP TABLE IF EXISTS %s.%s CASCADE", BACKUP_SCHEMA, backupTableName));
+      executeUpdate(cp, String.format("DROP TABLE IF EXISTS %s.%s CASCADE", Constants.BACKUP_SCHEMA, backupTableName));
       
       // Remove from tracking table
       String deleteTracking = String.format(
           "DELETE FROM %s.backup_tracking WHERE original_table = ? AND backup_table = ?",
-          BACKUP_SCHEMA
+          Constants.BACKUP_SCHEMA
       );
       
       try (PreparedStatement ps = cp.getPreparedStatement(deleteTracking)) {
@@ -254,10 +248,10 @@ public class TableBackupManager {
         ps.executeUpdate();
       }
       
-      log4j.info("Successfully cleaned up backup {}.{}", BACKUP_SCHEMA, backupTableName);
+      log4j.info("Successfully cleaned up backup {}.{}", Constants.BACKUP_SCHEMA, backupTableName);
       
     } catch (Exception e) {
-      log4j.warn("Warning: Failed to cleanup backup {}.{}: {}", BACKUP_SCHEMA, backupTableName, e.getMessage());
+      log4j.warn("Warning: Failed to cleanup backup {}.{}: {}", Constants.BACKUP_SCHEMA, backupTableName, e.getMessage());
       // Don't throw exception for cleanup failures
     }
   }
@@ -276,7 +270,7 @@ public class TableBackupManager {
       String findOldBackupsSql = String.format(
           "SELECT backup_table FROM %s.backup_tracking " +
           "WHERE backup_timestamp < CURRENT_TIMESTAMP - INTERVAL '7 days'",
-          BACKUP_SCHEMA
+          Constants.BACKUP_SCHEMA
       );
       
       List<String> oldBackups = new ArrayList<>();
@@ -297,10 +291,10 @@ public class TableBackupManager {
       // Clean up each old backup
       for (String backupTable : oldBackups) {
         try {
-          executeUpdate(cp, String.format("DROP TABLE IF EXISTS %s.%s CASCADE", BACKUP_SCHEMA, backupTable));
-          log4j.info("Dropped old backup table: {}.{}", BACKUP_SCHEMA, backupTable);
+          executeUpdate(cp, String.format("DROP TABLE IF EXISTS %s.%s CASCADE", Constants.BACKUP_SCHEMA, backupTable));
+          log4j.info("Dropped old backup table: {}.{}", Constants.BACKUP_SCHEMA, backupTable);
         } catch (Exception e) {
-          log4j.warn("Warning: Failed to drop old backup table {}.{}: {}", BACKUP_SCHEMA, backupTable, e.getMessage());
+          log4j.warn("Warning: Failed to drop old backup table {}.{}: {}", Constants.BACKUP_SCHEMA, backupTable, e.getMessage());
         }
       }
       
@@ -308,7 +302,7 @@ public class TableBackupManager {
       String cleanupTrackingSql = String.format(
           "DELETE FROM %s.backup_tracking " +
           "WHERE backup_timestamp < CURRENT_TIMESTAMP - INTERVAL '7 days'",
-          BACKUP_SCHEMA
+          Constants.BACKUP_SCHEMA
       );
       
       try (PreparedStatement ps = cp.getPreparedStatement(cleanupTrackingSql)) {
@@ -328,19 +322,19 @@ public class TableBackupManager {
   private void ensureBackupSchemaAndTrackingTableExist(ConnectionProvider cp) throws Exception {
     try {
       // Create backup schema if it doesn't exist
-      executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, BACKUP_SCHEMA));
+      executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, Constants.BACKUP_SCHEMA));
       
       // Create backup tracking table if it doesn't exist
       String createBackupTrackingTable = String.format(
           "CREATE TABLE IF NOT EXISTS %s.backup_tracking (" +
-          "original_table " + VARCHAR_255 + ", " +
-          "backup_table " + VARCHAR_255 + ", " +
+          "original_table " + Constants.VARCHAR_255 + ", " +
+          "backup_table " + Constants.VARCHAR_255 + ", " +
           "backup_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP" +
-          ")", BACKUP_SCHEMA
+          ")", Constants.BACKUP_SCHEMA
       );
       
       executeUpdate(cp, createBackupTrackingTable);
-      log4j.debug("Ensured backup schema '{}' and tracking table exist", BACKUP_SCHEMA);
+      log4j.debug("Ensured backup schema '{}' and tracking table exist", Constants.BACKUP_SCHEMA);
       
     } catch (Exception e) {
       log4j.warn("Warning: Failed to ensure backup schema and tracking table exist: {}", e.getMessage());

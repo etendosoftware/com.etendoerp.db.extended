@@ -23,7 +23,6 @@ import com.etendoerp.db.extended.utils.XmlParsingUtils;
 public class ConstraintManagementUtils {
 
   private static final Logger log4j = LogManager.getLogger();
-  private static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
 
   /**
    * Executes the constraint SQL if it is not blank.
@@ -84,9 +83,9 @@ public class ConstraintManagementUtils {
     }
 
     // SQL templates for primary table
-    String dropPrimaryKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
-    String addPartitionedPrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
-    String addSimplePrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
+    String dropPrimaryKeySQL = Constants.ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
+    String addPartitionedPrimaryKeySQL = Constants.ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
+    String addSimplePrimaryKeySQL = Constants.ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
 
     // Build SQL script for primary table
     StringBuilder sql = new StringBuilder();
@@ -99,15 +98,15 @@ public class ConstraintManagementUtils {
     }
 
     // SQL templates for foreign key constraints
-    String dropForeignKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s;\n";
+    String dropForeignKeySQL = Constants.ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s;\n";
     String addColumnSQL = "ALTER TABLE %s\n" + "ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
     String updateColumnSQL = "UPDATE %s SET %s = F.%s FROM %s F "
         + "WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
-    String addPartitionedForeignKeySQL = ALTER_TABLE
+    String addPartitionedForeignKeySQL = Constants.ALTER_TABLE
         + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) "
         + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE "
         + "ON UPDATE CASCADE ON DELETE NO ACTION;\n";
-    String addSimpleForeignKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s FOREIGN KEY (%s) "
+    String addSimpleForeignKeySQL = Constants.ALTER_TABLE + "ADD CONSTRAINT %s FOREIGN KEY (%s) "
         + "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE "
         + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
 

@@ -15,7 +15,12 @@ import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.List;
+import java.util.LinkedHashMap;
+import java.util.Map;
+import java.util.Objects;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
@@ -27,12 +32,6 @@ import java.util.stream.Stream;
 public class XmlParsingUtils {
 
   private static final Logger log4j = LogManager.getLogger();
-  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
-  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
-  public static final String MODULES_JAR = "build/etendo/modules";
-  public static final String MODULES_BASE = "modules";
-  public static final String MODULES_CORE = "modules_core";
-  private static final String[] moduleDirs = new String[]{MODULES_BASE, MODULES_CORE, MODULES_JAR};
 
   /**
    * Represents a column definition from XML.
@@ -153,19 +152,19 @@ public class XmlParsingUtils {
   public static List<File> collectTableDirs(String sourcePath) throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
     File root = new File(sourcePath);
-    for (String mod : moduleDirs) {
+    for (String mod : Constants.MODULE_DIRS) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
-      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
+      dirs.add(new File(modBase, Constants.SRC_DB_DATABASE_MODEL_TABLES));
       for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
+        dirs.add(new File(sd, Constants.SRC_DB_DATABASE_MODEL_TABLES));
       }
-      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+      dirs.add(new File(modBase, Constants.SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
       for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+        dirs.add(new File(sd, Constants.SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
       }
     }
-    dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
+    dirs.add(new File(root, Constants.SRC_DB_DATABASE_MODEL_TABLES));
     return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
   }
 

@@ -14,9 +14,6 @@ import org.openbravo.database.ConnectionProvider;
 public class PartitionManager {
   
   private static final Logger log4j = LogManager.getLogger();
-  
-  private static final String CREATE_SCHEMA_SQL = "CREATE SCHEMA IF NOT EXISTS %s";
-  private static final String PUBLIC_SCHEMA_PREFIX = "public.";
 
   /**
    * Creates partitions for a table based on data analysis.
@@ -26,7 +23,7 @@ public class PartitionManager {
     log4j.info("Creating partitions for table {} based on data in {}", newTableName, dataSourceReference);
     
     // Ensure partitions schema exists
-    executeUpdate(cp, String.format(CREATE_SCHEMA_SQL, partitionsSchema));
+    executeUpdate(cp, String.format(Constants.CREATE_SCHEMA_SQL, partitionsSchema));
     
     // Query to find the range of years in the data
     String yearRangeSql = String.format(
@@ -103,11 +100,11 @@ public class PartitionManager {
     // Handle template table name that might include schema
     String templateReference = templateTableName;
     if (!templateTableName.contains(".")) {
-      templateReference = PUBLIC_SCHEMA_PREFIX + templateTableName;
+      templateReference = Constants.PUBLIC_SCHEMA_PREFIX + templateTableName;
     }
     
     String createTableSql = String.format(
-        "CREATE TABLE " + PUBLIC_SCHEMA_PREFIX + "%s (LIKE %s INCLUDING DEFAULTS INCLUDING STORAGE INCLUDING COMMENTS) " +
+        "CREATE TABLE " + Constants.PUBLIC_SCHEMA_PREFIX + "%s (LIKE %s INCLUDING DEFAULTS INCLUDING STORAGE INCLUDING COMMENTS) " +
         "PARTITION BY RANGE (%s)",
         newTableName, templateReference, partitionCol
     );

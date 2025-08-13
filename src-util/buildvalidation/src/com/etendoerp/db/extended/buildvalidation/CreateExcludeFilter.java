@@ -48,6 +48,7 @@ import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import com.etendoerp.db.extended.utils.Constants;
 
 /**
  * Generates the excludeFilter.xml by collecting constraint names
@@ -55,16 +56,6 @@ import java.util.stream.Stream;
  */
 public class CreateExcludeFilter extends BuildValidation {
   private static final Logger logger = LogManager.getLogger();
-  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
-  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
-  public static final String MODULES_JAR  = "build/etendo/modules";
-  public static final String MODULES_BASE = "modules";
-  public static final String MODULES_CORE = "modules_core";
-  private static String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
-
-  public static boolean isBlank(String str) {
-    return str == null || str.trim().isEmpty();
-  }
 
   @Override
   public List<String> execute() {
@@ -87,7 +78,7 @@ public class CreateExcludeFilter extends BuildValidation {
       while (baseTablesResult.next()) {
         String baseTableName = baseTablesResult.getString("tablename");
         String partitionColumnName = baseTablesResult.getString("columnname");
-        if (isBlank(baseTableName)) {
+        if (StringUtils.isBlank(baseTableName)) {
           logger.warn("Received an empty or null base table name; skipping.");
           continue;
         }
@@ -97,7 +88,7 @@ public class CreateExcludeFilter extends BuildValidation {
         List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
         String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
         logger.info("Primary Key to exclude: '{}'", primaryKeyName);
-        if (!isBlank(primaryKeyName)) {
+        if (!StringUtils.isBlank(primaryKeyName)) {
           String primaryKeyUpper = primaryKeyName.toUpperCase();
           constraintsToExclude.add(primaryKeyUpper);
           logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
@@ -111,7 +102,7 @@ public class CreateExcludeFilter extends BuildValidation {
           logger.info("Found {} FKs referencing '{}'", referencingFks.size(), baseTableName);
           constraintsToExclude.addAll(referencingFks);
           logger.info("Partition column for '{}': {}", baseTableName, partitionColumnName);
-          if (!isBlank(partitionColumnName)) {
+          if (!StringUtils.isBlank(partitionColumnName)) {
             referencingFks.forEach(fk -> {
               String columnToExclude = "ETARC_" + partitionColumnName.toUpperCase() + "__" + fk.toUpperCase();
               columnsToExclude.add(columnToExclude);
@@ -324,19 +315,19 @@ public class CreateExcludeFilter extends BuildValidation {
   private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
     File root = new File(getSourcePath());
-    for (String mod : moduleDirs) {
+    for (String mod : Constants.MODULE_DIRS) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
-      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
+      dirs.add(new File(modBase, Constants.SRC_DB_DATABASE_MODEL_TABLES));
       for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
+        dirs.add(new File(sd, Constants.SRC_DB_DATABASE_MODEL_TABLES));
       }
-      dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+      dirs.add(new File(modBase, Constants.SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
       for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+        dirs.add(new File(sd, Constants.SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
       }
     }
-    dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
+    dirs.add(new File(root, Constants.SRC_DB_DATABASE_MODEL_TABLES));
     return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
   }
 
