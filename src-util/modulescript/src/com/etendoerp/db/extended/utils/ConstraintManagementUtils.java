@@ -92,7 +92,25 @@ public class ConstraintManagementUtils {
     sql.append(String.format(dropPrimaryKeySQL, tableName, pkName));
 
     if (isPartitioned) {
-      sql.append(String.format(addPartitionedPrimaryKeySQL, tableName, pkName, pkField, partitionField));
+      if (pkField.equalsIgnoreCase(partitionField)) {
+        // Special case: partition column is the same as configured PK column
+        // This is invalid for partitioned tables - we need to find the actual table ID column
+        String actualPkColumn = findActualPrimaryKeyColumn(cp, tableName);
+        if (actualPkColumn != null && !actualPkColumn.equalsIgnoreCase(partitionField)) {
+          // Create composite PK with actual ID column + partition column
+          sql.append(String.format(addPartitionedPrimaryKeySQL, tableName, pkName, actualPkColumn, partitionField));
+          log4j.info("Creating composite primary key for partitioned table {} with ID column {} and partition column {}", 
+                     tableName, actualPkColumn, partitionField);
+        } else {
+          // Fallback: create single-column PK (may cause issues but allows process to continue)
+          sql.append(String.format(addSimplePrimaryKeySQL, tableName, pkName, pkField));
+          log4j.warn("Could not find proper ID column for partitioned table {}. Using single-column PK which may cause constraint violations.", 
+                     tableName);
+        }
+      } else {
+        // Normal case: partition column is different from PK column
+        sql.append(String.format(addPartitionedPrimaryKeySQL, tableName, pkName, pkField, partitionField));
+      }
     } else {
       sql.append(String.format(addSimplePrimaryKeySQL, tableName, pkName, pkField));
     }
@@ -159,8 +177,29 @@ public class ConstraintManagementUtils {
                     sql.append(String.format(updateColumnSQL, referencingTableName, partitionField,
                         partitionField, tableName, pkField, referencingTableName, referencingColumnName,
                         referencingTableName, partitionField));
-                    sql.append(String.format(addPartitionedForeignKeySQL, referencingTableName, constraintName,
-                        referencingColumnName, partitionField, tableName, pkField, partitionField));
+                    
+                    // Check if pkField and partitionField are the same to avoid duplicate columns in FK
+                    if (pkField.equalsIgnoreCase(partitionField)) {
+                      // Special case: partition column is the same as configured PK column
+                      String actualPkColumn = findActualPrimaryKeyColumn(cp, tableName);
+                      if (actualPkColumn != null && !actualPkColumn.equalsIgnoreCase(partitionField)) {
+                        // Create composite FK with actual ID column + partition column
+                        sql.append(String.format(addPartitionedForeignKeySQL, referencingTableName, constraintName,
+                            referencingColumnName, partitionField, tableName, actualPkColumn, partitionField));
+                        log4j.info("Creating composite foreign key for {} referencing partitioned table {} with ID column {} and partition column {}", 
+                                   referencingTableName, tableName, actualPkColumn, partitionField);
+                      } else {
+                        // Fallback: create single-column FK
+                        sql.append(String.format(addSimpleForeignKeySQL, referencingTableName, constraintName,
+                            referencingColumnName, tableName, pkField));
+                        log4j.warn("Could not find proper ID column for partitioned table {}. Using single-column FK which may cause constraint violations.", 
+                                   tableName);
+                      }
+                    } else {
+                      // Normal case: partition column is different from PK column  
+                      sql.append(String.format(addPartitionedForeignKeySQL, referencingTableName, constraintName,
+                          referencingColumnName, partitionField, tableName, pkField, partitionField));
+                    }
                   } else {
                     sql.append(String.format(addSimpleForeignKeySQL, referencingTableName, constraintName,
                         referencingColumnName, tableName, pkField));
@@ -175,6 +214,64 @@ public class ConstraintManagementUtils {
       }
     }
     return sql.toString();
+  }
+
+  /**
+   * Finds the actual primary key column for a table (typically the ID column).
+   * This is used when the configured pkField is the same as partitionField,
+   * which is invalid for partitioned tables that require composite primary keys.
+   * 
+   * @param cp the connection provider
+   * @param tableName the table name
+   * @return the actual primary key column name, or null if not found
+   */
+  private String findActualPrimaryKeyColumn(ConnectionProvider cp, String tableName) {
+    try {
+      // Look for common ID column patterns
+      String[] commonIdPatterns = {
+          tableName.toUpperCase() + "_ID",    // e.g., C_ORDER_ID
+          tableName.toLowerCase() + "_id",    // e.g., c_order_id
+          "ID",                               // simple ID column
+          "id"                                // lowercase id
+      };
+      
+      for (String columnName : commonIdPatterns) {
+        String checkColumnSql = "SELECT 1 FROM information_schema.columns " +
+                               "WHERE table_name = ? AND column_name = ? " +
+                               "AND table_schema = 'public'";
+        
+        try (PreparedStatement ps = cp.getPreparedStatement(checkColumnSql)) {
+          ps.setString(1, tableName.toLowerCase());
+          ps.setString(2, columnName.toLowerCase());
+          if (ps.executeQuery().next()) {
+            log4j.info("Found actual primary key column {} for table {}", columnName, tableName);
+            return columnName.toUpperCase();
+          }
+        }
+      }
+      
+      // If no common pattern found, look for any column with 'ID' in the name
+      String findIdColumnSql = "SELECT column_name FROM information_schema.columns " +
+                              "WHERE table_name = ? AND table_schema = 'public' " +
+                              "AND column_name ILIKE '%id%' " +
+                              "ORDER BY CASE WHEN column_name ILIKE '%_id' THEN 1 ELSE 2 END, column_name";
+      
+      try (PreparedStatement ps = cp.getPreparedStatement(findIdColumnSql)) {
+        ps.setString(1, tableName.toLowerCase());
+        try (ResultSet rs = ps.executeQuery()) {
+          if (rs.next()) {
+            String foundColumn = rs.getString(1).toUpperCase();
+            log4j.info("Found ID-like column {} for table {}", foundColumn, tableName);
+            return foundColumn;
+          }
+        }
+      }
+      
+    } catch (Exception e) {
+      log4j.warn("Error finding actual primary key column for table {}: {}", tableName, e.getMessage());
+    }
+    
+    return null;
   }
 
   /**
