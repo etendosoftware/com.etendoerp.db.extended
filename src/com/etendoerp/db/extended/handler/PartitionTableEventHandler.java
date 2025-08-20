@@ -17,7 +17,13 @@
 
 package com.etendoerp.db.extended.handler;
 
-import com.etendoerp.db.extended.data.TableConfig;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+
+import javax.enterprise.event.Observes;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -30,15 +36,12 @@ import org.openbravo.client.kernel.event.EntityPersistenceEventObserver;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
 
-import javax.enterprise.event.Observes;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import com.etendoerp.db.extended.data.TableConfig;
 
 public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
   private static final Logger logger = LogManager.getLogger();
   private static final Entity[] entities = { ModelProvider.getInstance().getEntity(TableConfig.ENTITY_NAME) };
+  public static final String ETARC_COULD_NOT_RETRIEVE_TABLES = "ETARC_CouldNotRetrieveTables";
 
   public void onNew(@Observes EntityNewEvent event) {
     if (!isValidEvent(event)) {
@@ -47,6 +50,34 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
 
     TableConfig actualTableConfig = (TableConfig) event.getTargetInstance();
     String partitionedTable = actualTableConfig.getTable().getDBTableName();
+    // Validate that the selected partition column has no NULL values
+    try {
+      String selectedColumn = actualTableConfig.getColumn() != null
+          ? actualTableConfig.getColumn().getDBColumnName()
+          : null;
+
+      String nullCheckSql = "SELECT CASE WHEN EXISTS (SELECT 1 FROM public."
+          + partitionedTable.toLowerCase()
+          + " WHERE " + selectedColumn.toLowerCase() + " IS NULL) THEN 'Y' ELSE 'N' END AS hasnull";
+
+      String hasNulls = "N";
+      Connection connection = OBDal.getInstance().getConnection(false);
+      try (PreparedStatement ps = connection.prepareStatement(nullCheckSql);
+           ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) {
+          hasNulls = rs.getString("hasnull");
+        }
+      }
+
+      if (StringUtils.equals("Y", hasNulls)) {
+        throw new OBException(OBMessageUtils.messageBD("ETARC_SelectedColumnHasNulls"));
+      }
+    } catch (SQLException e) {
+      logSQLError(e);
+      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
+    } catch (Exception e) {
+      throw new OBException(e);
+    }
     String sql =
         "SELECT " +
             "  CASE WHEN EXISTS ( " +
@@ -71,7 +102,7 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
       }
     } catch (SQLException e) {
       logSQLError(e);
-      throw new OBException(OBMessageUtils.messageBD("ETARC_CouldNotRetrieveTables"), e);
+      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
     } catch (Exception e) {
       throw new OBException(e);
     }
@@ -112,7 +143,7 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
       }
     } catch (SQLException e) {
       logSQLError(e);
-      throw new OBException(OBMessageUtils.messageBD("ETARC_CouldNotRetrieveTables"), e);
+      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
     }
     if (StringUtils.equals("Y", isPartitioned)) {
       throw new OBException(OBMessageUtils.messageBD("ETARC_DeleteAlreadyPartTable"));
@@ -121,10 +152,11 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
 
   private static void logSQLError(SQLException e) {
     logger.error("Error executing SQL query. Message: {}, SQLState: {}, ErrorCode: {}",
-            e.getMessage(), e.getSQLState(), e.getErrorCode());
+        e.getMessage(), e.getSQLState(), e.getErrorCode());
   }
 
-
   @Override
-  protected Entity[] getObservedEntities() { return entities; }
+  protected Entity[] getObservedEntities() {
+    return entities;
+  }
 }

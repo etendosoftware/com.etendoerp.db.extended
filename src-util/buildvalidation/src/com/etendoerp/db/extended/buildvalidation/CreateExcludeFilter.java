@@ -17,19 +17,7 @@
 
 package com.etendoerp.db.extended.buildvalidation;
 
-import org.openbravo.buildvalidation.BuildValidation;
-import org.openbravo.database.ConnectionProvider;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
-
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
+import java.io.File;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -38,15 +26,29 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.io.File;
-import java.util.Arrays;
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Objects;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.openbravo.buildvalidation.BuildValidation;
+import org.openbravo.database.ConnectionProvider;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
 
 /**
  * Generates the excludeFilter.xml by collecting constraint names
@@ -57,10 +59,10 @@ public class CreateExcludeFilter extends BuildValidation {
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
-  public static final String MODULES_JAR  = "build/etendo/modules";
+  public static final String MODULES_JAR = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
-  private static String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
+  private static String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
 
   public static boolean isBlank(String str) {
     return str == null || str.trim().isEmpty();
@@ -177,11 +179,15 @@ public class CreateExcludeFilter extends BuildValidation {
    *   <li>Disable XInclude processing and entity expansion.</li>
    * </ul>
    *
-   * @param xml the XML file to parse
+   * @param xml
+   *     the XML file to parse
    * @return a normalized {@link org.w3c.dom.Document} representing the XML content
-   * @throws ParserConfigurationException if a parser cannot be configured
-   * @throws SAXException                 if a parsing error occurs
-   * @throws IOException                  if an I/O error occurs reading the file
+   * @throws ParserConfigurationException
+   *     if a parser cannot be configured
+   * @throws SAXException
+   *     if a parsing error occurs
+   * @throws IOException
+   *     if an I/O error occurs reading the file
    */
   private static Document getDocument(File xml) throws ParserConfigurationException, SAXException, IOException {
     DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
@@ -221,9 +227,10 @@ public class CreateExcludeFilter extends BuildValidation {
    * continues processing remaining files and ultimately returns whatever has
    * been collected (possibly an empty set).
    *
-   * @param targetTable the name of the table whose foreign-key references are sought
+   * @param targetTable
+   *     the name of the table whose foreign-key references are sought
    * @return a Set of unique, uppercased foreign-key names referencing {@code targetTable},
-   *         or an empty set if none are found or errors occur
+   *     or an empty set if none are found or errors occur
    */
   public Set<String> findAllForeignKeysReferencing(String targetTable) {
     Set<String> fkNames = new HashSet<>();
@@ -267,12 +274,16 @@ public class CreateExcludeFilter extends BuildValidation {
    *       attribute is missing, logs the appropriate warning/error and returns null.</li>
    * </ul>
    *
-   * @param xmlFiles the list of XML files to inspect
+   * @param xmlFiles
+   *     the list of XML files to inspect
    * @return the name of the primary key if found, or null if missing or on error
    */
   public static String findPrimaryKey(List<File> xmlFiles) {
     try {
       for (File xml : xmlFiles) {
+        if (StringUtils.contains(xml.getAbsolutePath(), "modifiedTables")) {
+          continue;
+        }
         if (!xml.exists()) {
           logger.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
           return null;
@@ -344,7 +355,8 @@ public class CreateExcludeFilter extends BuildValidation {
    * filters all XMLs in the discovered directories to only those whose name
    * equals the target.
    *
-   * @param tableName the base name of the table (without the .xml extension)
+   * @param tableName
+   *     the base name of the table (without the .xml extension)
    * @return a List of matching XML files (maybe empty if none found)
    */
   public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
