@@ -190,8 +190,43 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         !isUnchanged);
     String tableSql = buildConstraintSql(tableName, cp, pkCol, partitionCol);
 
-    // Execute SQL per table so we can backup and restore if necessary.
-    executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+    // Persist structural changes based on XML diffs
+    try {
+      com.etendoerp.db.extended.utils.TableDefinitionComparator.ColumnDiff diff =
+          (new com.etendoerp.db.extended.utils.TableDefinitionComparator())
+              .diffTableDefinition(tableName, cp, xmlFiles);
+
+      // Build ALTER statements for added columns
+      StringBuilder alterSql = new StringBuilder();
+      for (Map.Entry<String, com.etendoerp.db.extended.utils.TableDefinitionComparator.ColumnDefinition> e : diff.added.entrySet()) {
+        String col = e.getKey();
+        com.etendoerp.db.extended.utils.TableDefinitionComparator.ColumnDefinition def = e.getValue();
+        // Simple mapping from xml type to SQL type — best-effort
+        String sqlType = mapXmlTypeToSql(def.getDataType(), def.getLength());
+        alterSql.append(String.format("ALTER TABLE public.%s ADD COLUMN IF NOT EXISTS %s %s %s;\n", tableName, col, sqlType,
+            def.isNullable() ? "" : "NOT NULL"));
+      }
+
+      // Build ALTER statements for removed columns
+      for (Map.Entry<String, com.etendoerp.db.extended.utils.TableDefinitionComparator.ColumnDefinition> e : diff.removed.entrySet()) {
+        String col = e.getKey();
+        alterSql.append(String.format("ALTER TABLE public.%s DROP COLUMN IF EXISTS %s CASCADE;\n", tableName, col));
+      }
+
+      // Execute schema mutations with backup/restore safety
+      if (alterSql.length() > 0) {
+        executeSqlWithBackup(cp, tableName, isPartitioned, alterSql.toString());
+      }
+
+      // Finally execute the constraint SQL built earlier (PK/FK alterations)
+      if (!isBlank(tableSql)) {
+        executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+      }
+    } catch (Exception e) {
+      log4j.error("Failed to persist XML schema changes for {}: {}", tableName, e.getMessage(), e);
+      // Still attempt constraint SQL execution as fallback
+      executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+    }
   }
 
   // --- Backup helpers ---
@@ -292,6 +327,36 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         }
       }
       throw e;
+    }
+  }
+
+  /**
+   * Best-effort mapping from XML type to PostgreSQL SQL type.
+   */
+  private String mapXmlTypeToSql(String xmlType, Integer length) {
+    if (xmlType == null) return "text";
+    String t = xmlType.toLowerCase();
+    switch (t) {
+      case "varchar":
+      case "character varying":
+      case "string":
+        return length != null && length > 0 ? "varchar(" + length + ")" : "text";
+      case "int":
+      case "integer":
+        return "integer";
+      case "bigint":
+        return "bigint";
+      case "timestamp":
+      case "datetime":
+        return "timestamp without time zone";
+      case "boolean":
+      case "bool":
+        return "boolean";
+      case "numeric":
+      case "decimal":
+        return "numeric";
+      default:
+        return t;
     }
   }
 

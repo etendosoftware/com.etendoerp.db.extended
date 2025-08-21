@@ -76,6 +76,41 @@ public class TableDefinitionComparator {
   }
 
   /**
+   * Returns columns to add and to remove to make DB match XML.
+   * added -> columns present in XML but missing in DB
+   * removed -> columns present in DB but missing in XML
+   */
+  public ColumnDiff diffTableDefinition(String tableName, ConnectionProvider cp, List<File> xmlFiles) throws Exception {
+    Map<String, ColumnDefinition> xmlColumns = new LinkedHashMap<>();
+    for (File xmlFile : xmlFiles) {
+      Map<String, ColumnDefinition> partial = parseXmlDefinition(xmlFile);
+      for (Map.Entry<String, ColumnDefinition> entry : partial.entrySet()) {
+        xmlColumns.putIfAbsent(entry.getKey(), entry.getValue());
+      }
+    }
+    Map<String, ColumnDefinition> dbColumns = fetchDbDefinition(tableName, cp);
+    Map<String, ColumnDefinition> toAdd = new LinkedHashMap<>();
+    Map<String, ColumnDefinition> toRemove = new LinkedHashMap<>();
+    for (Map.Entry<String, ColumnDefinition> e : xmlColumns.entrySet()) {
+      if (!dbColumns.containsKey(e.getKey())) toAdd.put(e.getKey(), e.getValue());
+    }
+    for (Map.Entry<String, ColumnDefinition> e : dbColumns.entrySet()) {
+      if (!xmlColumns.containsKey(e.getKey())) toRemove.put(e.getKey(), e.getValue());
+    }
+    return new ColumnDiff(toAdd, toRemove);
+  }
+
+  public static class ColumnDiff {
+    public final Map<String, ColumnDefinition> added;
+    public final Map<String, ColumnDefinition> removed;
+
+    public ColumnDiff(Map<String, ColumnDefinition> added, Map<String, ColumnDefinition> removed) {
+      this.added = added;
+      this.removed = removed;
+    }
+  }
+
+  /**
    * Parses the given XML file to extract column definitions.
    * <p>
    * The method expects the XML to contain a set of {@code <column>} elements,
@@ -219,6 +254,23 @@ public class TableDefinitionComparator {
 
     public String getName() {
       return name;
+    }
+
+    // New getters for other properties to allow external callers to build SQL
+    public String getDataType() {
+      return dataType;
+    }
+
+    public Integer getLength() {
+      return length;
+    }
+
+    public Boolean isNullable() {
+      return isNullable;
+    }
+
+    public Boolean isPrimaryKey() {
+      return isPrimaryKey;
     }
 
     @Override
