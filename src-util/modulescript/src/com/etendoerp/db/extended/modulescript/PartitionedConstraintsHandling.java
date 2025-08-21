@@ -22,6 +22,8 @@ import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Timestamp;
+import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -60,6 +62,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public static final String MODULES_CORE = "modules_core";
   private static final String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
   public static final String SEPARATOR = "=======================================================";
+  // Backup infrastructure
+  private static final String BACKUP_SCHEMA = "etarc_backups";
+  private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
+  private static final int BACKUP_RETENTION_DAYS = 7;
 
   public static boolean isBlank(String str) {
     return StringUtils.isBlank(str);
@@ -79,14 +85,18 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         log4j.info("============== Partitioning process info ==============");
         logSeparator();
       }
-      StringBuilder sql = new StringBuilder();
+
+      // Ensure backup infrastructure and clean old backups prior to making changes
+      ensureBackupInfrastructure(cp);
+      cleanupOldBackups(cp);
+
+      // Process each table independently so we can backup/restore per-table
       for (Map<String, String> cfg : tableConfigs) {
-        processTableConfig(cp, cfg, sql);
+        processTableConfig(cp, cfg);
       }
       if (!tableConfigs.isEmpty()) {
         logSeparator();
       }
-      executeConstraintSqlIfNeeded(cp, sql.toString());
 
     } catch (Exception e) {
       handleError(e);
@@ -151,7 +161,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @throws Exception
    *     if an error occurs during processing or querying the database.
    */
-  private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg, StringBuilder sql) throws Exception {
+  private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg) throws Exception {
     String tableName = cfg.get("tableName");
     String partitionCol = cfg.get("columnName");
     String pkCol = cfg.get("pkColumnName");
@@ -178,7 +188,111 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
     log4j.info("Recreating constraints for {} (firstRun = {}, xmlChanged = {})", tableName, firstPartitionRun,
         !isUnchanged);
-    sql.append(buildConstraintSql(tableName, cp, pkCol, partitionCol));
+    String tableSql = buildConstraintSql(tableName, cp, pkCol, partitionCol);
+
+    // Execute SQL per table so we can backup and restore if necessary.
+    executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+  }
+
+  // --- Backup helpers ---
+  private void ensureBackupInfrastructure(ConnectionProvider cp) {
+    // Create schema and metadata table if not exists. Best-effort, don't throw.
+    String createSchema = "CREATE SCHEMA IF NOT EXISTS " + BACKUP_SCHEMA + ";";
+    String createMeta = "CREATE TABLE IF NOT EXISTS " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
+        + " (backup_name TEXT PRIMARY KEY, table_name TEXT, created_at TIMESTAMP);";
+    try (PreparedStatement ps = cp.getPreparedStatement(createSchema + " " + createMeta)) {
+      ps.executeUpdate();
+    } catch (Exception e) {
+      log4j.warn("Could not ensure backup infrastructure: {}", e.getMessage());
+    }
+  }
+
+  private void cleanupOldBackups(ConnectionProvider cp) {
+    // Find backups older than retention, drop their physical tables and delete metadata entries
+    String selectSql = "SELECT backup_name FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
+        + " WHERE created_at < now() - interval '" + BACKUP_RETENTION_DAYS + " days'";
+    String deleteMetaSql = "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
+    try (PreparedStatement ps = cp.getPreparedStatement(selectSql);
+         ResultSet rs = ps.executeQuery()) {
+      List<String> toDrop = new ArrayList<>();
+      while (rs.next()) {
+        toDrop.add(rs.getString(1));
+      }
+      for (String backupName : toDrop) {
+        try (PreparedStatement drop = cp.getPreparedStatement(
+            "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
+          drop.executeUpdate();
+        } catch (Exception de) {
+          log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
+        }
+        try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
+          del.setString(1, backupName);
+          del.executeUpdate();
+        } catch (Exception de2) {
+          log4j.warn("Failed to delete metadata for backup {}: {}", backupName, de2.getMessage());
+        }
+      }
+    } catch (Exception e) {
+      log4j.warn("Failed to cleanup old backups: {}", e.getMessage());
+    }
+  }
+
+  private String createTableBackup(ConnectionProvider cp, String tableName) throws Exception {
+    // Backup strategy: create a new table in BACKUP_SCHEMA with timestamped name and copy data
+    String backupName = tableName.toLowerCase() + "_backup_" + System.currentTimeMillis();
+    String sql = "CREATE TABLE " + BACKUP_SCHEMA + "." + backupName + " AS TABLE public." + tableName + ";";
+    String metaSql = "INSERT INTO " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
+        + " (backup_name, table_name, created_at) VALUES (?, ?, ?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.executeUpdate();
+    }
+    try (PreparedStatement ps = cp.getPreparedStatement(metaSql)) {
+      ps.setString(1, backupName);
+      ps.setString(2, tableName);
+      ps.setTimestamp(3, new Timestamp(System.currentTimeMillis()));
+      ps.executeUpdate();
+    }
+    return backupName;
+  }
+
+  private void restoreBackup(ConnectionProvider cp, String tableName, String backupName) throws Exception {
+    // Restore strategy: truncate target table then insert from backup, best-effort
+    String truncate = "TRUNCATE TABLE public." + tableName + " RESTART IDENTITY CASCADE;";
+    String insert = "INSERT INTO public." + tableName + " SELECT * FROM " + BACKUP_SCHEMA + "." + backupName + ";";
+    try (PreparedStatement ps = cp.getPreparedStatement(truncate + " " + insert)) {
+      ps.executeUpdate();
+    }
+  }
+
+  private void executeSqlWithBackup(ConnectionProvider cp, String tableName, boolean isPartitioned, String sql)
+      throws Exception {
+    String backupName = null;
+    try {
+      if (isPartitioned) {
+        backupName = createTableBackup(cp, tableName);
+        log4j.info("Created backup {} for table {}", backupName, tableName);
+      }
+
+      if (isBlank(sql)) {
+        log4j.info("No SQL to execute for table {}", tableName);
+        return;
+      }
+
+      try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+        ps.executeUpdate();
+      }
+    } catch (Exception e) {
+      log4j.error("Error executing SQL for table {}: {}", tableName, e.getMessage(), e);
+      if (backupName != null) {
+        try {
+          restoreBackup(cp, tableName, backupName);
+          log4j.info("Restored backup {} to table {} after failure", backupName, tableName);
+        } catch (Exception re) {
+          log4j.error("Failed to restore backup {} for table {}: {}", backupName, tableName, re.getMessage(), re);
+        }
+      }
+      throw e;
+    }
   }
 
   /**
@@ -404,7 +518,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
     File root = new File(getSourcePath());
-    for (String mod : this.moduleDirs) {
+  for (String mod : moduleDirs) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
