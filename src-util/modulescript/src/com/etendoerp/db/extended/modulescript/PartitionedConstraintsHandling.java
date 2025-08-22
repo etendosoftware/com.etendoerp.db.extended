@@ -26,9 +26,9 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -51,19 +51,19 @@ import com.etendoerp.db.extended.utils.TableDefinitionComparator;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
 
-  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
-  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
-  private static final Logger log4j = LogManager.getLogger();
   public static final String MODULES_JAR = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
-  private static final String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
   public static final String SEPARATOR = "=======================================================";
+  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
+  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
+  private static final Logger log4j = LogManager.getLogger();
+  private static final String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
   // Backup infrastructure
   private static final String BACKUP_SCHEMA = "etarc_backups";
   private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
-  private static final int BACKUP_RETENTION_DAYS = 7;
+  private static final int MAX_BACKUPS_PER_TABLE = 5;
 
   public static boolean isBlank(String str) {
     return StringUtils.isBlank(str);
@@ -71,6 +71,115 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   public static boolean isEqualsIgnoreCase(String str1, String str2) {
     return str1 != null && str1.equalsIgnoreCase(str2);
+  }
+
+  /**
+   * Logs a separator line to the application log using the info level.
+   * <p>
+   * This method is typically used to visually separate sections in the log output,
+   * improving readability during debugging or tracing execution flow.
+   */
+  private static void logSeparator() {
+    log4j.info(SEPARATOR);
+  }
+
+  /**
+   * Parses the specified XML file into a normalized DOM Document with
+   * XXE protections enabled.
+   * <p>
+   * Configures the parser to:
+   * <ul>
+   *   <li>Disallow DOCTYPE declarations (no DTDs).</li>
+   *   <li>Disable resolution of external general and parameter entities.</li>
+   *   <li>Enable secure processing to limit resource usage.</li>
+   *   <li>Disable XInclude processing and entity expansion.</li>
+   * </ul>
+   *
+   * @param xml
+   *     the XML file to parse
+   * @return a normalized {@link org.w3c.dom.Document} representing the XML content
+   * @throws ParserConfigurationException
+   *     if a parser cannot be configured
+   * @throws SAXException
+   *     if a parsing error occurs
+   * @throws IOException
+   *     if an I/O error occurs reading the file
+   */
+  private static Document getDocument(File xml) throws ParserConfigurationException, SAXException, IOException {
+    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
+
+    // 1. Disallow DTDs entirely (no DOCTYPE)
+    //    This prevents any <!DOCTYPE…> declarations
+    factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
+
+    // 2. Disable external entities
+    factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
+    factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
+
+    // 3. (Optional) Enable the secure-processing feature
+    factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
+
+    // 4. Further hardening
+    factory.setXIncludeAware(false);
+    factory.setExpandEntityReferences(false);
+
+    DocumentBuilder builder = factory.newDocumentBuilder();
+    Document doc = builder.parse(xml);
+    doc.getDocumentElement().normalize();
+    return doc;
+  }
+
+  /**
+   * Searches the provided list of XML table definition files for the "primaryKey"
+   * attribute on the single <table> element in each file.
+   * <p>
+   * For each XML file:
+   * <ul>
+   *   <li>If the file does not exist, logs an error and returns null.</li>
+   *   <li>If exactly one <table> element is found, and it has a "primaryKey" attribute,
+   *       returns that attribute’s value.</li>
+   *   <li>If no <table> elements or multiple <table> elements are found, or if the
+   *       attribute is missing, logs the appropriate warning/error and returns null.</li>
+   * </ul>
+   *
+   * @param xmlFiles
+   *     the list of XML files to inspect
+   * @return the name of the primary key if found, or null if missing or on error
+   */
+  public static String findPrimaryKey(List<File> xmlFiles) {
+    try {
+      for (File xml : xmlFiles) {
+        if (StringUtils.contains(xml.getAbsolutePath(), "modifiedTables")) {
+          continue;
+        }
+        if (!xml.exists()) {
+          log4j.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
+          return null;
+        }
+        Document doc = getDocument(xml);
+        NodeList tableList = doc.getElementsByTagName("table");
+
+        if (tableList.getLength() == 1) {
+          Element tableEl = (Element) tableList.item(0);
+          if (tableEl.hasAttribute("primaryKey")) {
+            return tableEl.getAttribute("primaryKey");
+          } else {
+            log4j.warn("Warning: Missing 'primaryKey' attribute in: {}", xml.getAbsolutePath());
+            return null;
+          }
+        } else if (tableList.getLength() == 0) {
+          log4j.error("Error: No <table> tag found in: {}", xml.getAbsolutePath());
+          return null;
+        } else {
+          log4j.error("Error: Found {} <table> tags in: {}", tableList.getLength(),
+              xml.getAbsolutePath());
+          return null;
+        }
+      }
+    } catch (Exception e) {
+      log4j.error("Error processing XML: {}", e.getMessage(), e);
+    }
+    return null;
   }
 
   public void execute() {
@@ -86,7 +195,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
       // Ensure backup infrastructure and clean old backups prior to making changes
       ensureBackupInfrastructure(cp);
-      cleanupOldBackups(cp);
+      cleanupExcessBackups(cp);
 
       // Process each table independently so we can backup/restore per-table
       Map<String, Long> timings = new LinkedHashMap<>();
@@ -115,8 +224,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         timings.put(tName, elapsed);
       }
       // Log summary of timings only if at least one table was actually processed
-  boolean anyProcessed = timings.values().stream().anyMatch(v -> v != null && v.longValue() >= 0L);
-  if (anyProcessed || hasPartitioned) {
+      boolean anyProcessed = timings.values().stream().anyMatch(v -> v != null && v.longValue() >= 0L);
+      if (anyProcessed || hasPartitioned) {
         logSeparator();
         log4j.info("Partitioning processing summary (ms):");
         for (Map.Entry<String, Long> e : timings.entrySet()) {
@@ -130,16 +239,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     } catch (Exception e) {
       handleError(e);
     }
-  }
-
-  /**
-   * Logs a separator line to the application log using the info level.
-   * <p>
-   * This method is typically used to visually separate sections in the log output,
-   * improving readability during debugging or tracing execution flow.
-   */
-  private static void logSeparator() {
-    log4j.info(SEPARATOR);
   }
 
   /**
@@ -390,33 +489,127 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
   }
 
-  private void cleanupOldBackups(ConnectionProvider cp) {
-    // Find backups older than retention, drop their physical tables and delete metadata entries
-    String selectSql = "SELECT backup_name FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
-        + " WHERE created_at < now() - interval '" + BACKUP_RETENTION_DAYS + " days'";
+  private void cleanupExcessBackups(ConnectionProvider cp) {
+    // For each table, keep only the MAX_BACKUPS_PER_TABLE most recent backups
+    log4j.info("Starting backup cleanup - will keep {} most recent backups per table", MAX_BACKUPS_PER_TABLE);
+
+    String selectTablesSql = "SELECT DISTINCT table_name FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE;
     String deleteMetaSql = "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
-    try (PreparedStatement ps = cp.getPreparedStatement(selectSql);
+
+    try (PreparedStatement ps = cp.getPreparedStatement(selectTablesSql);
          ResultSet rs = ps.executeQuery()) {
-      List<String> toDrop = new ArrayList<>();
+      List<String> tableNames = new ArrayList<>();
       while (rs.next()) {
-        toDrop.add(rs.getString(1));
+        tableNames.add(rs.getString(1));
       }
-      for (String backupName : toDrop) {
-        try (PreparedStatement drop = cp.getPreparedStatement(
-            "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
-          drop.executeUpdate();
-        } catch (Exception de) {
-          log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
+
+      int totalDeleted = 0;
+
+      // For each table, find backups to delete (keeping only the most recent MAX_BACKUPS_PER_TABLE)
+      for (String tableName : tableNames) {
+        // Use a subquery with ROW_NUMBER to identify old backups to delete
+        String selectBackupsToDeleteSql =
+            "SELECT backup_name FROM (" +
+                "  SELECT backup_name, ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn " +
+                "  FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE +
+                "  WHERE table_name = ?" +
+                ") ranked " +
+                "WHERE rn > " + MAX_BACKUPS_PER_TABLE;
+
+        try (PreparedStatement psBackups = cp.getPreparedStatement(selectBackupsToDeleteSql)) {
+          psBackups.setString(1, tableName);
+          try (ResultSet rsBackups = psBackups.executeQuery()) {
+            List<String> backupsToDelete = new ArrayList<>();
+            while (rsBackups.next()) {
+              backupsToDelete.add(rsBackups.getString(1));
+            }
+
+            // Delete the excess backups
+            for (String backupName : backupsToDelete) {
+              try (PreparedStatement drop = cp.getPreparedStatement(
+                  "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
+                drop.executeUpdate();
+                log4j.debug("Dropped excess backup table: {}", backupName);
+              } catch (Exception de) {
+                log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
+              }
+
+              try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
+                del.setString(1, backupName);
+                del.executeUpdate();
+              } catch (Exception de2) {
+                log4j.warn("Failed to delete metadata for backup {}: {}", backupName, de2.getMessage());
+              }
+            }
+
+            if (!backupsToDelete.isEmpty()) {
+              log4j.info("Cleaned up {} excess backups for table {}", backupsToDelete.size(), tableName);
+              totalDeleted += backupsToDelete.size();
+            }
+          }
         }
-        try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
-          del.setString(1, backupName);
-          del.executeUpdate();
-        } catch (Exception de2) {
-          log4j.warn("Failed to delete metadata for backup {}: {}", backupName, de2.getMessage());
+      }
+
+      if (totalDeleted > 0) {
+        log4j.info("Total cleanup: removed {} old backup tables", totalDeleted);
+      } else {
+        log4j.info("No excess backups found to clean up");
+      }
+    } catch (Exception e) {
+      log4j.warn("Failed to cleanup excess backups: {}", e.getMessage());
+    }
+  }
+
+  /**
+   * Cleanup excess backups for a specific table only
+   */
+  private void cleanupExcessBackupsForTable(ConnectionProvider cp, String tableName) {
+    String deleteMetaSql = "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
+
+    try {
+      // Use a subquery with ROW_NUMBER to identify old backups to delete for this specific table
+      String selectBackupsToDeleteSql =
+          "SELECT backup_name FROM (" +
+              "  SELECT backup_name, ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn " +
+              "  FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE +
+              "  WHERE table_name = ?" +
+              ") ranked " +
+              "WHERE rn > " + MAX_BACKUPS_PER_TABLE;
+
+      try (PreparedStatement psBackups = cp.getPreparedStatement(selectBackupsToDeleteSql)) {
+        psBackups.setString(1, tableName);
+        try (ResultSet rsBackups = psBackups.executeQuery()) {
+          List<String> backupsToDelete = new ArrayList<>();
+          while (rsBackups.next()) {
+            backupsToDelete.add(rsBackups.getString(1));
+          }
+
+          // Delete the excess backups
+          for (String backupName : backupsToDelete) {
+            try (PreparedStatement drop = cp.getPreparedStatement(
+                "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
+              drop.executeUpdate();
+              log4j.info("Dropped excess backup table for {}: {}", tableName, backupName);
+            } catch (Exception de) {
+              log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
+            }
+
+            try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
+              del.setString(1, backupName);
+              del.executeUpdate();
+            } catch (Exception de2) {
+              log4j.warn("Failed to delete metadata for backup {}: {}", backupName, de2.getMessage());
+            }
+          }
+
+          if (!backupsToDelete.isEmpty()) {
+            log4j.info("Cleaned up {} excess backups for table {} after creating new backup", backupsToDelete.size(),
+                tableName);
+          }
         }
       }
     } catch (Exception e) {
-      log4j.warn("Failed to cleanup old backups: {}", e.getMessage());
+      log4j.warn("Failed to cleanup excess backups for table {}: {}", tableName, e.getMessage());
     }
   }
 
@@ -435,6 +628,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       ps.setTimestamp(3, new Timestamp(System.currentTimeMillis()));
       ps.executeUpdate();
     }
+
+    // Cleanup excess backups for this table after creating a new one
+    cleanupExcessBackupsForTable(cp, tableName);
+
     return backupName;
   }
 
@@ -641,105 +838,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
       ps.executeUpdate();
     }
-  }
-
-  /**
-   * Parses the specified XML file into a normalized DOM Document with
-   * XXE protections enabled.
-   * <p>
-   * Configures the parser to:
-   * <ul>
-   *   <li>Disallow DOCTYPE declarations (no DTDs).</li>
-   *   <li>Disable resolution of external general and parameter entities.</li>
-   *   <li>Enable secure processing to limit resource usage.</li>
-   *   <li>Disable XInclude processing and entity expansion.</li>
-   * </ul>
-   *
-   * @param xml
-   *     the XML file to parse
-   * @return a normalized {@link org.w3c.dom.Document} representing the XML content
-   * @throws ParserConfigurationException
-   *     if a parser cannot be configured
-   * @throws SAXException
-   *     if a parsing error occurs
-   * @throws IOException
-   *     if an I/O error occurs reading the file
-   */
-  private static Document getDocument(File xml) throws ParserConfigurationException, SAXException, IOException {
-    DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-
-    // 1. Disallow DTDs entirely (no DOCTYPE)
-    //    This prevents any <!DOCTYPE…> declarations
-    factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-
-    // 2. Disable external entities
-    factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
-    factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-
-    // 3. (Optional) Enable the secure-processing feature
-    factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-
-    // 4. Further hardening
-    factory.setXIncludeAware(false);
-    factory.setExpandEntityReferences(false);
-
-    DocumentBuilder builder = factory.newDocumentBuilder();
-    Document doc = builder.parse(xml);
-    doc.getDocumentElement().normalize();
-    return doc;
-  }
-
-  /**
-   * Searches the provided list of XML table definition files for the "primaryKey"
-   * attribute on the single <table> element in each file.
-   * <p>
-   * For each XML file:
-   * <ul>
-   *   <li>If the file does not exist, logs an error and returns null.</li>
-   *   <li>If exactly one <table> element is found, and it has a "primaryKey" attribute,
-   *       returns that attribute’s value.</li>
-   *   <li>If no <table> elements or multiple <table> elements are found, or if the
-   *       attribute is missing, logs the appropriate warning/error and returns null.</li>
-   * </ul>
-   *
-   * @param xmlFiles
-   *     the list of XML files to inspect
-   * @return the name of the primary key if found, or null if missing or on error
-   */
-  public static String findPrimaryKey(List<File> xmlFiles) {
-    try {
-      for (File xml : xmlFiles) {
-        if (StringUtils.contains(xml.getAbsolutePath(), "modifiedTables")) {
-          continue;
-        }
-        if (!xml.exists()) {
-          log4j.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
-          return null;
-        }
-        Document doc = getDocument(xml);
-        NodeList tableList = doc.getElementsByTagName("table");
-
-        if (tableList.getLength() == 1) {
-          Element tableEl = (Element) tableList.item(0);
-          if (tableEl.hasAttribute("primaryKey")) {
-            return tableEl.getAttribute("primaryKey");
-          } else {
-            log4j.warn("Warning: Missing 'primaryKey' attribute in: {}", xml.getAbsolutePath());
-            return null;
-          }
-        } else if (tableList.getLength() == 0) {
-          log4j.error("Error: No <table> tag found in: {}", xml.getAbsolutePath());
-          return null;
-        } else {
-          log4j.error("Error: Found {} <table> tags in: {}", tableList.getLength(),
-              xml.getAbsolutePath());
-          return null;
-        }
-      }
-    } catch (Exception e) {
-      log4j.error("Error processing XML: {}", e.getMessage(), e);
-    }
-    return null;
   }
 
   /**
