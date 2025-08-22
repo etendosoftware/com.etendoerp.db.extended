@@ -4,8 +4,12 @@ from pathlib import Path
 from configparser import ConfigParser
 import re
 import sys
+import traceback
+import uuid
 
 BBDD_URL = 'bbdd.url'
+ETARC_PATTERN = r'etarc\_%'
+ETRAC_PATTERN = r'etrac\_%\__%'
 
 # ─── Colors and Emojis ───
 
@@ -164,8 +168,57 @@ def get_column_names_by_indexes(conn, schema, table, indexes):
             FROM pg_attribute
             WHERE attrelid = %s::regclass AND attnum > 0 AND NOT attisdropped
         """, (f"{schema}.{table}",))
-        mapping = dict(cur.fetchall())
-        return [mapping.get(i) for i in indexes if i in mapping]
+        rows = cur.fetchall()
+        # Build mapping only from rows that have at least two columns (attnum, attname)
+        mapping = {r[0]: r[1] for r in rows if len(r) >= 2}
+        result = []
+        try:
+            for i in indexes:
+                # Attempt to coerce index to int if possible
+                try:
+                    key = int(i)
+                except Exception:
+                    key = i
+                if key in mapping:
+                    result.append(mapping[key])
+        except Exception:
+            # Defensive: if indexes is not iterable of simple values, log and return empty
+            print_message(f"Unexpected index list for columns on {schema}.{table}: {indexes}", "ERROR")
+            traceback.print_exc()
+            return []
+        return result
+
+
+def safe_drop_column(cur, schema, table, column):
+    """Attempt to drop a column inside a savepoint. Returns (success, error_message).
+
+    This prevents a failing DROP COLUMN from aborting the whole transaction.
+    """
+    sp = f"sp_{uuid.uuid4().hex[:8]}"
+    try:
+        cur.execute(sql.SQL("SAVEPOINT {}" ).format(sql.Identifier(sp)))
+    except Exception:
+        sp = None
+
+    try:
+        cur.execute(sql.SQL("ALTER TABLE {}.{} DROP COLUMN IF EXISTS {} CASCADE").format(
+            sql.Identifier(schema), sql.Identifier(table), sql.Identifier(column)
+        ))
+        if sp:
+            try:
+                cur.execute(sql.SQL("RELEASE SAVEPOINT {}" ).format(sql.Identifier(sp)))
+            except Exception:
+                pass
+        return True, None
+    except Exception as e:
+        err = str(e)
+        if sp:
+            try:
+                cur.execute(sql.SQL("ROLLBACK TO SAVEPOINT {}" ).format(sql.Identifier(sp)))
+                cur.execute(sql.SQL("RELEASE SAVEPOINT {}" ).format(sql.Identifier(sp)))
+            except Exception:
+                pass
+        return False, err
 
 def add_constraints(conn, schema, table, constraints, foreign_keys):
     with conn.cursor() as cur:
@@ -302,12 +355,20 @@ def unpartition_table(conn, table_name):
         sp_counter = 0
         for con in constraints:
             # constraints now include conislocal as last element
-            if len(con) == 5:
-                conname, contype, conkey, consrc, conislocal = con
-            else:
-                # fallback for unexpected shape
-                conname, contype, conkey, consrc = con
-                conislocal = True
+            if not isinstance(con, (list, tuple)) or len(con) < 4:
+                print_message(f"Skipping malformed constraint row for {schema}.{table_name}: {repr(con)}", "ERROR")
+                continue
+            try:
+                if len(con) == 5:
+                    conname, contype, conkey, consrc, conislocal = con
+                else:
+                    # fallback for unexpected but valid shape
+                    conname, contype, conkey, consrc = con
+                    conislocal = True
+            except Exception:
+                print_message(f"Error unpacking constraint row for {schema}.{table_name}: {repr(con)}", "ERROR")
+                traceback.print_exc()
+                continue
 
             if not conislocal:
                 print_message(f"Constraint {conname} is inherited, skipping drop.", "SKIP")
@@ -346,10 +407,117 @@ def unpartition_table(conn, table_name):
             CREATE TABLE {}.{} (LIKE {}.{} INCLUDING DEFAULTS INCLUDING IDENTITY)
         """).format(sql.Identifier(schema), sql.Identifier(tmp_table),
                     sql.Identifier(schema), sql.Identifier(table_name)))
-        cur.execute(sql.SQL("""
-            INSERT INTO {}.{} SELECT * FROM {}.{}
-        """).format(sql.Identifier(schema), sql.Identifier(tmp_table),
-                    sql.Identifier(schema), sql.Identifier(table_name)))
+
+        # Remove partition-related helper columns (etarc_*) from child partitions (if any)
+        for part in get_child_partitions(conn, schema, table_name):
+            # part is returned as regclass text, often 'schema.table' or just 'table'
+            if '.' in part:
+                child_schema, child_table = part.split('.', 1)
+            else:
+                child_schema, child_table = schema, part
+            try:
+                # First: drop local foreign keys on the child partition (if any)
+                try:
+                    child_constraints = get_constraints(conn, child_schema, child_table)
+                    for cc in child_constraints:
+                        if not isinstance(cc, (list, tuple)) or len(cc) < 4:
+                            continue
+                        try:
+                            if len(cc) == 5:
+                                ccname, cctype, cckey, ccsrc, ccislocal = cc
+                            else:
+                                ccname, cctype, cckey, ccsrc = cc
+                                ccislocal = True
+                        except Exception:
+                            continue
+                        if cctype == 'f' and ccislocal:
+                            try:
+                                cur.execute(sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {} CASCADE").format(
+                                    sql.Identifier(child_schema), sql.Identifier(child_table), sql.Identifier(ccname)
+                                ))
+                                print_message(f"Dropped FK {ccname} from partition {child_schema}.{child_table}", "INFO")
+                            except Exception as e:
+                                print_message(f"Failed to drop FK {ccname} from {child_schema}.{child_table}: {e}", "ERROR")
+                except Exception:
+                    # ignore errors fetching/dropping child constraints
+                    pass
+
+                cur.execute(r"""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = %s AND table_name = %s AND (column_name LIKE %s OR column_name LIKE %s)
+                """, (child_schema, child_table, ETARC_PATTERN, ETRAC_PATTERN))
+                cols = [r[0] for r in cur.fetchall()]
+                for c in cols:
+                    try:
+                        ok, err = safe_drop_column(cur, child_schema, child_table, c)
+                        if ok:
+                            print_message(f"Dropped helper column {c} from partition {child_schema}.{child_table}", "INFO")
+                        else:
+                            # If it's an inherited-column error, try dropping from the parent table
+                            if 'cannot drop inherited column' in (err or '').lower():
+                                try:
+                                    parent_schema, parent_table = schema, table_name
+                                    ok2, err2 = safe_drop_column(cur, parent_schema, parent_table, c)
+                                    if ok2:
+                                        print_message(f"Dropped helper column {c} from parent {parent_schema}.{parent_table} after inheriting", "INFO")
+                                    else:
+                                        print_message(f"Failed to drop helper column {c} from parent {parent_schema}.{parent_table}: {err2}", "ERROR")
+                                except Exception:
+                                    print_message(f"Failed to drop helper column {c} from {child_schema}.{child_table}: {err}", "ERROR")
+                            else:
+                                print_message(f"Failed to drop helper column {c} from {child_schema}.{child_table}: {err}", "ERROR")
+                    except Exception as e:
+                        print_message(f"Failed to drop helper column {c} from {child_schema}.{child_table}: {e}", "ERROR")
+            except Exception:
+                # ignore errors enumerating columns for partitions that might be transient
+                pass
+
+        # Remove 'etarc_' columns from the temporary table so they are not preserved
+        try:
+            cur.execute(r"""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s AND (column_name LIKE %s OR column_name LIKE %s)
+            """, (schema, tmp_table, ETARC_PATTERN, ETRAC_PATTERN))
+            tmp_cols = [r[0] for r in cur.fetchall()]
+            for c in tmp_cols:
+                try:
+                    ok, err = safe_drop_column(cur, schema, tmp_table, c)
+                    if not ok:
+                        # If tmp table column drop failed due to inherited column, try dropping on original
+                        if 'cannot drop inherited column' in (err or '').lower():
+                            try:
+                                ok2, err2 = safe_drop_column(cur, schema, table_name, c)
+                                if ok2:
+                                    print_message(f"Dropped helper column {c} from original {schema}.{table_name} after tmp inherit", "INFO")
+                                else:
+                                    print_message(f"Failed to drop helper column {c} from original {schema}.{table_name}: {err2}", "ERROR")
+                            except Exception:
+                                print_message(f"Failed to drop helper column {c} from temp table {schema}.{tmp_table}: {err}", "ERROR")
+                        else:
+                            print_message(f"Failed to drop helper column {c} from temp table {schema}.{tmp_table}: {err}", "ERROR")
+                except Exception as e:
+                    print_message(f"Failed to drop helper column {c} from temp table {schema}.{tmp_table}: {e}", "ERROR")
+        except Exception:
+            pass
+
+        # Determine columns to copy (exclude any etarc_ columns)
+        cur.execute(r"""
+            SELECT column_name FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s AND (column_name NOT LIKE %s AND column_name NOT LIKE %s)
+            ORDER BY ordinal_position
+        """, (schema, table_name, ETARC_PATTERN, ETRAC_PATTERN))
+        cols_to_copy = [r[0] for r in cur.fetchall()]
+        if not cols_to_copy:
+            raise Exception(f"No columns found to copy for table {schema}.{table_name} after removing etarc_ columns")
+
+        # Perform INSERT specifying explicit columns to avoid mismatch
+        col_idents = [sql.Identifier(c) for c in cols_to_copy]
+        cur.execute(sql.SQL("INSERT INTO {}.{} ({}) SELECT {} FROM {}.{}").format(
+            sql.Identifier(schema), sql.Identifier(tmp_table),
+            sql.SQL(', ').join(col_idents),
+            sql.SQL(', ').join(col_idents),
+            sql.Identifier(schema), sql.Identifier(table_name)
+        ))
 
         # Borrar particiones hijas
         for part in get_child_partitions(conn, schema, table_name):
@@ -360,6 +528,25 @@ def unpartition_table(conn, table_name):
         cur.execute(sql.SQL("DROP TABLE {}.{} CASCADE").format(sql.Identifier(schema), sql.Identifier(table_name)))
         cur.execute(sql.SQL("ALTER TABLE {}.{} RENAME TO {}")
                     .format(sql.Identifier(schema), sql.Identifier(tmp_table), sql.Identifier(table_name)))
+        # Safety: drop any residual etarc_ helper columns in the renamed table
+        try:
+            cur.execute(r"""
+                SELECT column_name FROM information_schema.columns
+                WHERE table_schema = %s AND table_name = %s AND (column_name LIKE %s OR column_name LIKE %s)
+            """, (schema, table_name, ETARC_PATTERN, ETRAC_PATTERN))
+            residual = [r[0] for r in cur.fetchall()]
+            for c in residual:
+                try:
+                    ok, err = safe_drop_column(cur, schema, table_name, c)
+                    if ok:
+                        print_message(f"Dropped residual helper column {c} from {schema}.{table_name}", "INFO")
+                    else:
+                        # If inherited, try parent (in this context parent is the original - nothing else to try)
+                        print_message(f"Failed to drop residual helper column {c} from {schema}.{table_name}: {err}", "ERROR")
+                except Exception as e:
+                    print_message(f"Failed to drop residual helper column {c} from {schema}.{table_name}: {e}", "ERROR")
+        except Exception:
+            pass
 
         # NOTA: no se recrean constraints aquí — la tarea gradlew se encargará de ello
         print_message(f"Table {schema}.{table_name} was successfully unpartitioned (constraints removed).", "SUCCESS")
@@ -438,6 +625,7 @@ def main():
                 summary.append({'table': t, 'status': 'SUCCESS', 'message': 'Table correctly despartitioned.'})
             except Exception as e_table:
                 print_message(f"Failed to unpartition table {t}: {e_table}", "ERROR")
+                traceback.print_exc()
                 summary.append({'table': t, 'status': 'FAILURE', 'message': str(e_table)})
                 success = False
                 # rollback the connection to continue with next tables
