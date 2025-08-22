@@ -62,6 +62,13 @@ public class TableDefinitionComparator {
    * @throws Exception if any error occurs while parsing XML or querying the database
    */
   public boolean isTableDefinitionChanged(String tableName, ConnectionProvider cp, List<File> xmlFiles) throws Exception {
+    // If no XML files are provided, consider the definition changed so that
+    // installations that introduce new XML files will be processed by the ModuleScript.
+    if (xmlFiles == null || xmlFiles.isEmpty()) {
+      logger.debug("No XML files for table {}: treating as changed to allow creation/apply during install.", tableName);
+      return true;
+    }
+
     Map<String, ColumnDefinition> xmlColumns = new LinkedHashMap<>();
     for (File xmlFile : xmlFiles) {
       Map<String, ColumnDefinition> partial = parseXmlDefinition(xmlFile);

@@ -23,16 +23,13 @@ import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import java.sql.Timestamp;
-import java.sql.SQLException;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
 
 import javax.xml.XMLConstants;
 import javax.xml.parsers.DocumentBuilder;
@@ -175,6 +172,21 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     boolean isUnchanged = !isIncomplete &&
         !(new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
 
+    // If the table XML itself hasn't changed but other module XMLs introduce new
+    // foreign keys referencing this table (e.g. installing a module that points to it),
+    // we must still process the table to create helper columns / FKs on the referring tables.
+    if (isUnchanged) {
+      try {
+        if (hasForeignReferencesInXml(tableName)) {
+          log4j.info("Detected external XML foreign-key references to {} — forcing processing.", tableName);
+          isUnchanged = false;
+        }
+      } catch (Exception e) {
+        // Be conservative on errors: if detection fails, do not block processing
+        log4j.info("Failed to scan for external foreign-key references for {}: {}", tableName, e.getMessage());
+      }
+    }
+
     boolean isPartitioned = isTablePartitioned(cp, tableName);
     List<String> pkCols = getPrimaryKeyColumns(cp, tableName);
     boolean firstPartitionRun = isPartitioned && pkCols.isEmpty();
@@ -203,8 +215,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         com.etendoerp.db.extended.utils.TableDefinitionComparator.ColumnDefinition def = e.getValue();
         // Simple mapping from xml type to SQL type — best-effort
         String sqlType = mapXmlTypeToSql(def.getDataType(), def.getLength());
-        alterSql.append(String.format("ALTER TABLE public.%s ADD COLUMN IF NOT EXISTS %s %s %s;\n", tableName, col, sqlType,
-            def.isNullable() ? "" : "NOT NULL"));
+        alterSql.append(
+            String.format("ALTER TABLE public.%s ADD COLUMN IF NOT EXISTS %s %s %s;\n", tableName, col, sqlType,
+                def.isNullable() ? "" : "NOT NULL"));
       }
 
       // Build ALTER statements for removed columns
@@ -229,16 +242,113 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
   }
 
+  /**
+   * Scans all known table XML files for <foreign-key foreignTable="..."> entries
+   * that reference the provided tableName. Returns true if at least one such
+   * reference exists.
+   */
+  private boolean hasForeignReferencesInXml(String tableName) throws NoSuchFileException {
+    java.sql.Timestamp lastProcessed = getLastProcessed(getConnectionProvider(), tableName);
+    boolean foundNew = false;
+    for (File dir : collectTableDirs()) {
+      File[] xmlsInDir = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
+      if (xmlsInDir == null) continue;
+      for (File sourceXmlFile : xmlsInDir) {
+        try {
+          // If file is under modifiedTables, treat as always new
+          boolean inModified = StringUtils.contains(sourceXmlFile.getAbsolutePath(), "modifiedTables");
+          if (!inModified && lastProcessed != null && sourceXmlFile.lastModified() <= lastProcessed.getTime()) {
+            // file not newer than last processed, skip
+            continue;
+          }
+
+          Document doc = getDocument(sourceXmlFile);
+          NodeList fkList = doc.getElementsByTagName("foreign-key");
+          for (int i = 0; i < fkList.getLength(); i++) {
+            Element fkEl = (Element) fkList.item(i);
+            // Check common attribute first for speed
+            String foreignTable = fkEl.getAttribute("foreignTable");
+            if (tableName.equalsIgnoreCase(foreignTable)) {
+              log4j.debug("Found external FK reference to {} in file {} (attribute foreignTable)", tableName,
+                  sourceXmlFile.getAbsolutePath());
+              foundNew = true;
+              break;
+            }
+            // Fallback: check any attribute on the <foreign-key> element for the table name
+            org.w3c.dom.NamedNodeMap attrs = fkEl.getAttributes();
+            for (int a = 0; a < attrs.getLength(); a++) {
+              String attrName = attrs.item(a).getNodeName();
+              String attrVal = attrs.item(a).getNodeValue();
+              if (attrVal != null && tableName.equalsIgnoreCase(attrVal)) {
+                log4j.debug("Found external FK reference to {} in file {} (attribute {})", tableName,
+                    sourceXmlFile.getAbsolutePath(), attrName);
+                foundNew = true;
+                break;
+              }
+            }
+            if (foundNew) break;
+          }
+          if (foundNew) {
+            // update last processed so we don't repeatedly force on same files
+            setLastProcessed(getConnectionProvider(), tableName);
+            return true;
+          }
+          log4j.debug("Scanned {} and found {} foreign-key elements", sourceXmlFile.getAbsolutePath(),
+              fkList.getLength());
+        } catch (Exception e) {
+          // ignore parse errors — unparsable XMLs are unlikely to be the new module files
+          log4j.info("Skipping unparsable XML while scanning for FK refs: {} -> {}", sourceXmlFile.getAbsolutePath(),
+              e.getMessage());
+        }
+      }
+    }
+    return false;
+  }
+
   // --- Backup helpers ---
   private void ensureBackupInfrastructure(ConnectionProvider cp) {
     // Create schema and metadata table if not exists. Best-effort, don't throw.
     String createSchema = "CREATE SCHEMA IF NOT EXISTS " + BACKUP_SCHEMA + ";";
     String createMeta = "CREATE TABLE IF NOT EXISTS " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
         + " (backup_name TEXT PRIMARY KEY, table_name TEXT, created_at TIMESTAMP);";
-    try (PreparedStatement ps = cp.getPreparedStatement(createSchema + " " + createMeta)) {
+    String createProc = "CREATE TABLE IF NOT EXISTS " + BACKUP_SCHEMA + ".processing_metadata"
+        + " (table_name TEXT PRIMARY KEY, last_processed TIMESTAMP);";
+    try (PreparedStatement ps = cp.getPreparedStatement(createSchema + " " + createMeta + " " + createProc)) {
       ps.executeUpdate();
     } catch (Exception e) {
       log4j.warn("Could not ensure backup infrastructure: {}", e.getMessage());
+    }
+  }
+
+  /**
+   * Returns the last processed timestamp for the given table, or null if none.
+   */
+  private java.sql.Timestamp getLastProcessed(ConnectionProvider cp, String tableName) {
+    String sql = "SELECT last_processed FROM " + BACKUP_SCHEMA + ".processing_metadata WHERE lower(table_name) = lower(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) {
+          return rs.getTimestamp(1);
+        }
+      }
+    } catch (Exception e) {
+      log4j.warn("Could not read last_processed for {}: {}", tableName, e.getMessage());
+    }
+    return null;
+  }
+
+  /**
+   * Updates the last_processed timestamp for the given table to now(). Best-effort.
+   */
+  private void setLastProcessed(ConnectionProvider cp, String tableName) {
+    String sql = "INSERT INTO " + BACKUP_SCHEMA + ".processing_metadata (table_name, last_processed) VALUES (?, now())"
+        + " ON CONFLICT (table_name) DO UPDATE SET last_processed = EXCLUDED.last_processed";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      ps.executeUpdate();
+    } catch (Exception e) {
+      log4j.warn("Could not set last_processed for {}: {}", tableName, e.getMessage());
     }
   }
 
@@ -446,6 +556,34 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
+   * Returns true if the given table contains a column with the provided name.
+   */
+  private boolean columnExists(ConnectionProvider cp, String tableName, String columnName) throws Exception {
+    String sql = "SELECT 1 FROM information_schema.columns WHERE lower(table_name) = lower(?) AND lower(column_name) = lower(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      ps.setString(2, columnName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
+   * Returns true if the given constraint name exists on the provided table.
+   */
+  private boolean constraintExists(ConnectionProvider cp, String tableName, String constraintName) throws Exception {
+    String sql = "SELECT 1 FROM information_schema.table_constraints WHERE lower(table_name) = lower(?) AND lower(constraint_name) = lower(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      ps.setString(2, constraintName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
    * Executes the constraint SQL if it is not blank.
    * This typically includes adding or modifying table constraints after analyzing configurations.
    *
@@ -583,7 +721,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
     File root = new File(getSourcePath());
-  for (String mod : moduleDirs) {
+    for (String mod : moduleDirs) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
@@ -612,14 +750,36 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @return a List of matching XML files (maybe empty if none found)
    */
   public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
-    String target = tableName.toLowerCase() + ".xml";
-    return collectTableDirs().stream()
-        .flatMap(dir -> {
-          File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
-          return files == null ? Stream.empty() : Arrays.stream(files);
-        })
-        .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
-        .collect(Collectors.toList());
+    String targetLower = tableName.toLowerCase();
+    List<File> matches = new ArrayList<>();
+    for (File dir : collectTableDirs()) {
+      File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
+      if (files == null) continue;
+      for (File f : files) {
+        // Quick filename check first (fast path)
+        if (f.getName().equalsIgnoreCase(targetLower + ".xml")) {
+          matches.add(f);
+          continue;
+        }
+        // Otherwise parse the file and look for a <table name="..."> that matches
+        try {
+          Document doc = getDocument(f);
+          NodeList tableNodes = doc.getElementsByTagName("table");
+          for (int i = 0; i < tableNodes.getLength(); i++) {
+            Element tableEl = (Element) tableNodes.item(i);
+            if (tableName.equalsIgnoreCase(tableEl.getAttribute("name"))) {
+              matches.add(f);
+              break;
+            }
+          }
+        } catch (Exception e) {
+          // Skip files that cannot be parsed; they are unlikely to contain our definition.
+          log4j.info("Skipping unparsable XML {}: {}", f.getAbsolutePath(), e.getMessage());
+        }
+      }
+    }
+    // Deduplicate while preserving order
+    return matches.stream().filter(Objects::nonNull).distinct().collect(Collectors.toList());
   }
 
   /**
@@ -742,13 +902,45 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
               if (isPartitioned) {
                 String partitionColumn = "etarc_" + partitionField + "__" + foreignKey;
-                sql.append(String.format(addColumnSQL, relatedTableName, partitionColumn));
-                sql.append(String.format(updateColumnSQL, relatedTableName, partitionColumn,
-                    partitionField, tableName, pkField, relatedTableName, relationColumn,
-                    relatedTableName, partitionColumn));
-                sql.append(
-                    String.format(addPartitionedForeignKeySQL, relatedTableName, foreignKey,
-                        relationColumn, partitionColumn, tableName, pkField, partitionField));
+                // If both the helper column and the FK constraint already exist on the child table,
+                // skip creating them — they are assumed correct.
+                boolean colExists = false;
+                boolean fkExists = false;
+                try {
+                  colExists = columnExists(cp, relatedTableName, partitionColumn);
+                } catch (Exception e) {
+                  log4j.warn("Could not check existence of column {} on {}: {}", partitionColumn, relatedTableName,
+                      e.getMessage());
+                }
+                try {
+                  fkExists = constraintExists(cp, relatedTableName, foreignKey);
+                } catch (Exception e) {
+                  log4j.warn("Could not check existence of constraint {} on {}: {}", foreignKey, relatedTableName,
+                      e.getMessage());
+                }
+
+                if (colExists && fkExists) {
+                  log4j.debug("Skipping creation of helper column {} and FK {} on {} because both already exist",
+                      partitionColumn, foreignKey, relatedTableName);
+                } else {
+                  if (!colExists) {
+                    sql.append(String.format(addColumnSQL, relatedTableName, partitionColumn));
+                    sql.append(String.format(updateColumnSQL, relatedTableName, partitionColumn,
+                        partitionField, tableName, pkField, relatedTableName, relationColumn,
+                        relatedTableName, partitionColumn));
+                  } else {
+                    log4j.debug("Helper column {} already exists on {}, skipping column creation", partitionColumn,
+                        relatedTableName);
+                  }
+                  if (!fkExists) {
+                    sql.append(
+                        String.format(addPartitionedForeignKeySQL, relatedTableName, foreignKey,
+                            relationColumn, partitionColumn, tableName, pkField, partitionField));
+                  } else {
+                    log4j.debug("Foreign key {} already exists on {}, skipping FK creation", foreignKey,
+                        relatedTableName);
+                  }
+                }
               } else {
                 sql.append(String.format(addSimpleForeignKeySQL, relatedTableName, foreignKey,
                     relationColumn, tableName, pkField));
