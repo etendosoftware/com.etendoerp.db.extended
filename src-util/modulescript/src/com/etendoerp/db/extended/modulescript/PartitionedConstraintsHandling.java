@@ -28,6 +28,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.LinkedHashMap;
 import java.util.Objects;
 import java.util.stream.Collectors;
 
@@ -88,8 +89,39 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       cleanupOldBackups(cp);
 
       // Process each table independently so we can backup/restore per-table
+      Map<String, Long> timings = new LinkedHashMap<>();
+      boolean hasPartitioned = false;
+      // Quick check whether any configured table is already partitioned
+      try {
+        for (Map<String, String> cfg : tableConfigs) {
+          String tName = cfg.get("tableName");
+          try {
+            if (isTablePartitioned(cp, tName)) {
+              hasPartitioned = true;
+              break;
+            }
+          } catch (Exception e) {
+            // ignore per-table check failures
+          }
+        }
+      } catch (Exception e) {
+        // ignore
+      }
       for (Map<String, String> cfg : tableConfigs) {
-        processTableConfig(cp, cfg);
+        String tName = cfg.get("tableName");
+        long start = System.currentTimeMillis();
+        boolean processed = processTableConfig(cp, cfg);
+        long elapsed = processed ? (System.currentTimeMillis() - start) : -1L;
+        timings.put(tName, elapsed);
+      }
+      // Log summary of timings only if at least one table was actually processed
+  boolean anyProcessed = timings.values().stream().anyMatch(v -> v != null && v.longValue() >= 0L);
+  if (anyProcessed || hasPartitioned) {
+        logSeparator();
+        log4j.info("Partitioning processing summary (ms):");
+        for (Map.Entry<String, Long> e : timings.entrySet()) {
+          log4j.info(" - {} => {}", e.getKey(), e.getValue());
+        }
       }
       if (!tableConfigs.isEmpty()) {
         logSeparator();
@@ -158,7 +190,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * @throws Exception
    *     if an error occurs during processing or querying the database.
    */
-  private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg) throws Exception {
+  private boolean processTableConfig(ConnectionProvider cp, Map<String, String> cfg) throws Exception {
     String tableName = cfg.get("tableName");
     String partitionCol = cfg.get("columnName");
     String pkCol = cfg.get("pkColumnName");
@@ -195,7 +227,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
     if (shouldSkipTable(isIncomplete, firstPartitionRun, isUnchanged)) {
       logSkipReason(isIncomplete, tableName, pkCol, partitionCol);
-      return;
+      return false;
     }
 
     log4j.info("Recreating constraints for {} (firstRun = {}, xmlChanged = {})", tableName, firstPartitionRun,
@@ -235,10 +267,16 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (!isBlank(tableSql)) {
         executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
       }
+      return true;
     } catch (Exception e) {
       log4j.error("Failed to persist XML schema changes for {}: {}", tableName, e.getMessage(), e);
       // Still attempt constraint SQL execution as fallback
-      executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+      try {
+        executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+      } catch (Exception e2) {
+        log4j.error("Failed executing fallback constraint SQL for {}: {}", tableName, e2.getMessage(), e2);
+      }
+      return false;
     }
   }
 
