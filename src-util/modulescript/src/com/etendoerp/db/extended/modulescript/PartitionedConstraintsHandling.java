@@ -64,6 +64,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private static final String BACKUP_SCHEMA = "etarc_backups";
   private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
   private static final int MAX_BACKUPS_PER_TABLE = 5;
+  private static final int BACKUP_RETENTION_DAYS = 7;
 
   public static boolean isBlank(String str) {
     return StringUtils.isBlank(str);
@@ -491,7 +492,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   private void cleanupExcessBackups(ConnectionProvider cp) {
     // For each table, keep only the MAX_BACKUPS_PER_TABLE most recent backups
-    log4j.info("Starting backup cleanup - will keep {} most recent backups per table", MAX_BACKUPS_PER_TABLE);
+    // AND delete any backup older than BACKUP_RETENTION_DAYS
+    log4j.info(
+        "Starting backup cleanup - will keep {} most recent backups per table and delete backups older than {} days",
+        MAX_BACKUPS_PER_TABLE, BACKUP_RETENTION_DAYS);
 
     String selectTablesSql = "SELECT DISTINCT table_name FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE;
     String deleteMetaSql = "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
@@ -505,16 +509,20 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
       int totalDeleted = 0;
 
-      // For each table, find backups to delete (keeping only the most recent MAX_BACKUPS_PER_TABLE)
+      // For each table, find backups to delete based on both criteria
       for (String tableName : tableNames) {
-        // Use a subquery with ROW_NUMBER to identify old backups to delete
+        // Combined query: delete backups that are either excess (beyond MAX_BACKUPS_PER_TABLE) 
+        // OR older than BACKUP_RETENTION_DAYS
         String selectBackupsToDeleteSql =
             "SELECT backup_name FROM (" +
-                "  SELECT backup_name, ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn " +
+                "  SELECT backup_name, " +
+                "         ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn, " +
+                "         created_at " +
                 "  FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE +
                 "  WHERE table_name = ?" +
                 ") ranked " +
-                "WHERE rn > " + MAX_BACKUPS_PER_TABLE;
+                "WHERE rn > " + MAX_BACKUPS_PER_TABLE +
+                "   OR created_at < now() - interval '" + BACKUP_RETENTION_DAYS + " days'";
 
         try (PreparedStatement psBackups = cp.getPreparedStatement(selectBackupsToDeleteSql)) {
           psBackups.setString(1, tableName);
@@ -524,12 +532,12 @@ public class PartitionedConstraintsHandling extends ModuleScript {
               backupsToDelete.add(rsBackups.getString(1));
             }
 
-            // Delete the excess backups
+            // Delete the excess/old backups
             for (String backupName : backupsToDelete) {
               try (PreparedStatement drop = cp.getPreparedStatement(
                   "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
                 drop.executeUpdate();
-                log4j.debug("Dropped excess backup table: {}", backupName);
+                log4j.debug("Dropped backup table: {}", backupName);
               } catch (Exception de) {
                 log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
               }
@@ -543,7 +551,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
             }
 
             if (!backupsToDelete.isEmpty()) {
-              log4j.info("Cleaned up {} excess backups for table {}", backupsToDelete.size(), tableName);
+              log4j.info("Cleaned up {} backups for table {} (excess count + older than {} days)",
+                  backupsToDelete.size(), tableName, BACKUP_RETENTION_DAYS);
               totalDeleted += backupsToDelete.size();
             }
           }
@@ -551,9 +560,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       }
 
       if (totalDeleted > 0) {
-        log4j.info("Total cleanup: removed {} old backup tables", totalDeleted);
+        log4j.info("Total cleanup: removed {} old/excess backup tables", totalDeleted);
       } else {
-        log4j.info("No excess backups found to clean up");
+        log4j.info("No excess or old backups found to clean up");
       }
     } catch (Exception e) {
       log4j.warn("Failed to cleanup excess backups: {}", e.getMessage());
@@ -567,14 +576,18 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     String deleteMetaSql = "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
 
     try {
-      // Use a subquery with ROW_NUMBER to identify old backups to delete for this specific table
+      // Combined query: delete backups that are either excess (beyond MAX_BACKUPS_PER_TABLE) 
+      // OR older than BACKUP_RETENTION_DAYS for this specific table
       String selectBackupsToDeleteSql =
           "SELECT backup_name FROM (" +
-              "  SELECT backup_name, ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn " +
+              "  SELECT backup_name, " +
+              "         ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn, " +
+              "         created_at " +
               "  FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE +
               "  WHERE table_name = ?" +
               ") ranked " +
-              "WHERE rn > " + MAX_BACKUPS_PER_TABLE;
+              "WHERE rn > " + MAX_BACKUPS_PER_TABLE +
+              "   OR created_at < now() - interval '" + BACKUP_RETENTION_DAYS + " days'";
 
       try (PreparedStatement psBackups = cp.getPreparedStatement(selectBackupsToDeleteSql)) {
         psBackups.setString(1, tableName);
@@ -584,12 +597,13 @@ public class PartitionedConstraintsHandling extends ModuleScript {
             backupsToDelete.add(rsBackups.getString(1));
           }
 
-          // Delete the excess backups
+          // Delete the excess/old backups
           for (String backupName : backupsToDelete) {
             try (PreparedStatement drop = cp.getPreparedStatement(
                 "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
               drop.executeUpdate();
-              log4j.info("Dropped excess backup table for {}: {}", tableName, backupName);
+              log4j.info("Dropped backup table for {}: {} (excess or > {} days old)", tableName, backupName,
+                  BACKUP_RETENTION_DAYS);
             } catch (Exception de) {
               log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
             }
@@ -603,8 +617,9 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           }
 
           if (!backupsToDelete.isEmpty()) {
-            log4j.info("Cleaned up {} excess backups for table {} after creating new backup", backupsToDelete.size(),
-                tableName);
+            log4j.info(
+                "Cleaned up {} backups for table {} after creating new backup (excess count + older than {} days)",
+                backupsToDelete.size(), tableName, BACKUP_RETENTION_DAYS);
           }
         }
       }
