@@ -17,14 +17,6 @@
 
 package com.etendoerp.db.extended.utils;
 
-import org.openbravo.database.ConnectionProvider;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
 import java.sql.PreparedStatement;
@@ -36,9 +28,17 @@ import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
 
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.openbravo.database.ConnectionProvider;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NodeList;
 import org.xml.sax.SAXException;
 
 /**
@@ -55,13 +55,18 @@ public class TableDefinitionComparator {
   /**
    * Compares the database definition of a table with the merged XML definitions.
    *
-   * @param tableName the name of the table to compare
-   * @param cp        a valid Openbravo ConnectionProvider
-   * @param xmlFiles  list of XML files defining the table structure
+   * @param tableName
+   *     the name of the table to compare
+   * @param cp
+   *     a valid Openbravo ConnectionProvider
+   * @param xmlFiles
+   *     list of XML files defining the table structure
    * @return {@code true} if the definitions differ, {@code false} if they match
-   * @throws Exception if any error occurs while parsing XML or querying the database
+   * @throws Exception
+   *     if any error occurs while parsing XML or querying the database
    */
-  public boolean isTableDefinitionChanged(String tableName, ConnectionProvider cp, List<File> xmlFiles) throws Exception {
+  public boolean isTableDefinitionChanged(String tableName, ConnectionProvider cp,
+      List<File> xmlFiles) throws Exception {
     // If no XML files are provided, consider the definition changed so that
     // installations that introduce new XML files will be processed by the ModuleScript.
     if (xmlFiles == null || xmlFiles.isEmpty()) {
@@ -83,9 +88,27 @@ public class TableDefinitionComparator {
   }
 
   /**
-   * Returns columns to add and to remove to make DB match XML.
-   * added -> columns present in XML but missing in DB
-   * removed -> columns present in DB but missing in XML
+   * Compares the column definitions of a database table against the definitions
+   * provided in a list of XML files and identifies differences.
+   * <p>
+   * The method aggregates all column definitions found in the given XML files
+   * (ignoring duplicates by keeping the first occurrence), then fetches the
+   * current column definitions from the database. It determines which columns
+   * need to be added or removed to align the database table with the XML definitions.
+   *
+   * @param tableName
+   *     the name of the database table to compare
+   * @param cp
+   *     the connection provider used to access the database
+   * @param xmlFiles
+   *     a list of XML files containing column definitions
+   * @return a {@link ColumnDiff} object containing:
+   *     <ul>
+   *       <li>columns to add (present in XML but not in the database)</li>
+   *       <li>columns to remove (present in the database but not in XML)</li>
+   *     </ul>
+   * @throws Exception
+   *     if an error occurs while parsing XML files or fetching database definitions
    */
   public ColumnDiff diffTableDefinition(String tableName, ConnectionProvider cp, List<File> xmlFiles) throws Exception {
     Map<String, ColumnDefinition> xmlColumns = new LinkedHashMap<>();
@@ -107,16 +130,6 @@ public class TableDefinitionComparator {
     return new ColumnDiff(toAdd, toRemove);
   }
 
-  public static class ColumnDiff {
-    public final Map<String, ColumnDefinition> added;
-    public final Map<String, ColumnDefinition> removed;
-
-    public ColumnDiff(Map<String, ColumnDefinition> added, Map<String, ColumnDefinition> removed) {
-      this.added = added;
-      this.removed = removed;
-    }
-  }
-
   /**
    * Parses the given XML file to extract column definitions.
    * <p>
@@ -124,12 +137,15 @@ public class TableDefinitionComparator {
    * each with attributes such as {@code name}, {@code type}, {@code nullable},
    * {@code length} or {@code size}, and optionally {@code primarykey}.
    *
-   * @param xmlFile the XML file that defines the table structure
+   * @param xmlFile
+   *     the XML file that defines the table structure
    * @return a map of column names to their corresponding {@link ColumnDefinition}
-   *
-   * @throws ParserConfigurationException if a DocumentBuilder cannot be created
-   * @throws IOException if an I/O error occurs while reading the file
-   * @throws SAXException if the XML content is malformed or cannot be parsed
+   * @throws ParserConfigurationException
+   *     if a DocumentBuilder cannot be created
+   * @throws IOException
+   *     if an I/O error occurs while reading the file
+   * @throws SAXException
+   *     if the XML content is malformed or cannot be parsed
    */
   private Map<String, ColumnDefinition> parseXmlDefinition(File xmlFile) throws ParserConfigurationException,
       IOException, SAXException {
@@ -147,8 +163,8 @@ public class TableDefinitionComparator {
     NodeList columnList = doc.getElementsByTagName("column");
     for (int i = 0; i < columnList.getLength(); i++) {
       Element colElem = (Element) columnList.item(i);
-      String name        = colElem.getAttribute("name").toLowerCase();
-      String dataType    = colElem.getAttribute("type").toLowerCase();
+      String name = colElem.getAttribute("name").toLowerCase();
+      String dataType = colElem.getAttribute("type").toLowerCase();
       Boolean isNullable = !"false".equalsIgnoreCase(colElem.getAttribute("nullable"));
       Integer length = null;
       if (colElem.hasAttribute("length")) {
@@ -171,7 +187,8 @@ public class TableDefinitionComparator {
    * and then casts the result to an integer (truncating the decimal part).
    * </p>
    *
-   * @param raw the raw input string to parse
+   * @param raw
+   *     the raw input string to parse
    * @return the parsed integer value, or 0 if the input is blank
    */
   private int parseIntLenient(String raw) {
@@ -189,10 +206,13 @@ public class TableDefinitionComparator {
   /**
    * Retrieves column definitions for a given table from the database.
    *
-   * @param tableName the table to inspect
-   * @param cp        a valid Openbravo ConnectionProvider
+   * @param tableName
+   *     the table to inspect
+   * @param cp
+   *     a valid Openbravo ConnectionProvider
    * @return a map of column names to their definitions
-   * @throws Exception if a database error occurs
+   * @throws Exception
+   *     if a database error occurs
    */
   private Map<String, ColumnDefinition> fetchDbDefinition(String tableName, ConnectionProvider cp) throws Exception {
     Map<String, ColumnDefinition> columns = new LinkedHashMap<>();
@@ -233,6 +253,34 @@ public class TableDefinitionComparator {
   }
 
   /**
+   * Represents the differences between two sets of column definitions
+   * when comparing a database table with its XML specification.
+   * <p>
+   * The class contains two maps:
+   * <ul>
+   *   <li>{@code added}: columns that are present in XML but missing in the database</li>
+   *   <li>{@code removed}: columns that are present in the database but missing in XML</li>
+   * </ul>
+   */
+  public static class ColumnDiff {
+    public final Map<String, ColumnDefinition> added;
+    public final Map<String, ColumnDefinition> removed;
+
+    /**
+     * Creates a new {@code ColumnDiff} instance with the given added and removed columns.
+     *
+     * @param added
+     *     the set of columns to be added to the database
+     * @param removed
+     *     the set of columns to be removed from the database
+     */
+    public ColumnDiff(Map<String, ColumnDefinition> added, Map<String, ColumnDefinition> removed) {
+      this.added = added;
+      this.removed = removed;
+    }
+  }
+
+  /**
    * Internal class representing the structure of a column in a table.
    */
   public static class ColumnDefinition {
@@ -245,11 +293,16 @@ public class TableDefinitionComparator {
     /**
      * Constructor for ColumnDefinition.
      *
-     * @param name         the column name
-     * @param dataType     the SQL data type
-     * @param length       the length if applicable (nullable)
-     * @param isNullable   whether the column allows NULL
-     * @param isPrimaryKey whether the column is part of the primary key
+     * @param name
+     *     the column name
+     * @param dataType
+     *     the SQL data type
+     * @param length
+     *     the length if applicable (nullable)
+     * @param isNullable
+     *     whether the column allows NULL
+     * @param isPrimaryKey
+     *     whether the column is part of the primary key
      */
     public ColumnDefinition(String name, String dataType, Integer length, Boolean isNullable, Boolean isPrimaryKey) {
       this.name = name;
