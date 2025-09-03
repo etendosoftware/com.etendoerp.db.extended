@@ -134,16 +134,28 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Attempts to resolve the primary key constraint name from the given table XML files.
-   *
-   * <p>For each XML:</p>
+   * Scans a list of XML files to locate and return the primary key attribute
+   * defined in a <table> element.
+   * <p>
+   * The method processes each XML file in the given list sequentially, skipping
+   * files whose path contains the string {@code "modifiedTables"}. For each valid
+   * XML file, it parses the document to locate <table> tags:
    * <ul>
-   *   <li>Skips files under {@code modifiedTables}.</li>
-   *   <li>Requires exactly one {@code <table>} element.</li>
-   *   <li>Returns the {@code primaryKey} attribute if present; logs otherwise.</li>
+   *   <li>If exactly one <table> tag is found and it contains a {@code primaryKey}
+   *       attribute, the value of that attribute is returned.</li>
+   *   <li>If the <table> tag is missing the {@code primaryKey} attribute, a warning
+   *       is logged and {@code null} is returned.</li>
+   *   <li>If no <table> tags or more than one <table> tag is found, an error is logged
+   *       and {@code null} is returned.</li>
    * </ul>
+   * If an exception occurs during processing (e.g., parsing errors, I/O errors),
+   * the exception is logged and {@code null} is returned.
    *
-   * @return the primary key name if found; {@code null} otherwise
+   * @param xmlFiles
+   *     the list of XML files to scan for a primary key definition
+   * @return the value of the {@code primaryKey} attribute if found, or {@code null}
+   *     if the attribute is missing, multiple/no <table> tags are found,
+   *     the file does not exist, or an error occurs
    */
   public static String findPrimaryKey(List<File> xmlFiles) {
     try {
@@ -181,11 +193,54 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Logs that an XML file was skipped due to parsing issues. This is best-effort and non-blocking.
+   * Logs an informational message when an XML file cannot be parsed during a scan for foreign key references.
+   * <p>
+   * The log entry includes the absolute path of the source XML file and the exception message
+   * describing the parsing failure.
+   * </p>
+   *
+   * @param sourceXmlFile
+   *     the XML file that could not be parsed
+   * @param e
+   *     the exception thrown while attempting to parse the XML file
    */
   private static void logUnparseableXML(File sourceXmlFile, Exception e) {
     log4j.info("Skipping unparsable XML while scanning for FK refs: {} -> {}",
         sourceXmlFile.getAbsolutePath(), e.getMessage());
+  }
+
+  /**
+   * Logs an informational message after cleaning up old or excess backups.
+   * <p>
+   * The log entry includes the number of backups deleted, the name of the table,
+   * and the configured retention period in days.
+   * </p>
+   *
+   * @param message
+   *     the log message template with placeholders for size, table name, and retention days
+   * @param backupsToDelete
+   *     the list of backup table names that were removed
+   * @param tableName
+   *     the name of the table for which the cleanup was performed
+   */
+  private static void logCleanOldBackups(String message, List<String> backupsToDelete, String tableName) {
+    log4j.info(message,
+        backupsToDelete.size(), tableName, BACKUP_RETENTION_DAYS);
+  }
+
+  /**
+   * Logs a warning when a backup table could not be dropped.
+   * <p>
+   * The log entry includes the backup table name and the exception message.
+   * </p>
+   *
+   * @param backupName
+   *     the name of the backup table that failed to drop
+   * @param e
+   *     the exception thrown during the drop attempt
+   */
+  private static void logFailedDropBackupTable(String backupName, Exception e) {
+    log4j.warn("Failed to drop backup table {}: {}", backupName, e.getMessage());
   }
 
   @Override
@@ -384,13 +439,13 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       TableDefinitionComparator.ColumnDefinition def = e.getValue();
       String sqlType = mapXmlTypeToSql(def.getDataType(), def.getLength()); // best-effort
       alterSql.append(String.format(
-          "ALTER TABLE public.%s ADD COLUMN IF NOT EXISTS %s %s %s;\n",
+          "ALTER TABLE public.%s ADD COLUMN IF NOT EXISTS %s %s %s;",
           tableName, col, sqlType, def.isNullable() ? "" : "NOT NULL"));
     }
     for (Map.Entry<String, TableDefinitionComparator.ColumnDefinition> e : diff.removed.entrySet()) {
       String col = e.getKey();
       alterSql.append(String.format(
-          "ALTER TABLE public.%s DROP COLUMN IF EXISTS %s CASCADE;\n",
+          "ALTER TABLE public.%s DROP COLUMN IF EXISTS %s CASCADE;",
           tableName, col));
     }
     return alterSql;
@@ -437,6 +492,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
   }
 
+  // --- Backup helpers ---
+
   /**
    * DOM scan for any matching {@code <foreign-key>} element; logs the number scanned at DEBUG.
    */
@@ -476,8 +533,6 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
     return false;
   }
-
-  // --- Backup helpers ---
 
   /**
    * Creates backup schema/tables if missing. Best-effort, non-throwing.
@@ -587,8 +642,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       dropBackupTableQuietly(cp, backupName);
       deleteBackupMetadataQuietly(cp, backupName);
     }
-    log4j.info("Cleaned up {} backups for table {} (excess count + older than {} days)",
-        backupsToDelete.size(), tableName, BACKUP_RETENTION_DAYS);
+    logCleanOldBackups("Cleaned up {} backups for table {} (excess count + older than {} days)", backupsToDelete,
+        tableName);
     return backupsToDelete.size();
   }
 
@@ -630,7 +685,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       drop.executeUpdate();
       log4j.debug("Dropped backup table: {}", backupName);
     } catch (Exception e) {
-      log4j.warn("Failed to drop backup table {}: {}", backupName, e.getMessage());
+      logFailedDropBackupTable(backupName, e);
     }
   }
 
@@ -644,7 +699,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       del.setString(1, backupName);
       del.executeUpdate();
     } catch (Exception e) {
-      log4j.warn("Failed to delete metadata for backup {}: {}", backupName, e.getMessage());
+      logFailedDropBackupTable(backupName, e);
     }
   }
 
@@ -686,32 +741,69 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           }
 
           for (String backupName : backupsToDelete) {
-            try (PreparedStatement drop = cp.getPreparedStatement(
-                "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
-              drop.executeUpdate();
-              log4j.info("Dropped backup table for {}: {} (excess or > {} days old)",
-                  tableName, backupName, BACKUP_RETENTION_DAYS);
-            } catch (Exception de) {
-              log4j.warn("Failed to drop backup table {}: {}", backupName, de.getMessage());
-            }
-
-            try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
-              del.setString(1, backupName);
-              del.executeUpdate();
-            } catch (Exception de2) {
-              log4j.warn("Failed to delete metadata for backup {}: {}", backupName, de2.getMessage());
-            }
+            dropBackupTable(cp, tableName, backupName);
+            deleteBackupMetadata(cp, backupName, deleteMetaSql);
           }
 
           if (!backupsToDelete.isEmpty()) {
-            log4j.info(
+            logCleanOldBackups(
                 "Cleaned up {} backups for table {} after creating new backup (excess count + older than {} days)",
-                backupsToDelete.size(), tableName, BACKUP_RETENTION_DAYS);
+                backupsToDelete, tableName);
           }
         }
       }
     } catch (Exception e) {
       log4j.warn("Failed to cleanup excess backups for table {}: {}", tableName, e.getMessage());
+    }
+  }
+
+  /**
+   * Attempts to drop a specific backup table from the backup schema.
+   * <p>
+   * This method executes a {@code DROP TABLE IF EXISTS} statement for the given backup name.
+   * If the table is successfully dropped, an informational log entry is created.
+   * If an error occurs, it is caught and logged as a warning.
+   * </p>
+   *
+   * @param cp
+   *     the {@link ConnectionProvider} used to obtain the database connection
+   * @param tableName
+   *     the name of the original table for which the backup was created
+   * @param backupName
+   *     the name of the backup table to drop
+   */
+  private void dropBackupTable(ConnectionProvider cp, String tableName, String backupName) {
+    try (PreparedStatement drop = cp.getPreparedStatement(
+        "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
+      drop.executeUpdate();
+      log4j.info("Dropped backup table for {}: {} (excess or > {} days old)",
+          tableName, backupName, BACKUP_RETENTION_DAYS);
+    } catch (Exception e) {
+      logFailedDropBackupTable(backupName, e);
+    }
+  }
+
+  /**
+   * Deletes the metadata entry corresponding to a given backup table.
+   * <p>
+   * This method executes a {@code DELETE} statement on the backup metadata table,
+   * removing the record associated with the specified backup name.
+   * If an error occurs during deletion, the exception is caught and logged as a warning.
+   * </p>
+   *
+   * @param cp
+   *     the {@link ConnectionProvider} used to obtain the database connection
+   * @param backupName
+   *     the name of the backup table whose metadata should be removed
+   * @param deleteMetaSql
+   *     the SQL statement used to delete the backup metadata record
+   */
+  private void deleteBackupMetadata(ConnectionProvider cp, String backupName, String deleteMetaSql) {
+    try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
+      del.setString(1, backupName);
+      del.executeUpdate();
+    } catch (Exception e) {
+      log4j.warn("Failed to delete metadata for backup {}: {}", backupName, e.getMessage());
     }
   }
 
@@ -999,7 +1091,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * Builds SQL to (re)create PK/FK constraints for {@code tableName}, handling partitioned vs non-partitioned.
    */
   public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
-      String partitionField) throws Exception {
+      String partitionField) throws OBException, NoSuchFileException {
 
     boolean isPartitioned = isPartitioned(cp, tableName);
     String pkName = resolvePrimaryKeyName(tableName); // throws if not found
@@ -1084,13 +1176,16 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
       for (int i = 0; i < fkList.getLength(); i++) {
         Element fkEl = (Element) fkList.item(i);
-        if (!referencesTarget(fkEl, ctx.parentTable)) continue;
 
         String fkName = fkEl.getAttribute("name");
         String localCol = firstLocalColumn(fkEl);
-        if (StringUtils.isBlank(fkName) || StringUtils.isBlank(localCol)) continue;
 
-        appendFkSqlForChild(sql, ctx, new ChildRef(childTable, fkName, localCol));
+        boolean validReference = referencesTarget(fkEl, ctx.parentTable);
+        boolean validData = StringUtils.isNotBlank(fkName) && StringUtils.isNotBlank(localCol);
+
+        if (validReference && validData) {
+          appendFkSqlForChild(sql, ctx, new ChildRef(childTable, fkName, localCol));
+        }
       }
     } catch (Exception e) {
       log4j.error("Error processing XML file: {}", xml.getAbsolutePath(), e);
@@ -1106,9 +1201,21 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     if (ctx.parentIsPartitioned) {
       String helperCol = "etarc_" + ctx.partitionField + "__" + child.fkName;
 
-      boolean colExists = existsSafe(() -> columnExists(ctx.cp, child.childTable, helperCol),
+      boolean colExists = existsSafe(() -> {
+            try {
+              return columnExists(ctx.cp, child.childTable, helperCol);
+            } catch (Exception e) {
+              throw new OBException(e);
+            }
+          },
           "columnExists", helperCol, child.childTable);
-      boolean fkExists = existsSafe(() -> constraintExists(ctx.cp, child.childTable, child.fkName),
+      boolean fkExists = existsSafe(() -> {
+            try {
+              return constraintExists(ctx.cp, child.childTable, child.fkName);
+            } catch (Exception e) {
+              throw new OBException(e);
+            }
+          },
           "constraintExists", child.fkName, child.childTable);
 
       if (colExists && fkExists) {
@@ -1198,7 +1305,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   @FunctionalInterface
   private interface Check {
-    boolean get() throws Exception;
+    boolean get() throws OBException;
   }
 
   // =========================

@@ -263,7 +263,20 @@ public class TableDefinitionComparator {
    * </ul>
    */
   public static class ColumnDiff {
+    /**
+     * Columns that exist in the XML specification but are missing in the database.
+     * <p>
+     * Each entry maps the column name to its {@link ColumnDefinition}.
+     * </p>
+     */
     public final Map<String, ColumnDefinition> added;
+
+    /**
+     * Columns that exist in the database but are missing in the XML specification.
+     * <p>
+     * Each entry maps the column name to its {@link ColumnDefinition}.
+     * </p>
+     */
     public final Map<String, ColumnDefinition> removed;
 
     /**
@@ -336,8 +349,7 @@ public class TableDefinitionComparator {
     @Override
     public boolean equals(Object o) {
       if (this == o) return true;
-      if (!(o instanceof ColumnDefinition)) return false;
-      ColumnDefinition that = (ColumnDefinition) o;
+      if (!(o instanceof ColumnDefinition that)) return false;
       return Objects.equals(name, that.name);
     }
 

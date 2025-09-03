@@ -10,6 +10,7 @@ import uuid
 BBDD_URL = 'bbdd.url'
 ETARC_PATTERN = r'etarc\_%'
 ETRAC_PATTERN = r'etrac\_%\__%'
+RELEASE_SAVEPOINT = "RELEASE SAVEPOINT {}"
 
 # ─── Colors and Emojis ───
 
@@ -206,7 +207,7 @@ def safe_drop_column(cur, schema, table, column):
         ))
         if sp:
             try:
-                cur.execute(sql.SQL("RELEASE SAVEPOINT {}" ).format(sql.Identifier(sp)))
+                cur.execute(sql.SQL(RELEASE_SAVEPOINT).format(sql.Identifier(sp)))
             except Exception:
                 pass
         return True, None
@@ -215,7 +216,7 @@ def safe_drop_column(cur, schema, table, column):
         if sp:
             try:
                 cur.execute(sql.SQL("ROLLBACK TO SAVEPOINT {}" ).format(sql.Identifier(sp)))
-                cur.execute(sql.SQL("RELEASE SAVEPOINT {}" ).format(sql.Identifier(sp)))
+                cur.execute(sql.SQL(RELEASE_SAVEPOINT).format(sql.Identifier(sp)))
             except Exception:
                 pass
         return False, err
@@ -388,7 +389,7 @@ def unpartition_table(conn, table_name):
                 print_message(f"Dropped constraint {conname} on {schema}.{table_name}", "INFO")
                 if sp_name:
                     try:
-                        cur.execute(sql.SQL("RELEASE SAVEPOINT {}" ).format(sql.Identifier(sp_name)))
+                        cur.execute(sql.SQL(RELEASE_SAVEPOINT).format(sql.Identifier(sp_name)))
                     except Exception:
                         pass
             except Exception as e:
@@ -396,7 +397,7 @@ def unpartition_table(conn, table_name):
                 if sp_name:
                     try:
                         cur.execute(sql.SQL("ROLLBACK TO SAVEPOINT {}" ).format(sql.Identifier(sp_name)))
-                        cur.execute(sql.SQL("RELEASE SAVEPOINT {}" ).format(sql.Identifier(sp_name)))
+                        cur.execute(sql.SQL(RELEASE_SAVEPOINT).format(sql.Identifier(sp_name)))
                     except Exception:
                         pass
                 print_message(f"Failed to drop constraint {conname} on {schema}.{table_name}: {e}", "ERROR")
