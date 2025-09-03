@@ -349,10 +349,11 @@ public class TableDefinitionComparator {
     @Override
     public boolean equals(Object o) {
       if (this == o) return true;
-      if (!(o instanceof ColumnDefinition that)) return false;
+      if (!(o instanceof ColumnDefinition)) return false;
+      ColumnDefinition that = (ColumnDefinition) o;
       return Objects.equals(name, that.name);
     }
-
+    
     @Override
     public int hashCode() {
       return Objects.hash(name);

@@ -42,7 +42,6 @@ import javax.xml.parsers.ParserConfigurationException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.base.exception.OBException;
 import org.openbravo.database.ConnectionProvider;
 import org.openbravo.modulescript.ModuleScript;
 import org.w3c.dom.Document;
@@ -410,7 +409,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
       StringBuilder alterSql = getAlterSql(diff, tableName);
 
-      if (!alterSql.isEmpty()) {
+      if (alterSql.length() > 0) {
         executeSqlWithBackup(cp, tableName, isPartitioned, alterSql.toString());
       }
       if (!isBlank(tableSql)) {
@@ -876,18 +875,32 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * Best-effort mapping from XML datatype to PostgreSQL type.
    */
   private String mapXmlTypeToSql(String xmlType, Integer length) {
-    if (xmlType == null) return "text";
+    if (xmlType == null) {
+      return "text";
+    }
     String t = xmlType.toLowerCase();
-    return switch (t) {
-      case "varchar", "character varying", "string" ->
-          length != null && length > 0 ? "varchar(" + length + ")" : "text";
-      case "int", "integer" -> "integer";
-      case "bigint" -> "bigint";
-      case "timestamp", "datetime" -> "timestamp without time zone";
-      case "boolean", "bool" -> "boolean";
-      case "numeric", "decimal" -> "numeric";
-      default -> t;
-    };
+    switch (t) {
+      case "varchar":
+      case "character varying":
+      case "string":
+        return (length != null && length > 0) ? "varchar(" + length + ")" : "text";
+      case "int":
+      case "integer":
+        return "integer";
+      case "bigint":
+        return "bigint";
+      case "timestamp":
+      case "datetime":
+        return "timestamp without time zone";
+      case "boolean":
+      case "bool":
+        return "boolean";
+      case "numeric":
+      case "decimal":
+        return "numeric";
+      default:
+        return t;
+    }
   }
 
   /**
@@ -1091,7 +1104,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * Builds SQL to (re)create PK/FK constraints for {@code tableName}, handling partitioned vs non-partitioned.
    */
   public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
-      String partitionField) throws OBException, NoSuchFileException {
+      String partitionField) throws Exception {
 
     boolean isPartitioned = isPartitioned(cp, tableName);
     String pkName = resolvePrimaryKeyName(tableName); // throws if not found
@@ -1117,16 +1130,16 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Resolves the PK constraint name from table XML or throws {@link OBException}.
+   * Resolves the PK constraint name from table XML or throws {@link Exception,}.
    */
-  private String resolvePrimaryKeyName(String tableName) throws OBException, NoSuchFileException {
+  private String resolvePrimaryKeyName(String tableName) throws Exception {
     List<File> xmls = findTableXmlFiles(tableName);
     if (xmls.isEmpty()) {
-      throw new OBException("Entity XML file for " + tableName + " not found.");
+      throw new Exception("Entity XML file for " + tableName + " not found.");
     }
     String pkName = findPrimaryKey(xmls);
     if (pkName == null) {
-      throw new OBException("Primary Key for entity " + tableName + " not found in XML.");
+      throw new Exception("Primary Key for entity " + tableName + " not found in XML.");
     }
     return pkName;
   }
@@ -1205,7 +1218,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
             try {
               return columnExists(ctx.cp, child.childTable, helperCol);
             } catch (Exception e) {
-              throw new OBException(e);
+              throw new Exception(e);
             }
           },
           "columnExists", helperCol, child.childTable);
@@ -1213,7 +1226,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
             try {
               return constraintExists(ctx.cp, child.childTable, child.fkName);
             } catch (Exception e) {
-              throw new OBException(e);
+              throw new Exception(e);
             }
           },
           "constraintExists", child.fkName, child.childTable);
@@ -1305,7 +1318,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   @FunctionalInterface
   private interface Check {
-    boolean get() throws OBException;
+    boolean get() throws Exception;
   }
 
   // =========================
