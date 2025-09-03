@@ -349,6 +349,7 @@ spec:
       steps {
         container('compiler') {
           script {
+            sh "./pipelines/utils/build-update.sh ${REPOSITORY_NAME} ${COMMIT_SUCCESS_STATUS} \"Testing partition/unpartition process\" ${ACCESS_TOKEN} ${GIT_COMMIT} ${BUILD_URL} \"${CONTEXT_BUILD}\""
             def durationPart
             def durationUnpart
             try {
