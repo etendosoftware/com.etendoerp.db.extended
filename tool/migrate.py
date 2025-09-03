@@ -19,6 +19,7 @@ BBDD_RDBMS = 'bbdd.rdbms'
 BBDD_URL = 'bbdd.url'
 BBDD_USER = 'bbdd.user'
 BBDD_PASSWORD = 'bbdd.password'
+BBDD_SESSIONCONFIG= 'bbdd.sessionConfig'
 
 COL_NAME = 0
 DATA_TYPE = 1
@@ -29,6 +30,17 @@ NUM_PREC = 5
 NUM_SCALE = 6
 DATETIME_PREC = 7
 UDT_NAME = 8
+
+# Constants for commonly used strings to avoid duplication
+PARTITIONS_SCHEMA_NAME = "partitions"
+ETARC_TMP_SUFFIX = "_etarc_tmp_old"
+COUNT_QUERY_TEMPLATE = "SELECT COUNT(*) FROM {}.{}"
+ALTER_TABLE_DROP_CONST_QUERY = "ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}"
+DEBUG_PREFIX = "DEBUG: "
+ERROR_PREFIX = "ERROR: "
+WARNING_PREFIX = "WARNING: "
+TABLE_NOT_FOUND_ERROR = "does not exist"
+ROLLBACK_ERROR_MSG = "Rollback error"
 
 # Variable global para controlar el uso de salida ANSI (colores/emojis)
 _use_ansi_output = True
@@ -121,7 +133,7 @@ def read_properties_file(file_path):
             BBDD_SID: config.get('default', BBDD_SID, fallback=None),
             BBDD_USER: config.get('default', BBDD_USER, fallback=None),
             BBDD_PASSWORD: config.get('default', BBDD_PASSWORD, fallback=None),
-            'bbdd.sessionConfig': config.get('default', 'bbdd.sessionConfig', fallback=None)
+            BBDD_SESSIONCONFIG: config.get('default', BBDD_SESSIONCONFIG, fallback=None)
         }
         return properties
     except Exception as e:
@@ -224,9 +236,117 @@ def is_table_partitioned(conn, table_name, schema):
             cur.execute("SELECT c.relkind FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace WHERE c.relname = %s AND n.nspname = %s", (table_name, schema))
             result = cur.fetchone()
             return result[0] == 'p' if result else False # 'p' for partitioned table
-    except Exception as e:
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
         print_message(f"Error checking if table {schema}.{table_name} is partitioned: {e}", "ERROR")
         return False
+
+def is_partition_child(conn, schema, table):
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT 1
+            FROM pg_class c
+            JOIN pg_namespace n ON n.oid = c.relnamespace
+            JOIN pg_inherits i ON i.inhrelid = c.oid
+            WHERE n.nspname = %s AND c.relname = %s
+            LIMIT 1
+        """, (schema, table))
+        return cur.fetchone() is not None
+
+def get_partition_parent(conn, schema, table):
+    """
+    Si (schema.table) es una partición hija, devuelve (schema_padre, tabla_padre).
+    Si no, devuelve (schema, table).
+    """
+    with conn.cursor() as cur:
+        cur.execute("""
+            SELECT pn.nspname, p.relname
+            FROM pg_class c
+            JOIN pg_namespace cn ON cn.oid = c.relnamespace
+            JOIN pg_inherits i ON i.inhrelid = c.oid
+            JOIN pg_class p ON p.oid = i.inhparent
+            JOIN pg_namespace pn ON pn.oid = p.relnamespace
+            WHERE cn.nspname = %s AND c.relname = %s
+            LIMIT 1
+        """, (schema, table))
+        row = cur.fetchone()
+        return (row[0], row[1]) if row else (schema, table)
+
+def _get_table_row_count(conn, schema, table_name):
+    """Get row count for a table with error handling."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute(sql.SQL(COUNT_QUERY_TEMPLATE).format(
+                sql.Identifier(schema), sql.Identifier(table_name)
+            ))
+            row_count = cur.fetchone()[0]
+            print_message(f"  - Row count: {row_count}", "DEBUG")
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"  - Row count: ERROR - {e}", "DEBUG")
+        # If there's an error, rollback to savepoint to avoid affecting main transaction
+        try:
+            conn.rollback()
+        except psycopg2.Error:
+            pass
+
+def _get_table_type_info(conn, schema, table_name):
+    """Get table type information from pg_class with error handling."""
+    try:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT c.relkind
+                FROM pg_class c
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE c.relname = %s AND n.nspname = %s
+            """, (table_name, schema))
+            result = cur.fetchone()
+            if result:
+                relkind = result[0]
+                type_mapping = {
+                    'r': 'ordinary table',
+                    'p': 'partitioned table',
+                    'v': 'view',
+                    'i': 'index',
+                    'S': 'sequence'
+                }
+                table_type = type_mapping.get(relkind, f'other ({relkind})')
+                print_message(f"  - Table type: {table_type} ({relkind})", "DEBUG")
+            else:
+                print_message("  - Table type: NOT FOUND in pg_class", "DEBUG")
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"  - Table type: ERROR - {e}", "DEBUG")
+        # If there's an error, rollback to avoid affecting main transaction
+        try:
+            conn.rollback()
+        except psycopg2.Error:
+            pass
+
+def debug_table_status(conn, table_name, schema, step_description):
+    """Debug function to check table existence and properties during migration"""
+    try:
+        print_message(f"DEBUG [{step_description}] Checking table status for {schema}.{table_name}:", "DEBUG")
+
+        # Check existence
+        exists = table_exists(conn, table_name, schema)
+        print_message(f"  - Table exists: {exists is not None} (in schema: {exists})", "DEBUG")
+
+        if exists:
+            # Check if partitioned
+            is_part = is_table_partitioned(conn, table_name, schema)
+            print_message(f"  - Is partitioned: {is_part}", "DEBUG")
+
+            # Get row count - use a separate connection/cursor to avoid affecting main transaction
+            _get_table_row_count(conn, schema, table_name)
+
+            # Check table type from pg_class - simplified to avoid transaction issues
+            _get_table_type_info(conn, schema, table_name)
+
+    except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
+        print_message(f"DEBUG [{step_description}] Error checking table status: {e}", "ERROR")
+        # If there's an error, rollback to avoid affecting main transaction
+        try:
+            conn.rollback()
+        except psycopg2.Error:
+            pass
 
 def object_exists(conn, schema, table, object_type, object_name):
     """
@@ -349,6 +469,167 @@ def get_foreign_keys(conn, table, schema, direction="on"):
             for name, ref_table, ref_schema, definition, columns in rows
         ]
 
+def _get_partition_field_type_safe(conn, source_table_name, source_schema, partition_field, result):
+    """Get partition field type with error handling."""
+    try:
+        return get_partition_field_type(conn, source_table_name, source_schema, partition_field)
+    except Exception as e:
+        print_message(f"Failed to get partition field type for {source_schema}.{source_table_name}.{partition_field}: {e}", "ERROR")
+        result['success'] = False
+        result['details'].append({'error_message': f"Critical error: Could not get source partition field type: {e}"})
+        return None
+
+def _initialize_table_detail(related_table_info):
+    """Initialize table detail structure for tracking processing results."""
+    return {
+        'table_schema': related_table_info['table_schema'],
+        'table_name': related_table_info['table_name'],
+        'constraint_name': related_table_info['constraint_name'],
+        'success': False,
+        'records_updated': 0,
+        'validation_result': None,
+        'error_message': None
+    }
+
+def _handle_field_addition_step(conn, related_table_info, partition_field, field_type_info, dry_run, table_detail):
+    """Handle the partition field addition step."""
+    table_schema = related_table_info['table_schema']
+    table_name = related_table_info['table_name']
+    
+    if not add_partition_field_to_related_table(conn, related_table_info, partition_field, field_type_info, dry_run):
+        table_detail['error_message'] = "Field addition failed (see logs)."
+        print_message(f"  {Style.FAILURE} Field addition failed for {table_schema}.{table_name}", "FAILURE")
+        if not dry_run:
+            conn.rollback()
+        return False
+    
+    print_message(f"  ✓ Field 'etarc_{partition_field}' addition/check successful for {table_schema}.{table_name}", "STEP_INFO")
+    return True
+
+def _handle_data_population_step(conn, source_table_name, source_schema, related_table_info, partition_field, dry_run, table_detail):
+    """Handle the data population step."""
+    table_schema = related_table_info['table_schema']
+    table_name = related_table_info['table_name']
+    
+    records_updated = populate_partition_field_in_related_table(
+        conn, source_table_name, source_schema, related_table_info, partition_field, dry_run
+    )
+
+    if records_updated < 0:  # Error during population
+        table_detail['error_message'] = "Data population failed (see logs)."
+        print_message(f"  {Style.FAILURE} Data population failed for {table_schema}.{table_name}", "FAILURE")
+        if not dry_run:
+            conn.rollback()
+        return False, 0
+
+    table_detail['records_updated'] = records_updated
+    print_message(f"  ✓ Data population for 'etarc_{partition_field}' successful for {table_schema}.{table_name} (Records: {records_updated})", "STEP_INFO")
+    return True, records_updated
+
+def _handle_validation_step(conn, related_table_info, partition_field, table_detail):
+    """Handle the validation step for live mode."""
+    table_schema = related_table_info['table_schema']
+    table_name = related_table_info['table_name']
+    
+    validation_result = validate_partition_field_population(conn, related_table_info, partition_field)
+    table_detail['validation_result'] = validation_result
+
+    if validation_result['success']:
+        print_message(f"  ✓ Validation successful for {table_schema}.{table_name}", "STEP_INFO")
+        table_detail['success'] = True
+        conn.commit()  # Commit changes for this specific related table
+        return True
+    else:
+        print_message(f"  {Style.WARNING} Validation failed for {table_schema}.{table_name}: {validation_result['message']}", "WARNING")
+        table_detail['error_message'] = f"Validation failed: {validation_result['message']}"
+        conn.rollback()  # Rollback changes for this table due to validation failure
+        return False
+
+def _handle_dry_run_completion(related_table_info, table_detail):
+    """Handle successful completion in dry run mode."""
+    table_schema = related_table_info['table_schema']
+    table_name = related_table_info['table_name']
+    
+    table_detail['success'] = True
+    print_message(f"  ✓ [Dry Run] Processing simulation successful for {table_schema}.{table_name}", "STEP_INFO")
+
+def _handle_related_table_error(e_inner, conn, related_table_info, table_detail, dry_run):
+    """Handle errors during related table processing."""
+    table_schema = related_table_info['table_schema']
+    table_name = related_table_info['table_name']
+    
+    table_detail['error_message'] = str(e_inner)
+    print_message(f"  {Style.ERROR_ICON} Error processing {table_schema}.{table_name}: {e_inner}", "ERROR")
+    traceback.print_exc()
+    
+    if not dry_run:
+        try:
+            conn.rollback()
+        except psycopg2.Error as rb_err:
+            print_message(f"  {Style.ERROR_ICON} Rollback failed for {table_schema}.{table_name}: {rb_err}", "ERROR")
+
+def _process_single_related_table(conn, source_table_name, source_schema, related_table_info, partition_field, field_type_info, dry_run, table_index, total_tables):
+    """Process a single related table for partitioning."""
+    table_schema = related_table_info['table_schema']
+    table_name = related_table_info['table_name']
+    table_detail = _initialize_table_detail(related_table_info)
+
+    try:
+        print_message(f"\n[{table_index}/{total_tables}] Processing related table: {Style.BOLD}{table_schema}.{table_name}{Style.RESET}...", "STEP")
+
+        # Step 3a: Add partition field to related table
+        if not _handle_field_addition_step(conn, related_table_info, partition_field, field_type_info, dry_run, table_detail):
+            return table_detail, 0
+
+        # Step 3b: Populate the field with data from the source table
+        success, records_updated = _handle_data_population_step(
+            conn, source_table_name, source_schema, related_table_info, partition_field, dry_run, table_detail
+        )
+        if not success:
+            return table_detail, 0
+
+        # Step 3c: Validate population (only in live mode)
+        if not dry_run:
+            if _handle_validation_step(conn, related_table_info, partition_field, table_detail):
+                return table_detail, records_updated
+            else:
+                return table_detail, 0
+        else:
+            # In dry run mode, consider it successful if we got this far
+            _handle_dry_run_completion(related_table_info, table_detail)
+            return table_detail, records_updated
+
+    except Exception as e_inner:
+        _handle_related_table_error(e_inner, conn, related_table_info, table_detail, dry_run)
+        return table_detail, 0
+
+def _print_related_tables_summary(result):
+    """Print final summary of related tables processing."""
+    if result['failed_tables'] > 0:
+        result['success'] = False  # Overall success is false if any related table failed
+        print_message(f"\n{Style.WARNING} Related table processing completed with {result['failed_tables']} failure(s) out of {result['total_related_tables']}.", "WARNING")
+    else:
+        if result['total_related_tables'] > 0:
+            print_message(f"\n{Style.SUCCESS} All {result['total_related_tables']} related table(s) processed successfully.", "SUCCESS")
+        # If no related tables, success remains true by default.
+
+    print_message(f"Summary for related tables: {result['processed_tables']} successful, {result['failed_tables']} failed. Total records updated in related tables: {result['total_records_updated']}.", "INFO")
+
+def _handle_related_tables_error(e_outer, result, dry_run, conn):
+    """Handle fatal errors in related tables processing."""
+    print_message(f"{Style.ERROR_ICON} Fatal error in related table processing orchestration: {e_outer}", "ERROR")
+    traceback.print_exc()
+    result['success'] = False
+    result['details'].append({
+        'error_message': f"Fatal orchestration error: {e_outer}",
+        'success': False
+    })
+    if not dry_run:
+        try:
+            conn.rollback()  # Rollback any overarching transaction if something went very wrong
+        except psycopg2.Error as rb_err:
+            print_message(f"  {Style.ERROR_ICON} Outer rollback failed: {rb_err}", "ERROR")
+
 def process_related_tables_for_partitioning(conn, source_table_name, source_schema, partition_field, dry_run=False):
     """
     Main orchestration function to process all related tables for partitioning.
@@ -366,13 +647,9 @@ def process_related_tables_for_partitioning(conn, source_table_name, source_sche
         print_message(f"\n--- Processing Related Tables for {source_schema}.{source_table_name} (Partition Field: {partition_field}) ---", "SUBHEADER")
 
         # Step 1: Get partition field type information from the source table
-        try:
-            field_type_info = get_partition_field_type(conn, source_table_name, source_schema, partition_field)
-        except Exception as e:
-            print_message(f"Failed to get partition field type for {source_schema}.{source_table_name}.{partition_field}: {e}", "ERROR")
-            result['success'] = False
-            result['details'].append({'error_message': f"Critical error: Could not get source partition field type: {e}"})
-            return result # Cannot proceed without field type
+        field_type_info = _get_partition_field_type_safe(conn, source_table_name, source_schema, partition_field, result)
+        if field_type_info is None:
+            return result  # Cannot proceed without field type
 
         # Step 2: Discover related tables (tables that have FKs referencing the source table)
         related_tables = get_related_tables(conn, source_table_name, source_schema)
@@ -380,112 +657,31 @@ def process_related_tables_for_partitioning(conn, source_table_name, source_sche
 
         if not related_tables:
             print_message("No related tables found. Skipping related table processing.", "INFO")
-            return result # No related tables to process
+            return result  # No related tables to process
 
         print_message(f"Found {len(related_tables)} related table(s) to process.", "INFO")
 
         # Step 3: Process each related table
         for i, related_table_info in enumerate(related_tables, 1):
-            table_schema = related_table_info['table_schema']
-            table_name = related_table_info['table_name']
-            table_detail = {
-                'table_schema': table_schema,
-                'table_name': table_name,
-                'constraint_name': related_table_info['constraint_name'],
-                'success': False,
-                'records_updated': 0,
-                'validation_result': None,
-                'error_message': None
-            }
+            table_detail, records_updated = _process_single_related_table(
+                conn, source_table_name, source_schema, related_table_info, 
+                partition_field, field_type_info, dry_run, i, len(related_tables)
+            )
 
-            try:
-                print_message(f"\n[{i}/{len(related_tables)}] Processing related table: {Style.BOLD}{table_schema}.{table_name}{Style.RESET}...", "STEP")
-
-                # Step 3a: Add partition field to related table
-                if add_partition_field_to_related_table(conn, related_table_info, partition_field, field_type_info, dry_run):
-                    print_message(f"  ✓ Field 'etarc_{partition_field}' addition/check successful for {table_schema}.{table_name}", "STEP_INFO")
-
-                    # Step 3b: Populate the field with data from the source table
-                    records_updated = populate_partition_field_in_related_table(
-                        conn, source_table_name, source_schema, related_table_info, partition_field, dry_run
-                    )
-
-                    if records_updated >= 0: # 0 is a valid number of updated records
-                        table_detail['records_updated'] = records_updated
-                        result['total_records_updated'] += records_updated
-                        print_message(f"  ✓ Data population for 'etarc_{partition_field}' successful for {table_schema}.{table_name} (Records: {records_updated})", "STEP_INFO")
-
-                        # Step 3c: Validate population (only in live mode)
-                        if not dry_run:
-                            validation_result = validate_partition_field_population(conn, related_table_info, partition_field)
-                            table_detail['validation_result'] = validation_result
-
-                            if validation_result['success']:
-                                print_message(f"  ✓ Validation successful for {table_schema}.{table_name}", "STEP_INFO")
-                                table_detail['success'] = True
-                                result['processed_tables'] += 1
-                                conn.commit() # Commit changes for this specific related table
-                            else:
-                                print_message(f"  {Style.WARNING} Validation failed for {table_schema}.{table_name}: {validation_result['message']}", "WARNING")
-                                table_detail['error_message'] = f"Validation failed: {validation_result['message']}"
-                                result['failed_tables'] += 1
-                                conn.rollback() # Rollback changes for this table due to validation failure
-                        else:
-                            # In dry run mode, consider it successful if we got this far
-                            table_detail['success'] = True
-                            result['processed_tables'] += 1
-                            print_message(f"  ✓ [Dry Run] Processing simulation successful for {table_schema}.{table_name}", "STEP_INFO")
-                            # No commit/rollback in dry_run for the main conn
-                    else: # records_updated is -1, indicating an error during population
-                        table_detail['error_message'] = "Data population failed (see logs)."
-                        result['failed_tables'] += 1
-                        print_message(f"  {Style.FAILURE} Data population failed for {table_schema}.{table_name}", "FAILURE")
-                        if not dry_run: conn.rollback()
-                else: # Field addition failed
-                    table_detail['error_message'] = "Field addition failed (see logs)."
-                    result['failed_tables'] += 1
-                    print_message(f"  {Style.FAILURE} Field addition failed for {table_schema}.{table_name}", "FAILURE")
-                    if not dry_run: conn.rollback() # Rollback if alter table failed
-
-            except Exception as e_inner:
-                table_detail['error_message'] = str(e_inner)
+            if table_detail['success']:
+                result['processed_tables'] += 1
+                result['total_records_updated'] += records_updated
+            else:
                 result['failed_tables'] += 1
-                print_message(f"  {Style.ERROR_ICON} Error processing {table_schema}.{table_name}: {e_inner}", "ERROR")
-                traceback.print_exc()
-                if not dry_run:
-                    try:
-                        conn.rollback()
-                    except psycopg2.Error as rb_err:
-                        print_message(f"  {Style.ERROR_ICON} Rollback failed for {table_schema}.{table_name}: {rb_err}", "ERROR")
-
 
             result['details'].append(table_detail)
 
         # Final status update for the overall related table processing
-        if result['failed_tables'] > 0:
-            result['success'] = False # Overall success is false if any related table failed
-            print_message(f"\n{Style.WARNING} Related table processing completed with {result['failed_tables']} failure(s) out of {result['total_related_tables']}.", "WARNING")
-        else:
-            if result['total_related_tables'] > 0:
-                print_message(f"\n{Style.SUCCESS} All {result['total_related_tables']} related table(s) processed successfully.", "SUCCESS")
-            # If no related tables, success remains true by default.
-
-        print_message(f"Summary for related tables: {result['processed_tables']} successful, {result['failed_tables']} failed. Total records updated in related tables: {result['total_records_updated']}.", "INFO")
+        _print_related_tables_summary(result)
         return result
 
     except Exception as e_outer:
-        print_message(f"{Style.ERROR_ICON} Fatal error in related table processing orchestration: {e_outer}", "ERROR")
-        traceback.print_exc()
-        result['success'] = False
-        result['details'].append({
-            'error_message': f"Fatal orchestration error: {e_outer}",
-            'success': False
-        })
-        if not dry_run:
-            try:
-                conn.rollback() # Rollback any overarching transaction if something went very wrong
-            except psycopg2.Error as rb_err:
-                print_message(f"  {Style.ERROR_ICON} Outer rollback failed: {rb_err}", "ERROR")
+        _handle_related_tables_error(e_outer, result, dry_run, conn)
         return result
 
 def get_partition_field_name(partition_field, constraint_name):
@@ -556,72 +752,70 @@ def validate_partition_field_population(conn, related_table_info, partition_fiel
 def populate_partition_field_in_related_table(conn, source_table, source_schema, related_table_info, partition_field, dry_run=False):
     """
     Populate the new 'etarc_PARTITIONFIELD' in related tables with data from source table's PARTITIONFIELD.
+    Returns:
+        int: número de filas afectadas (o estimadas en dry_run).
+    Raises:
+        psycopg2.Error / Exception en caso de error (el caller ya las maneja).
     """
+    table_schema = related_table_info['table_schema']
+    table_name   = related_table_info['table_name']
+    new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
+    fk_columns        = related_table_info['fk_columns']
+    referenced_columns = related_table_info['referenced_columns']
+
+    # (opcional) blindaje: si vino una hija, operar sobre el padre
+    if is_partition_child(conn, table_schema, table_name):
+        p_schema, p_table = get_partition_parent(conn, table_schema, table_name)
+        print_message(f"{table_schema}.{table_name} es una partición. Redirigiendo UPDATE al padre {p_schema}.{p_table}...", "INFO")
+        table_schema, table_name = p_schema, p_table
+
+    print_message(f"Populating '{new_field_name}' in {table_schema}.{table_name} from {source_schema}.{source_table}.{partition_field}...", "DEBUG")
+
+    # JOIN r (related) vs s (source)
+    join_conditions = [
+        sql.SQL("r.{} = s.{}").format(sql.Identifier(fk), sql.Identifier(ref))
+        for fk, ref in zip(fk_columns, referenced_columns)
+    ]
+    join_condition_sql = sql.SQL(" AND ").join(join_conditions)
+
+    triggers_disabled = False
+    if not dry_run:
+        with conn.cursor() as cur:
+            cur.execute("SELECT ad_disable_triggers()")
+        triggers_disabled = True
+
     try:
-        table_schema = related_table_info['table_schema']
-        table_name = related_table_info['table_name']
-        new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
-        fk_columns = related_table_info['fk_columns'] # Columns in related_table forming the FK
-        referenced_columns = related_table_info['referenced_columns'] # Columns in source_table referenced by FK
-
-        print_message(f"Populating '{new_field_name}' in {table_schema}.{table_name} from {source_schema}.{source_table}.{partition_field}...", "DEBUG")
-
-        # Disable trigger temporarily calling database funciont ad_disable_trigger
-        if not dry_run:
-            disable_trigger_stmt = sql.SQL("SELECT ad_disable_triggers()").format(
-                sql.Identifier(table_schema),
-                sql.Identifier(table_name)
-            )
-            with conn.cursor() as cur:
-                cur.execute(disable_trigger_stmt)
-                print_message(f"  {Style.INFO} Temporarily disabled triggers for {table_schema}.{table_name}.", "STEP_INFO")
-        # Build the JOIN conditions for the UPDATE statement
-        # r (related_table) JOIN s (source_table)
-        join_conditions = []
-        for fk_col, ref_col in zip(fk_columns, referenced_columns):
-            join_conditions.append(
-                sql.SQL("r.{} = s.{}").format(
-                    sql.Identifier(fk_col), # from related_table
-                    sql.Identifier(ref_col)  # from source_table
-                )
-            )
-        join_condition_sql = sql.SQL(" AND ").join(join_conditions)
-
-        # Build UPDATE statement
-        # UPDATE related_table r SET etarc_partition_field = s.partition_field FROM source_table s WHERE r.fk_col = s.pk_col;
         update_stmt = sql.SQL("""
-            UPDATE {related_schema}.{related_table} AS r
-            SET {new_partition_field_ident} = s.{source_partition_field_ident}
-            FROM {source_schema_ident}.{source_table_ident} AS s
-            WHERE {join_conditions} 
-            AND r.{new_partition_field_ident} IS DISTINCT FROM s.{source_partition_field_ident}
+            UPDATE {r_schema}.{r_table} AS r
+               SET {new_col} = s.{src_col}
+              FROM {s_schema}.{s_table} AS s
+             WHERE {join_cond}
+               AND r.{new_col} IS DISTINCT FROM s.{src_col}
         """).format(
-            related_schema=sql.Identifier(table_schema),
-            related_table=sql.Identifier(table_name),
-            new_partition_field_ident=sql.Identifier(new_field_name),
-            source_partition_field_ident=sql.Identifier(partition_field),
-            source_schema_ident=sql.Identifier(source_schema),
-            source_table_ident=sql.Identifier(source_table),
-            join_conditions=join_condition_sql
+            r_schema=sql.Identifier(table_schema),
+            r_table=sql.Identifier(table_name),
+            new_col=sql.Identifier(new_field_name),
+            src_col=sql.Identifier(partition_field),
+            s_schema=sql.Identifier(source_schema),
+            s_table=sql.Identifier(source_table),
+            join_cond=join_condition_sql
         )
-        # Added "IS DISTINCT FROM" to avoid updating rows that already have the correct value, reducing WAL.
 
         if dry_run:
             print_message(f"[Dry Run] Would execute population: {update_stmt.as_string(conn)}", "STEP_INFO")
-            # Simulate count for dry run (approximate, as it doesn't consider IS DISTINCT FROM easily here)
             count_stmt = sql.SQL("""
                 SELECT COUNT(1)
-                FROM {related_schema}.{related_table} AS r
-                JOIN {source_schema_ident}.{source_table_ident} AS s ON {join_conditions}
-                WHERE r.{new_partition_field_ident} IS NULL OR r.{new_partition_field_ident} != s.{source_partition_field_ident} 
+                  FROM {r_schema}.{r_table} AS r
+                  JOIN {s_schema}.{s_table} AS s ON {join_cond}
+                 WHERE NOT (r.{new_col} IS NOT DISTINCT FROM s.{src_col})
             """).format(
-                related_schema=sql.Identifier(table_schema),
-                related_table=sql.Identifier(table_name),
-                source_schema_ident=sql.Identifier(source_schema),
-                source_table_ident=sql.Identifier(source_table),
-                join_conditions=join_condition_sql,
-                new_partition_field_ident=sql.Identifier(new_field_name),
-                source_partition_field_ident=sql.Identifier(partition_field)
+                r_schema=sql.Identifier(table_schema),
+                r_table=sql.Identifier(table_name),
+                s_schema=sql.Identifier(source_schema),
+                s_table=sql.Identifier(source_table),
+                join_cond=join_condition_sql,
+                new_col=sql.Identifier(new_field_name),
+                src_col=sql.Identifier(partition_field)
             )
             with conn.cursor() as cur:
                 cur.execute(count_stmt)
@@ -633,19 +827,12 @@ def populate_partition_field_in_related_table(conn, source_table, source_schema,
                 cur.execute(update_stmt)
                 updated_count = cur.rowcount
             print_message(f"  {Style.SUCCESS} Populated/Updated {updated_count} record(s) in {table_schema}.{table_name}.{new_field_name}.", "STEP_INFO")
-            enable_trigger_stmt = sql.SQL("SELECT ad_enable_triggers()")
-            with conn.cursor() as cur:
-                cur.execute(enable_trigger_stmt)
-                print_message(f"  {Style.INFO} Re-enabled triggers for {table_schema}.{table_name}.", "STEP_INFO")
             return updated_count
-        
 
-    except psycopg2.Error as db_err:
-        print_message(f"Database error populating field in {table_schema}.{table_name}: {db_err}", "ERROR")
-        return -1 # Indicate error
-    except Exception as e:
-        print_message(f"Error populating field in {table_schema}.{table_name}: {e}", "ERROR")
-        return -1 # Indicate error
+    finally:
+        if triggers_disabled:
+            with conn.cursor() as cur:
+                cur.execute("SELECT ad_enable_triggers()")
 
 def add_partition_field_to_related_table(conn, related_table_info, partition_field, field_type_info, dry_run=False):
     """
@@ -657,11 +844,15 @@ def add_partition_field_to_related_table(conn, related_table_info, partition_fie
         new_field_name = get_partition_field_name(partition_field, related_table_info['constraint_name'])
         print_message(f"Ensuring field '{new_field_name}' in {table_schema}.{table_name}...", "DEBUG")
 
+        if is_partition_child(conn, table_schema, table_name):
+            p_schema, p_table = get_partition_parent(conn, table_schema, table_name)
+            print_message(f"{table_schema}.{table_name} es una partición. Redirigiendo alter al padre {p_schema}.{p_table}...", "INFO")
+            table_schema, table_name = p_schema, p_table
+
         # Check if field already exists
         with conn.cursor() as cur:
             if column_exists(conn, table_schema, table_name, new_field_name):
                 print_message(f"Field '{new_field_name}' already exists in {table_schema}.{table_name}. Verifying type...", "INFO")
-                new_field_name += "_1"
                 # Optional: Add type verification here if needed, though get_partition_field_type should be robust.
                 # For now, assume if it exists, it's likely from a previous run and hopefully correct.
                 return True # Field exists, proceed
@@ -766,31 +957,26 @@ def get_partition_field_type(conn, table_name, schema, field_name):
         raise
 
 def get_related_tables(conn, table_name, schema):
-    """
-    Discover all tables that have foreign key relationships pointing TO the source table.
-    (i.e., source_table is the REFERENCED table).
-    """
     related_tables = []
+    seen = set()
     try:
         print_message(f"Discovering tables with FKs referencing {schema}.{table_name}...", "DEBUG")
         with conn.cursor() as cur:
-            # Query to find tables (referencing_table) that have FKs pointing to the given table_name (referenced_table)
             query = """
-                SELECT 
+                SELECT
                     tc.table_schema AS referencing_table_schema,
-                    tc.table_name AS referencing_table_name,
+                    tc.table_name   AS referencing_table_name,
                     tc.constraint_name,
                     ARRAY_AGG(kcu.column_name::TEXT ORDER BY kcu.ordinal_position) AS fk_columns_in_referencing_table,
-                    ARRAY_AGG(ccu.column_name::TEXT) AS referenced_columns_in_source_table 
-                        -- ccu.column_name should be from the primary/unique key of the source_table
-                FROM information_schema.table_constraints AS tc 
-                JOIN information_schema.key_column_usage AS kcu 
+                    ARRAY_AGG(ccu.column_name::TEXT) AS referenced_columns_in_source_table
+                FROM information_schema.table_constraints AS tc
+                JOIN information_schema.key_column_usage AS kcu
                     ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
-                JOIN information_schema.constraint_column_usage AS ccu 
+                JOIN information_schema.constraint_column_usage AS ccu
                     ON ccu.constraint_name = tc.constraint_name AND ccu.constraint_schema = tc.constraint_schema
                 WHERE tc.constraint_type = 'FOREIGN KEY'
-                  AND ccu.table_schema = %s  -- Schema of the referenced (source) table
-                  AND ccu.table_name = %s    -- Name of the referenced (source) table
+                  AND ccu.table_schema = %s
+                  AND ccu.table_name  = %s
                 GROUP BY tc.table_schema, tc.table_name, tc.constraint_name
                 ORDER BY tc.table_schema, tc.table_name;
             """
@@ -798,16 +984,24 @@ def get_related_tables(conn, table_name, schema):
             results = cur.fetchall()
 
             for row in results:
+                child_schema, child_table = row[0], row[1]
+                parent_schema, parent_table = get_partition_parent(conn, child_schema, child_table)
+
+                dedup_key = (parent_schema, parent_table, row[2])
+                if dedup_key in seen:
+                    continue
+                seen.add(dedup_key)
+
                 related_table_info = {
-                    'table_schema': row[0],       # Schema of the table that has the FK
-                    'table_name': row[1],         # Name of the table that has the FK
-                    'constraint_name': row[2],    # Name of the FK constraint
-                    'fk_columns': list(row[3]),   # Columns in the related_table that form the FK
-                    'referenced_columns': list(row[4]) # Columns in the source_table that are referenced
+                    'table_schema': parent_schema,
+                    'table_name': parent_table,
+                    'constraint_name': row[2],
+                    'fk_columns': list(row[3]),
+                    'referenced_columns': list(row[4])
                 }
                 related_tables.append(related_table_info)
                 print_message(
-                    f"  Found related: {row[0]}.{row[1]} via FK '{row[2]}' "
+                    f"  Found related: {parent_schema}.{parent_table} (from {child_schema}.{child_table}) via FK '{row[2]}' "
                     f"({list(row[3])} -> {schema}.{table_name}{list(row[4])})",
                     "DEBUG"
                 )
@@ -840,7 +1034,7 @@ def get_indexes_for_table(conn, schema, table_name_idx):
                 JOIN pg_attribute a ON a.attrelid = t.oid AND a.attnum = ANY(ix.indkey)
                 JOIN pg_namespace n ON n.oid = t.relnamespace
                 WHERE n.nspname = %s AND t.relname = %s AND ix.indisprimary = FALSE
-                GROUP BY i.relname, ix.indisunique; 
+                GROUP BY i.relname, ix.indisunique;
             """, (schema, table_name_idx))
             for row in cur.fetchall():
                 # Only consider non-unique indexes or if you want to handle unique constraint indexes separately
@@ -896,11 +1090,11 @@ def get_primary_key_info(conn, table_name_pk, schema_pk):
         with conn.cursor() as cur:
             # Get PK constraint name and columns
             cur.execute("""
-                SELECT tc.constraint_name, array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) AS columns 
-                FROM information_schema.table_constraints tc 
-                JOIN information_schema.key_column_usage kcu 
-                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema 
-                WHERE tc.table_schema = %s AND tc.table_name = %s AND tc.constraint_type = 'PRIMARY KEY' 
+                SELECT tc.constraint_name, array_agg(kcu.column_name::text ORDER BY kcu.ordinal_position) AS columns
+                FROM information_schema.table_constraints tc
+                JOIN information_schema.key_column_usage kcu
+                    ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+                WHERE tc.table_schema = %s AND tc.table_name = %s AND tc.constraint_type = 'PRIMARY KEY'
                 GROUP BY tc.constraint_name
             """, (schema_pk, table_name_pk))
             result = cur.fetchone()
@@ -931,250 +1125,594 @@ def get_year_range(conn, table_name_for_range, schema_for_range, partition_by_fi
                 max_year = min_year
 
             return min_year, max_year
-    except Exception as e:
+    except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
         print_message(f"Error determining year range for {schema_for_range}.{table_name_for_range} (field {partition_by_field}): {e}. Using default range (current year).", "WARNING")
         current_year = datetime.now().year
         return current_year, current_year # Default to a single year partition for current year
 
-# --- Main Execution Function ---
-def execute_partition_steps(conn, table_to_partition_name, partition_by_field, dry_run=False):
-    new_partitioned_table_name = table_to_partition_name # The target partitioned table will have the same name
-    tmp_table_name = f"{table_to_partition_name}_etarc_tmp_old" # More unique temp table name
-    partitions_schema_name = "partitions" # Schema for individual partition tables
-
-    dropped_referencing_fks_info = [] # FKs from other tables pointing to this one
-    dropped_on_table_fks_info = []    # FKs defined on this table, pointing to others
-    dropped_triggers_info = []        # Triggers on this table
-    dependent_views_info = []         # Views depending on this table
-
-    related_tables_result = None # To store result from process_related_tables_for_partitioning
-
+def validate_database_connection(conn) -> None:
+    """Valida la conexión. Lanza si no puede ejecutar SELECT 1 ni siquiera luego de rollback."""
     try:
-        actual_schema = table_exists(conn, table_to_partition_name)
-        if not actual_schema:
-            raise ValueError(f"Table '{table_to_partition_name}' does not exist in any accessible schema.")
+        with conn.cursor() as test_cur:
+            test_cur.execute("SELECT 1")
+            result = test_cur.fetchone()
+            print_message(f"DEBUG: Database connection test successful: {result[0]}", "DEBUG")
+            # No return: éxito silencioso
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"ERROR: Database connection test failed: {e}", "ERROR")
+        print_message("Attempting to rollback and retry connection test...", "INFO")
+        try:
+            conn.rollback()
+            with conn.cursor() as test_cur:
+                test_cur.execute("SELECT 1")
+                result = test_cur.fetchone()
+                print_message(f"DEBUG: Database connection test successful after rollback: {result[0]}", "DEBUG")
+                # No return: éxito tras retry
+        except (psycopg2.Error, psycopg2.DatabaseError) as e2:
+            print_message(f"ERROR: Database connection test failed even after rollback: {e2}", "ERROR")
+            raise  # Propaga el error para que el caller lo maneje
 
-        print_message(f"Processing table {Style.BOLD}{actual_schema}.{table_to_partition_name}{Style.RESET} for partitioning by field '{Style.UNDERLINE}{partition_by_field}{Style.RESET}'.", "SUBHEADER")
+def validate_table_prerequisites(conn, table_to_partition_name, partition_by_field, actual_schema):
+    """Validates table exists and is ready for partitioning"""
+    # Get row count of original table
+    try:
+        with conn.cursor() as count_cur:
+            count_cur.execute(sql.SQL(COUNT_QUERY_TEMPLATE).format(
+                sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name)
+            ))
+            row_count = count_cur.fetchone()[0]
+            print_message(f"DEBUG: Original table has {row_count} rows", "DEBUG")
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"WARNING: Could not get row count from original table: {e}", "WARNING")
 
-        if is_table_partitioned(conn, new_partitioned_table_name, actual_schema):
-            print_message(f"Table {actual_schema}.{new_partitioned_table_name} is already a partitioned table. Skipping.", "INFO")
-            return {'success': True, 'message': 'Already partitioned', 'details': []} # Return a success-like structure
+    get_table_schema(conn, table_to_partition_name, actual_schema) # For debug/info
+    validate_partition_field(conn, table_to_partition_name, actual_schema, partition_by_field) # Critical validation
 
-        # --- Step 0: Initial Validations and Info Gathering ---
-        print_message(f"\n--- Validating and Preparing Original Table: {actual_schema}.{table_to_partition_name} ---", "SUBHEADER")
-        get_table_schema(conn, table_to_partition_name, actual_schema) # For debug/info
-        validate_partition_field(conn, table_to_partition_name, actual_schema, partition_by_field) # Critical validation
+    pk_info = get_primary_key_info(conn, table_to_partition_name, actual_schema)
+    original_pk_name = pk_info['name']
+    original_pk_columns = pk_info['columns']
+    if original_pk_name:
+        print_message(f"Original Primary Key found: Name='{original_pk_name}', Columns={original_pk_columns}", "INFO")
+    else:
+        print_message(f"No Primary Key found on {actual_schema}.{table_to_partition_name}.", "WARNING")
 
-        pk_info = get_primary_key_info(conn, table_to_partition_name, actual_schema)
-        original_pk_name = pk_info['name']
-        original_pk_columns = pk_info['columns']
-        if original_pk_name: print_message(f"Original Primary Key found: Name='{original_pk_name}', Columns={original_pk_columns}", "INFO")
-        else: print_message(f"No Primary Key found on {actual_schema}.{table_to_partition_name}.", "WARNING")
+    return pk_info
 
+# --- Helper Functions for Partition Steps ---
+def _initialize_partition_context(table_to_partition_name):
+    """Initialize the partition context with table names and tracking variables."""
+    return {
+        'new_partitioned_table_name': table_to_partition_name,
+        'tmp_table_name': f"{table_to_partition_name}{ETARC_TMP_SUFFIX}",
+        'partitions_schema_name': PARTITIONS_SCHEMA_NAME,
+        'dropped_referencing_fks_info': [],
+        'dropped_on_table_fks_info': [],
+        'dropped_triggers_info': [],
+        'dependent_views_info': [],
+        'related_tables_result': None
+    }
 
-        # --- Step 1.5: Process Related Tables (Critical - Moved Earlier) ---
-        print_message(f"\n[Step 1.5] Pre-processing related tables for partition field '{partition_by_field}' propagation...", "STEP")
-        # This step adds the etarc_<partition_field> to tables that FK to the current table_to_partition
-        # and populates it.
-        related_tables_result = process_related_tables_for_partitioning(
-            conn, table_to_partition_name, actual_schema, partition_by_field, dry_run
-        )
+def _validate_and_prepare_table(conn, table_to_partition_name, partition_by_field):
+    """Validate table existence and prerequisites, return schema and pk_info."""
+    actual_schema = table_exists(conn, table_to_partition_name)
+    if not actual_schema:
+        raise ValueError(f"Table '{table_to_partition_name}' does not exist in any accessible schema.")
 
-        if not related_tables_result['success']:
-            print_message(f"{Style.FAILURE} Processing of related tables failed for {actual_schema}.{table_to_partition_name}.", "FAILURE")
-            print_message("Aborting main partitioning process for this table due to related table errors. Review logs from 'process_related_tables_for_partitioning'.", "ERROR")
-            if not dry_run:
-                print_message("Rolling back any changes made during related table processing for this table...", "INFO")
-                conn.rollback() # Rollback changes from the failed related_tables_result processing
-            return related_tables_result # Return the failure details
+    print_message(f"DEBUG: Found table {table_to_partition_name} in schema: {actual_schema}", "DEBUG")
+    print_message(f"Processing table {Style.BOLD}{actual_schema}.{table_to_partition_name}{Style.RESET} for partitioning by field '{Style.UNDERLINE}{partition_by_field}{Style.RESET}'.", "SUBHEADER")
 
-        print_message(f"{Style.SUCCESS} Related tables pre-processing completed.", "SUCCESS")
-        # If dry_run or successful, changes by process_related_tables_for_partitioning are committed per table or simulated.
-        # The main transaction for execute_partition_steps continues.
+    debug_table_status(conn, table_to_partition_name, actual_schema, "Initial State")
+    validate_database_connection(conn)
 
-        # --- Main Partitioning Steps ---
-        print_message(f"\n[Step 1] Dropping dependent views on {actual_schema}.{table_to_partition_name}...", "STEP")
-        dependent_views = get_dependent_views(conn, table_to_partition_name, actual_schema)
-        if not dependent_views: print_message("No dependent views found.", "STEP_INFO")
-        for vs, vn, vdef in dependent_views:
-            dependent_views_info.append({'schema': vs, 'name': vn, 'definition': vdef})
-            s = sql.SQL("DROP VIEW IF EXISTS {}.{} CASCADE").format(sql.Identifier(vs), sql.Identifier(vn))
-            if dry_run: print_message(f"[Dry Run] Would drop view: {s.as_string(conn)}", "STEP_INFO")
-            else: conn.cursor().execute(s); print_message(f"Dropped view {vs}.{vn}", "STEP_INFO")
+    if is_table_partitioned(conn, table_to_partition_name, actual_schema):
+        print_message(f"Table {actual_schema}.{table_to_partition_name} is already a partitioned table. Skipping.", "INFO")
+        return actual_schema, None, {'success': True, 'message': 'Already partitioned', 'details': []}
 
-        print_message(f"\n[Step 2] Dropping Foreign Keys from OTHER tables that reference {actual_schema}.{table_to_partition_name}...", "STEP")
-        fks_referencing_source = get_foreign_keys(conn, table_to_partition_name, actual_schema, direction="to")
-        if not fks_referencing_source: print_message("No external FKs found referencing this table.", "STEP_INFO")
-        for fk in fks_referencing_source:
-            s_fk = sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}").format(
-                sql.Identifier(fk['referencing_schema']), sql.Identifier(fk['referencing_table']), sql.Identifier(fk['name']))
-            if dry_run: print_message(f"[Dry Run] External FK Drop: {s_fk.as_string(conn)}", "STEP_INFO")
-            else: conn.cursor().execute(s_fk); print_message(f"Dropped external FK '{fk['name']}' from {fk['referencing_schema']}.{fk['referencing_table']}", "STEP_INFO")
-            dropped_referencing_fks_info.append(fk)
-            # Note: Dropping supporting indexes for these external FKs is complex as index names might not be standard.
-            # This script version does not automatically drop indexes on OTHER tables that supported these FKs.
-            # This might need manual intervention or a more sophisticated index discovery.
+    print_message(f"\n--- Validating and Preparing Original Table: {actual_schema}.{table_to_partition_name} ---", "SUBHEADER")
+    pk_info = validate_table_prerequisites(conn, table_to_partition_name, partition_by_field, actual_schema)
+    
+    return actual_schema, pk_info, None
 
-        print_message(f"\n[Step 3] Dropping FKs defined ON {actual_schema}.{table_to_partition_name} (pointing to other tables)...", "STEP")
-        fks_on_this_table = get_foreign_keys(conn, table_to_partition_name, actual_schema, direction="on")
-        if not fks_on_this_table: print_message("No FKs found defined on this table.", "STEP_INFO")
-        for fk in fks_on_this_table:
-            dropped_on_table_fks_info.append(fk)
-            s_fk = sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}").format(
-                sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(fk['name']))
-            if dry_run: print_message(f"[Dry Run] Own FK Drop: {s_fk.as_string(conn)}", "STEP_INFO")
-            else: conn.cursor().execute(s_fk); print_message(f"Dropped own FK '{fk['name']}' on {actual_schema}.{table_to_partition_name}", "STEP_INFO")
-            # Indexes supporting these FKs (if any) on the table_to_partition_name will be gone with the table rename/recreate approach.
+def _process_related_tables_step(conn, table_to_partition_name, actual_schema, partition_by_field, dry_run):
+    """Execute Step 1.5: Process related tables for partitioning."""
+    print_message(f"\n[Step 1.5] Pre-processing related tables for partition field '{partition_by_field}' propagation...", "STEP")
+    
+    related_tables_result = process_related_tables_for_partitioning(
+        conn, table_to_partition_name, actual_schema, partition_by_field, dry_run
+    )
 
-        print_message(f"\n[Step 4] Dropping user-defined triggers on {actual_schema}.{table_to_partition_name}...", "STEP")
-        # drop_triggers itself handles dry_run and returns info
-        dropped_triggers_info = drop_triggers(conn, table_to_partition_name, actual_schema, dry_run)
-        if not dropped_triggers_info : print_message("No user-defined triggers found to drop or would be dropped.", "STEP_INFO")
+    if not related_tables_result['success']:
+        print_message(f"{Style.FAILURE} Processing of related tables failed for {actual_schema}.{table_to_partition_name}.", "FAILURE")
+        print_message("Aborting main partitioning process for this table due to related table errors. Review logs from 'process_related_tables_for_partitioning'.", "ERROR")
+        if not dry_run:
+            print_message("Rolling back any changes made during related table processing for this table...", "INFO")
+            conn.rollback()
+        raise ValueError(f"Related tables processing failed for {actual_schema}.{table_to_partition_name}")
 
-        if original_pk_name:
-            print_message(f"\n[Step 5] Dropping original PK '{original_pk_name}' from {actual_schema}.{table_to_partition_name}...", "STEP")
-            s = sql.SQL("ALTER TABLE {}.{} DROP CONSTRAINT IF EXISTS {}").format(
-                sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(original_pk_name))
-            if dry_run: print_message(f"[Dry Run] PK Drop: {s.as_string(conn)}", "STEP_INFO")
-            else: conn.cursor().execute(s); print_message(f"Dropped PK '{original_pk_name}'", "STEP_INFO")
+    print_message(f"{Style.SUCCESS} Related tables pre-processing completed.", "SUCCESS")
+    return related_tables_result
+
+def _drop_dependent_views(conn, table_to_partition_name, actual_schema, dry_run):
+    """Execute Step 1: Drop dependent views."""
+    print_message(f"\n[Step 1] Dropping dependent views on {actual_schema}.{table_to_partition_name}...", "STEP")
+    
+    dependent_views_info = []
+    dependent_views = get_dependent_views(conn, table_to_partition_name, actual_schema)
+    
+    if not dependent_views:
+        print_message("No dependent views found.", "STEP_INFO")
+    
+    for vs, vn, vdef in dependent_views:
+        dependent_views_info.append({'schema': vs, 'name': vn, 'definition': vdef})
+        s = sql.SQL("DROP VIEW IF EXISTS {}.{} CASCADE").format(sql.Identifier(vs), sql.Identifier(vn))
+        if dry_run:
+            print_message(f"[Dry Run] Would drop view: {s.as_string(conn)}", "STEP_INFO")
         else:
-            print_message(f"\n[Step 5] Skipping PK drop as no original PK was found.", "STEP_INFO")
+            conn.cursor().execute(s)
+            print_message(f"Dropped view {vs}.{vn}", "STEP_INFO")
+    
+    return dependent_views_info
 
-        print_message(f"\n[Step 6] Renaming {actual_schema}.{table_to_partition_name} to {actual_schema}.{tmp_table_name}...", "STEP")
-        if table_exists(conn, tmp_table_name, actual_schema):
-            # Safety: if temp table from a failed previous run exists, drop it in non-dry-run.
-            if not dry_run:
-                print_message(f"Temporary table {actual_schema}.{tmp_table_name} already exists. Dropping it...", "WARNING")
-                conn.cursor().execute(sql.SQL("DROP TABLE IF EXISTS {}.{}").format(sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)))
-            else:
-                print_message(f"[Dry Run] Temporary table {actual_schema}.{tmp_table_name} already exists. Would attempt to drop if not dry run.", "WARNING")
-                # In dry run, we can't proceed if it exists as rename would fail.
-                # raise Exception(f"[Dry Run Abort] Temp table {actual_schema}.{tmp_table_name} already exists. Cannot simulate rename.")
-
-        stmt_rename = sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(tmp_table_name))
-        if dry_run: print_message(f"[Dry Run] Rename to temp: {stmt_rename.as_string(conn)}", "STEP_INFO")
-        else: conn.cursor().execute(stmt_rename); print_message(f"Renamed original table to {actual_schema}.{tmp_table_name}", "STEP_INFO")
-
-        print_message(f"\n--- Creating New Partitioned Table {actual_schema}.{new_partitioned_table_name} & Migrating Data ---", "SUBHEADER")
-
-        print_message(f"\n[Step 7] Creating new partitioned table shell {actual_schema}.{new_partitioned_table_name}...", "STEP")
-        # Create the partitioned table shell (LIKE includes defaults, comments, storage options but NOT constraints/indexes)
-        stmt_create_part_shell = sql.SQL("CREATE TABLE {}.{} (LIKE {}.{} INCLUDING DEFAULTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE ({})").format(
-            sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name),
-            sql.Identifier(actual_schema), sql.Identifier(tmp_table_name), # Likeness from temp table
-            sql.Identifier(partition_by_field))
-        if dry_run: print_message(f"[Dry Run] Create partitioned shell: {stmt_create_part_shell.as_string(conn)}", "STEP_INFO")
-        else: conn.cursor().execute(stmt_create_part_shell); print_message(f"Created partitioned table shell {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
-
-        print_message(f"\n[Step 9] Ensuring partitions schema '{partitions_schema_name}' exists...", "STEP")
-        stmt_create_schema = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(partitions_schema_name))
-        if dry_run: print_message(f"[Dry Run] Ensure schema: {stmt_create_schema.as_string(conn)}", "STEP_INFO")
-        else: conn.cursor().execute(stmt_create_schema); print_message(f"Schema '{partitions_schema_name}' ensured.", "STEP_INFO")
-
-        print_message(f"\n[Step 10] Determining year range for partitions from {actual_schema}.{tmp_table_name}...", "STEP")
-        start_year, end_year = get_year_range(conn, tmp_table_name, actual_schema, partition_by_field)
-        current_year = datetime.now().year
-        if current_year > end_year:
-            end_year = current_year
-        print_message(f"Data year range found: {start_year} to {end_year} (inclusive). Partitions will be created up to {end_year + 1}.", "STEP_INFO")
-
-        print_message(f"\n[Step 11] Creating yearly partitions for {actual_schema}.{new_partitioned_table_name}...", "STEP")
-        # Create partitions for the determined range + one future year
-        # Handle case where start_year might be > end_year if table is empty or only has NULLs
-        if start_year > end_year :
-            print_message(f"Warning: start_year ({start_year}) is greater than end_year ({end_year}). This can happen with empty tables or all NULLs in partition field. Creating a default partition for current year.", "WARNING")
-            current_year_for_default_part = datetime.now().year
-            start_year = current_year_for_default_part
-            end_year = current_year_for_default_part # Will create for current year and current_year + 1
-
-        for year_val in range(start_year, end_year + 2): # +2 to create one year beyond max data year
-            part_table_actual_name = f"{new_partitioned_table_name}_y{year_val}"
-            from_date_str = f"{year_val}-01-01"
-            to_date_str = f"{year_val + 1}-01-01" # Exclusive upper bound
-
-            stmt_create_actual_part = sql.SQL("CREATE TABLE IF NOT EXISTS {}.{} PARTITION OF {}.{} FOR VALUES FROM (%s) TO (%s)").format(
-                sql.Identifier(partitions_schema_name), sql.Identifier(part_table_actual_name),
-                sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name))
-
-            if dry_run: print_message(f"[Dry Run] Would ensure partition: {stmt_create_actual_part.as_string(conn)} with ('{from_date_str}', '{to_date_str}')", "STEP_INFO")
-            else:
-                try:
-                    conn.cursor().execute(stmt_create_actual_part, (from_date_str, to_date_str))
-                    print_message(f"Ensured partition {partitions_schema_name}.{part_table_actual_name} for {from_date_str} TO {to_date_str}", "STEP_INFO")
-                except psycopg2.Error as e_part: # Catch specific error if partition already exists or overlaps
-                    if "already exists" in str(e_part) or "would overlap" in str(e_part):
-                        print_message(f"Partition for year {year_val} ({partitions_schema_name}.{part_table_actual_name}) likely already exists or overlaps. Skipping creation. ({e_part})", "WARNING")
-                        conn.rollback() # Rollback the failed CREATE TABLE PARTITION OF
-                    else:
-                        print_message(f"Error creating partition for year {year_val}: {e_part}", "ERROR")
-                        raise # Re-raise for more serious issues
-
-
-        print_message(f"\n[Step 12] Copying data from {actual_schema}.{tmp_table_name} to {actual_schema}.{new_partitioned_table_name}...", "STEP")
-        # This will route data to appropriate partitions.
-        stmt_copy_data = sql.SQL("INSERT INTO {}.{} SELECT * FROM {}.{}").format(
-            sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name),
-            sql.Identifier(actual_schema), sql.Identifier(tmp_table_name))
-        if dry_run: print_message(f"[Dry Run] Data copy: {stmt_copy_data.as_string(conn)}", "STEP_INFO")
+def _drop_external_foreign_keys(conn, table_to_partition_name, actual_schema, dry_run):
+    """Execute Step 2: Drop foreign keys from other tables that reference this table."""
+    print_message(f"\n[Step 2] Dropping Foreign Keys from OTHER tables that reference {actual_schema}.{table_to_partition_name}...", "STEP")
+    
+    dropped_referencing_fks_info = []
+    fks_referencing_source = get_foreign_keys(conn, table_to_partition_name, actual_schema, direction="to")
+    
+    if not fks_referencing_source:
+        print_message("No external FKs found referencing this table.", "STEP_INFO")
+    
+    for fk in fks_referencing_source:
+        s_fk = sql.SQL(ALTER_TABLE_DROP_CONST_QUERY).format(
+            sql.Identifier(fk['referencing_schema']), sql.Identifier(fk['referencing_table']), sql.Identifier(fk['name']))
+        if dry_run:
+            print_message(f"[Dry Run] External FK Drop: {s_fk.as_string(conn)}", "STEP_INFO")
         else:
+            conn.cursor().execute(s_fk)
+            print_message(f"Dropped external FK '{fk['name']}' from {fk['referencing_schema']}.{fk['referencing_table']}", "STEP_INFO")
+        dropped_referencing_fks_info.append(fk)
+    
+    return dropped_referencing_fks_info
+
+def _drop_own_foreign_keys(conn, table_to_partition_name, actual_schema, dry_run):
+    """Execute Step 3: Drop foreign keys defined on this table."""
+    print_message(f"\n[Step 3] Dropping FKs defined ON {actual_schema}.{table_to_partition_name} (pointing to other tables)...", "STEP")
+    
+    dropped_on_table_fks_info = []
+    fks_on_this_table = get_foreign_keys(conn, table_to_partition_name, actual_schema, direction="on")
+    
+    if not fks_on_this_table:
+        print_message("No FKs found defined on this table.", "STEP_INFO")
+    
+    for fk in fks_on_this_table:
+        dropped_on_table_fks_info.append(fk)
+        s_fk = sql.SQL(ALTER_TABLE_DROP_CONST_QUERY).format(
+            sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(fk['name']))
+        if dry_run:
+            print_message(f"[Dry Run] Own FK Drop: {s_fk.as_string(conn)}", "STEP_INFO")
+        else:
+            conn.cursor().execute(s_fk)
+            print_message(f"Dropped own FK '{fk['name']}' on {actual_schema}.{table_to_partition_name}", "STEP_INFO")
+    
+    return dropped_on_table_fks_info
+
+def _drop_table_triggers(conn, table_to_partition_name, actual_schema, dry_run):
+    """Execute Step 4: Drop user-defined triggers."""
+    print_message(f"\n[Step 4] Dropping user-defined triggers on {actual_schema}.{table_to_partition_name}...", "STEP")
+    
+    dropped_triggers_info = drop_triggers(conn, table_to_partition_name, actual_schema, dry_run)
+    if not dropped_triggers_info:
+        print_message("No user-defined triggers found to drop or would be dropped.", "STEP_INFO")
+    
+    return dropped_triggers_info
+
+def _drop_primary_key(conn, table_to_partition_name, actual_schema, pk_info, dry_run):
+    """Execute Step 5: Drop primary key constraint."""
+    original_pk_name = pk_info['name']
+    
+    if original_pk_name:
+        print_message(f"\n[Step 5] Dropping original PK '{original_pk_name}' from {actual_schema}.{table_to_partition_name}...", "STEP")
+        s = sql.SQL(ALTER_TABLE_DROP_CONST_QUERY).format(
+            sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(original_pk_name))
+        if dry_run:
+            print_message(f"[Dry Run] PK Drop: {s.as_string(conn)}", "STEP_INFO")
+        else:
+            conn.cursor().execute(s)
+            print_message(f"Dropped PK '{original_pk_name}'", "STEP_INFO")
+    else:
+        print_message("\n[Step 5] Skipping PK drop as no original PK was found.", "STEP_INFO")
+
+def _rename_table_to_temp(conn, table_to_partition_name, tmp_table_name, actual_schema, dry_run):
+    """Execute Step 6: Rename original table to temporary name."""
+    print_message(f"\n[Step 6] Renaming {actual_schema}.{table_to_partition_name} to {actual_schema}.{tmp_table_name}...", "STEP")
+
+    # Check if original table still exists before rename
+    original_exists = table_exists(conn, table_to_partition_name, actual_schema)
+    print_message(f"DEBUG: Original table {actual_schema}.{table_to_partition_name} exists: {original_exists}", "DEBUG")
+
+    if not original_exists:
+        raise ValueError(f"Original table {actual_schema}.{table_to_partition_name} no longer exists! Cannot proceed with rename.")
+
+    if table_exists(conn, tmp_table_name, actual_schema):
+        # Safety: if temp table from a failed previous run exists, drop it in non-dry-run.
+        if not dry_run:
+            print_message(f"Temporary table {actual_schema}.{tmp_table_name} already exists. Dropping it...", "WARNING")
+            conn.cursor().execute(sql.SQL("DROP TABLE IF EXISTS {}.{}").format(sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)))
+            print_message(f"DEBUG: Dropped existing temporary table {actual_schema}.{tmp_table_name}", "DEBUG")
+        else:
+            print_message(f"[Dry Run] Temporary table {actual_schema}.{tmp_table_name} already exists. Would attempt to drop if not dry run.", "WARNING")
+
+    stmt_rename = sql.SQL("ALTER TABLE {}.{} RENAME TO {}").format(
+        sql.Identifier(actual_schema), sql.Identifier(table_to_partition_name), sql.Identifier(tmp_table_name)
+    )
+    print_message(f"DEBUG: About to execute rename SQL: {stmt_rename.as_string(conn)}", "DEBUG")
+
+    if dry_run:
+        print_message(f"[Dry Run] Rename to temp: {stmt_rename.as_string(conn)}", "STEP_INFO")
+    else:
+        try:
+            conn.cursor().execute(stmt_rename)
+            print_message(f"SUCCESS: Renamed original table to {actual_schema}.{tmp_table_name}", "STEP_INFO")
+
+            # Verify the rename was successful
+            tmp_exists = table_exists(conn, tmp_table_name, actual_schema)
+            original_still_exists = table_exists(conn, table_to_partition_name, actual_schema)
+            print_message(f"DEBUG: After rename - Temp table exists: {tmp_exists}, Original table exists: {original_still_exists}", "DEBUG")
+
+            if not tmp_exists or original_still_exists:
+                raise ValueError(f"Rename verification failed! Temp exists: {tmp_exists}, Original still exists: {original_still_exists}")
+
+            # Debug: Check table status after rename
+            debug_table_status(conn, tmp_table_name, actual_schema, "After Rename - Temp Table")
+            debug_table_status(conn, table_to_partition_name, actual_schema, "After Rename - Original Name")
+
+        except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
+            print_message(f"ERROR: Failed to rename table: {e}", "ERROR")
+            raise
+
+def _create_partitioned_table_and_migrate_data(conn, actual_schema, context, partition_by_field, dry_run):
+    """Execute Steps 7-12: Create partitioned table, partitions, and migrate data."""
+    new_partitioned_table_name = context['new_partitioned_table_name']
+    tmp_table_name = context['tmp_table_name']
+    partitions_schema_name = context['partitions_schema_name']
+    
+    print_message(f"\n--- Creating New Partitioned Table {actual_schema}.{new_partitioned_table_name} & Migrating Data ---", "SUBHEADER")
+
+    _create_partitioned_table_shell(conn, actual_schema, new_partitioned_table_name, tmp_table_name, partition_by_field, dry_run)
+    _ensure_partitions_schema(conn, partitions_schema_name, dry_run)
+    _create_yearly_partitions(conn, actual_schema, new_partitioned_table_name, tmp_table_name, partitions_schema_name, partition_by_field, dry_run)
+    _copy_data_to_partitioned_table(conn, actual_schema, new_partitioned_table_name, tmp_table_name, dry_run)
+
+def _create_partitioned_table_shell(conn, actual_schema, new_partitioned_table_name, tmp_table_name, partition_by_field, dry_run):
+    """Execute Step 7: Create new partitioned table shell."""
+    print_message(f"\n[Step 7] Creating new partitioned table shell {actual_schema}.{new_partitioned_table_name}...", "STEP")
+
+    # Verify temp table exists before creating partitioned table
+    temp_exists_before_create = table_exists(conn, tmp_table_name, actual_schema)
+    print_message(f"DEBUG: Temp table {actual_schema}.{tmp_table_name} exists before create: {temp_exists_before_create}", "DEBUG")
+
+    if not temp_exists_before_create:
+        raise ValueError(f"Temp table {actual_schema}.{tmp_table_name} does not exist! Cannot create partitioned table based on it.")
+
+    # Check if new partitioned table name already exists (shouldn't after rename)
+    new_table_exists_before = table_exists(conn, new_partitioned_table_name, actual_schema)
+    print_message(f"DEBUG: New table {actual_schema}.{new_partitioned_table_name} exists before create: {new_table_exists_before}", "DEBUG")
+
+    if new_table_exists_before:
+        raise ValueError(f"New table {actual_schema}.{new_partitioned_table_name} already exists! This should not happen after rename.")
+
+    # Create the partitioned table shell
+    stmt_create_part_shell = sql.SQL("CREATE TABLE {}.{} (LIKE {}.{} INCLUDING DEFAULTS INCLUDING STORAGE INCLUDING COMMENTS) PARTITION BY RANGE ({})").format(
+        sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name),
+        sql.Identifier(actual_schema), sql.Identifier(tmp_table_name),
+        sql.Identifier(partition_by_field))
+
+    print_message(f"DEBUG: About to execute CREATE TABLE SQL: {stmt_create_part_shell.as_string(conn)}", "DEBUG")
+
+    if dry_run:
+        print_message(f"[Dry Run] Create partitioned shell: {stmt_create_part_shell.as_string(conn)}", "STEP_INFO")
+    else:
+        try:
+            conn.cursor().execute(stmt_create_part_shell)
+            print_message(f"SUCCESS: Created partitioned table shell {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
+
+            # Verify the table was created successfully
+            new_table_exists_after = table_exists(conn, new_partitioned_table_name, actual_schema)
+            print_message(f"DEBUG: New partitioned table exists after create: {new_table_exists_after}", "DEBUG")
+
+            if not new_table_exists_after:
+                raise RuntimeError(f"Partitioned table creation verification failed! Table {actual_schema}.{new_partitioned_table_name} does not exist after CREATE.")
+
+            # Check if it's actually partitioned
+            is_partitioned = is_table_partitioned(conn, new_partitioned_table_name, actual_schema)
+            print_message(f"DEBUG: New table is partitioned: {is_partitioned}", "DEBUG")
+
+            if not is_partitioned:
+                raise RuntimeError(f"Table {actual_schema}.{new_partitioned_table_name} was created but is not partitioned!")
+
+            # Debug: Check new table status after creation
+            debug_table_status(conn, new_partitioned_table_name, actual_schema, "After Create - New Partitioned Table")
+
+        except Exception as e:
+            print_message(f"ERROR: Failed to create partitioned table: {e}", "ERROR")
+            raise
+
+def _ensure_partitions_schema(conn, partitions_schema_name, dry_run):
+    """Execute Step 9: Ensure partitions schema exists."""
+    print_message(f"\n[Step 9] Ensuring partitions schema '{partitions_schema_name}' exists...", "STEP")
+    stmt_create_schema = sql.SQL("CREATE SCHEMA IF NOT EXISTS {}").format(sql.Identifier(partitions_schema_name))
+    if dry_run:
+        print_message(f"[Dry Run] Ensure schema: {stmt_create_schema.as_string(conn)}", "STEP_INFO")
+    else:
+        conn.cursor().execute(stmt_create_schema)
+        print_message(f"Schema '{partitions_schema_name}' ensured.", "STEP_INFO")
+
+def _create_yearly_partitions(conn, actual_schema, new_partitioned_table_name, tmp_table_name, partitions_schema_name, partition_by_field, dry_run):
+    """Execute Steps 10-11: Determine year range and create yearly partitions."""
+    print_message(f"\n[Step 10] Determining year range for partitions from {actual_schema}.{tmp_table_name}...", "STEP")
+    start_year, end_year = get_year_range(conn, tmp_table_name, actual_schema, partition_by_field)
+    current_year = datetime.now().year
+    if current_year > end_year:
+        end_year = current_year
+    print_message(f"Data year range found: {start_year} to {end_year} (inclusive). Partitions will be created up to {end_year + 1}.", "STEP_INFO")
+
+    print_message(f"\n[Step 11] Creating yearly partitions for {actual_schema}.{new_partitioned_table_name}...", "STEP")
+    
+    # Handle case where start_year might be > end_year if table is empty or only has NULLs
+    if start_year > end_year:
+        print_message(f"Warning: start_year ({start_year}) is greater than end_year ({end_year}). This can happen with empty tables or all NULLs in partition field. Creating a default partition for current year.", "WARNING")
+        current_year_for_default_part = datetime.now().year
+        start_year = current_year_for_default_part
+        end_year = current_year_for_default_part
+
+    for year_val in range(start_year, end_year + 2):  # +2 to create one year beyond max data year
+        part_table_actual_name = f"{new_partitioned_table_name}_y{year_val}"
+        from_date_str = f"{year_val}-01-01"
+        to_date_str = f"{year_val + 1}-01-01"  # Exclusive upper bound
+
+        stmt_create_actual_part = sql.SQL("CREATE TABLE IF NOT EXISTS {}.{} PARTITION OF {}.{} FOR VALUES FROM (%s) TO (%s)").format(
+            sql.Identifier(partitions_schema_name), sql.Identifier(part_table_actual_name),
+            sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name))
+
+        if dry_run:
+            print_message(f"[Dry Run] Would ensure partition: {stmt_create_actual_part.as_string(conn)} with ('{from_date_str}', '{to_date_str}')", "STEP_INFO")
+        else:
+            try:
+                conn.cursor().execute(stmt_create_actual_part, (from_date_str, to_date_str))
+                print_message(f"Ensured partition {partitions_schema_name}.{part_table_actual_name} for {from_date_str} TO {to_date_str}", "STEP_INFO")
+            except psycopg2.Error as e_part:
+                if "already exists" in str(e_part) or "would overlap" in str(e_part):
+                    print_message(f"Partition for year {year_val} ({partitions_schema_name}.{part_table_actual_name}) likely already exists or overlaps. Skipping creation. ({e_part})", "WARNING")
+                    conn.rollback()
+                else:
+                    print_message(f"Error creating partition for year {year_val}: {e_part}", "ERROR")
+                    raise
+
+def _copy_data_to_partitioned_table(conn, actual_schema, new_partitioned_table_name, tmp_table_name, dry_run):
+    """Execute Step 12: Copy data from temp table to partitioned table."""
+    print_message(f"\n[Step 12] Copying data from {actual_schema}.{tmp_table_name} to {actual_schema}.{new_partitioned_table_name}...", "STEP")
+
+    # Before copying, verify both tables exist
+    temp_exists_before_copy = table_exists(conn, tmp_table_name, actual_schema)
+    new_exists_before_copy = table_exists(conn, new_partitioned_table_name, actual_schema)
+    print_message(f"DEBUG: Before copy - Temp table exists: {temp_exists_before_copy}, New table exists: {new_exists_before_copy}", "DEBUG")
+
+    if not temp_exists_before_copy:
+        raise ValueError(f"Temp table {actual_schema}.{tmp_table_name} does not exist before data copy!")
+    if not new_exists_before_copy:
+        raise ValueError(f"New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before data copy!")
+
+    # Get row count from temp table before copy
+    try:
+        with conn.cursor() as count_cur:
+            count_cur.execute(sql.SQL(COUNT_QUERY_TEMPLATE).format(
+                sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)
+            ))
+            temp_row_count = count_cur.fetchone()[0]
+            print_message(f"DEBUG: Temp table has {temp_row_count} rows to copy", "DEBUG")
+    except (psycopg2.Error, psycopg2.DatabaseError) as e:
+        print_message(f"WARNING: Could not get row count from temp table: {e}", "WARNING")
+        temp_row_count = "UNKNOWN"
+
+    # This will route data to appropriate partitions.
+    stmt_copy_data = sql.SQL("INSERT INTO {}.{} SELECT * FROM {}.{}").format(
+        sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name),
+        sql.Identifier(actual_schema), sql.Identifier(tmp_table_name))
+
+    print_message(f"DEBUG: About to execute data copy SQL: {stmt_copy_data.as_string(conn)}", "DEBUG")
+
+    if dry_run:
+        print_message(f"[Dry Run] Data copy: {stmt_copy_data.as_string(conn)}", "STEP_INFO")
+    else:
+        try:
             with conn.cursor() as cur:
                 cur.execute(stmt_copy_data)
-                print_message(f"Copied {cur.rowcount} rows from temp table to {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
+                copied_rows = cur.rowcount
+                print_message(f"SUCCESS: Copied {copied_rows} rows from temp table to {actual_schema}.{new_partitioned_table_name}", "STEP_INFO")
 
-        print_message(f"\n--- Data migration to {actual_schema}.{new_partitioned_table_name} complete. ---", "SUCCESS")
+                # Verify copy was successful by checking row count in new table
+                cur.execute(sql.SQL(COUNT_QUERY_TEMPLATE).format(
+                    sql.Identifier(actual_schema), sql.Identifier(new_partitioned_table_name)
+                ))
+                new_table_row_count = cur.fetchone()[0]
+                print_message(f"DEBUG: New partitioned table now has {new_table_row_count} rows", "DEBUG")
 
-        # Information about dropped FKs - these are NOT recreated by this script.
-        if dropped_referencing_fks_info:
-            print_message("\nINFO: The following FKs from OTHER tables (that were referencing the original table) were DROPPED and NOT automatically recreated:", "IMPORTANT")
-            for fk_info in dropped_referencing_fks_info: print_message(f"  - FK '{fk_info['name']}' on {fk_info['referencing_schema']}.{fk_info['referencing_table']} (Def: {fk_info['definition']})", "INFO")
+                if temp_row_count != "UNKNOWN" and new_table_row_count != temp_row_count:
+                    print_message(f"WARNING: Row count mismatch! Temp: {temp_row_count}, New: {new_table_row_count}", "WARNING")
+                elif temp_row_count != "UNKNOWN":
+                    print_message(f"DEBUG: Row count verification successful: {new_table_row_count} rows", "DEBUG")
 
-        if dropped_on_table_fks_info:
-            print_message("\nINFO: The following FKs defined ON the original table (pointing to other tables) were effectively removed during recreation and NOT automatically recreated on the new partitioned table:", "IMPORTANT")
-            for fk_info in dropped_on_table_fks_info: print_message(f"  - Original FK '{fk_info['name']}' (Def: {fk_info['definition']})", "INFO")
+                # Debug: Check table status after data copy
+                debug_table_status(conn, new_partitioned_table_name, actual_schema, "After Data Copy - New Table")
 
-        if not dry_run:
-            print_message("\nCommitting main partitioning changes...", "DB_CONNECT")
+        except (psycopg2.Error, psycopg2.DatabaseError) as e:
+            print_message(f"ERROR: Failed to copy data: {e}", "ERROR")
+            raise
+
+    print_message(f"\n--- Data migration to {actual_schema}.{new_partitioned_table_name} complete. ---", "SUCCESS")
+
+def _print_dropped_constraints_info(dropped_referencing_fks_info, dropped_on_table_fks_info):
+    """Print information about dropped foreign key constraints."""
+    if dropped_referencing_fks_info:
+        print_message("\nINFO: The following FKs from OTHER tables (that were referencing the original table) were DROPPED and NOT automatically recreated:", "IMPORTANT")
+        for fk_info in dropped_referencing_fks_info:
+            print_message(f"  - FK '{fk_info['name']}' on {fk_info['referencing_schema']}.{fk_info['referencing_table']} (Def: {fk_info['definition']})", "INFO")
+
+    if dropped_on_table_fks_info:
+        print_message("\nINFO: The following FKs defined ON the original table (pointing to other tables) were effectively removed during recreation and NOT automatically recreated on the new partitioned table:", "IMPORTANT")
+        for fk_info in dropped_on_table_fks_info:
+            print_message(f"  - Original FK '{fk_info['name']}' (Def: {fk_info['definition']})", "INFO")
+
+def _finalize_partition_process(conn, actual_schema, context, dry_run):
+    """Execute final verification, commit, and cleanup steps."""
+    new_partitioned_table_name = context['new_partitioned_table_name']
+    tmp_table_name = context['tmp_table_name']
+    
+    if not dry_run:
+        # Final verification before commit
+        print_message("\n[Final Verification] Checking all tables before commit...", "STEP")
+        final_temp_exists = table_exists(conn, tmp_table_name, actual_schema)
+        final_new_exists = table_exists(conn, new_partitioned_table_name, actual_schema)
+        final_is_partitioned = is_table_partitioned(conn, new_partitioned_table_name, actual_schema)
+
+        print_message(f"DEBUG: Final check - Temp exists: {final_temp_exists}, New exists: {final_new_exists}, Is partitioned: {final_is_partitioned}", "DEBUG")
+
+        if not final_new_exists:
+            raise ValueError(f"CRITICAL: New partitioned table {actual_schema}.{new_partitioned_table_name} does not exist before commit!")
+        if not final_is_partitioned:
+            raise ValueError(f"CRITICAL: Table {actual_schema}.{new_partitioned_table_name} exists but is not partitioned before commit!")
+
+        print_message("Committing main partitioning changes...", "DB_CONNECT")
+        conn.commit()
+        print_message("SUCCESS: Transaction committed successfully", "SUCCESS")
+    else:
+        print_message("\n[Dry Run] Main partitioning changes would be committed here. Rolling back simulation.", "DB_CONNECT")
+        conn.rollback()
+
+    print_message(f"\n{'[Dry Run] Simulated' if dry_run else 'Successfully completed'} main partitioning process for {actual_schema}.{new_partitioned_table_name}.", "SUCCESS" if not dry_run else "INFO")
+
+    # Dropping the temporary table is now a separate, committed step if not dry_run
+    if not dry_run:
+        print_message(f"\n[Step 15] Dropping temporary table {actual_schema}.{tmp_table_name}...", "STEP")
+        stmt_drop_tmp_table = sql.SQL("DROP TABLE IF EXISTS {}.{}").format(
+            sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)
+        )
+        try:
+            with conn.cursor() as cur:
+                cur.execute(stmt_drop_tmp_table)
             conn.commit()
-        else:
-            print_message("\n[Dry Run] Main partitioning changes would be committed here. Rolling back simulation.", "DB_CONNECT")
-            conn.rollback()
 
-        print_message(f"\n{'[Dry Run] Simulated' if dry_run else 'Successfully completed'} main partitioning process for {actual_schema}.{new_partitioned_table_name}.", "SUCCESS" if not dry_run else "INFO")
-
-        # Dropping the temporary table is now a separate, committed step if not dry_run
-        if not dry_run:
-            print_message(f"\n[Step 15] Dropping temporary table {actual_schema}.{tmp_table_name}...", "STEP")
-            stmt_drop_tmp_table = sql.SQL("DROP TABLE IF EXISTS {}.{}").format(
-                sql.Identifier(actual_schema), sql.Identifier(tmp_table_name)
-            )
-            try:
-                # Dropping table often needs to be outside transaction or in its own.
-                with conn.cursor() as cur:
-                    cur.execute(stmt_drop_tmp_table)
+            if table_exists(conn, tmp_table_name, actual_schema):
+                print_message(
+                    f"Warning: {actual_schema}.{tmp_table_name} still appears to exist after DROP+COMMIT. "
+                    "Check schema/search_path or concurrent sessions.",
+                    "WARNING"
+                )
+            else:
                 print_message(f"Successfully dropped temporary table {actual_schema}.{tmp_table_name}.", "SUCCESS")
-            except Exception as e_drop_tmp:
-                print_message(f"Error dropping temporary table {actual_schema}.{tmp_table_name}: {e_drop_tmp}", "ERROR")
-                print_message(f"  You may need to drop it manually: {stmt_drop_tmp_table.as_string(conn)}", "INFO")
-        else:
-            print_message(f"\n[Step 15] [Dry Run] Would drop temporary table {actual_schema}.{tmp_table_name}.", "STEP_INFO")
+        except (psycopg2.Error, psycopg2.DatabaseError) as e_drop_tmp:
+            conn.rollback()
+            print_message(f"Error dropping temporary table {actual_schema}.{tmp_table_name}: {e_drop_tmp}", "ERROR")
+            print_message(f"  You may need to drop it manually: {stmt_drop_tmp_table.as_string(conn)}", "INFO")
+    else:
+        print_message(f"\n[Step 15] [Dry Run] Would drop temporary table {actual_schema}.{tmp_table_name}.", "STEP_INFO")
 
+def _execute_main_partitioning_steps(conn, table_to_partition_name, actual_schema, context, pk_info, dry_run):
+    """Execute the main sequence of partitioning steps."""
+    print_message("\n--- Main Partitioning Steps ---", "SUBHEADER")
+    
+    context['dependent_views_info'] = _drop_dependent_views(
+        conn, table_to_partition_name, actual_schema, dry_run
+    )
+    
+    context['dropped_referencing_fks_info'] = _drop_external_foreign_keys(
+        conn, table_to_partition_name, actual_schema, dry_run
+    )
+    
+    context['dropped_on_table_fks_info'] = _drop_own_foreign_keys(
+        conn, table_to_partition_name, actual_schema, dry_run
+    )
+    
+    context['dropped_triggers_info'] = _drop_table_triggers(
+        conn, table_to_partition_name, actual_schema, dry_run
+    )
+    
+    _drop_primary_key(conn, table_to_partition_name, actual_schema, pk_info, dry_run)
 
-        print_message(f"\n{Style.SUCCESS} Full partitioning process for {actual_schema}.{new_partitioned_table_name} {'simulated.' if dry_run else 'completed successfully.'}", "SUCCESS")
-        return related_tables_result # Return the result from Step 1.5 (should be success if we got here)
+def _execute_table_transformation_steps(conn, table_to_partition_name, actual_schema, context, partition_by_field, dry_run):
+    """Execute table rename and partitioned table creation steps."""
+    _rename_table_to_temp(conn, table_to_partition_name, context['tmp_table_name'], actual_schema, dry_run)
+    
+    _create_partitioned_table_and_migrate_data(
+        conn, actual_schema, context, partition_by_field, dry_run
+    )
 
-    except Exception as e:
-        error_msg = f"ERROR during partitioning of {actual_schema if 'actual_schema' in locals() else ''}.{table_to_partition_name if 'table_to_partition_name' in locals() else 'UNKNOWN'}: {e}"
-        print_message(error_msg, "ERROR")
-        traceback.print_exc()
-        if conn and not conn.closed:
-            try:
-                if not dry_run: conn.rollback()
-                print_message("Rolled back transaction due to error.", "DB_CONNECT")
-            except Exception as rb_e: print_message(f"Rollback error: {rb_e}", "ERROR")
-        # Return the related_tables_result if it exists and indicates failure, otherwise None for main partitioning error
-        if related_tables_result and not related_tables_result.get('success', True):
-            return related_tables_result # Propagate earlier failure
-        return None # Indicates a failure within this function's main steps
+def _execute_finalization_steps(conn, actual_schema, context, dry_run):
+    """Execute information summary and final verification steps."""
+    _print_dropped_constraints_info(
+        context['dropped_referencing_fks_info'], 
+        context['dropped_on_table_fks_info']
+    )
+
+    _finalize_partition_process(
+        conn, actual_schema, context, dry_run
+    )
+
+def _handle_partition_error(e, conn, actual_schema, table_to_partition_name, context, dry_run):
+    """Handle partition process errors with proper rollback."""
+    error_msg = f"ERROR during partitioning of {actual_schema if 'actual_schema' in locals() else ''}.{table_to_partition_name if 'table_to_partition_name' in locals() else 'UNKNOWN'}: {e}"
+    print_message(error_msg, "ERROR")
+    traceback.print_exc()
+    
+    if conn and not conn.closed:
+        try:
+            if not dry_run: 
+                conn.rollback()
+            print_message("Rolled back transaction due to error.", "DB_CONNECT")
+        except (psycopg2.Error, psycopg2.DatabaseError) as rb_e:
+            print_message(f"Rollback error: {rb_e}", "ERROR")
+    
+    # Return the related_tables_result if it exists and indicates failure, otherwise None for main partitioning error
+    if context and context.get('related_tables_result') and not context['related_tables_result'].get('success', True):
+        return context['related_tables_result'] # Propagate earlier failure
+    return None # Indicates a failure within this function's main steps
+
+# --- Main Execution Function ---
+def execute_partition_steps(conn, table_to_partition_name, partition_by_field, dry_run=False):
+    context = _initialize_partition_context(table_to_partition_name)
+    
+    try:
+        # Initial validation and preparation
+        actual_schema, pk_info, early_return = _validate_and_prepare_table(
+            conn, table_to_partition_name, partition_by_field
+        )
+        if early_return:
+            return early_return
+
+        # Step 1.5: Process related tables
+        context['related_tables_result'] = _process_related_tables_step(
+            conn, table_to_partition_name, actual_schema, partition_by_field, dry_run
+        )
+        
+        # Main partitioning steps
+        _execute_main_partitioning_steps(
+            conn, table_to_partition_name, actual_schema, context, pk_info, dry_run
+        )
+
+        # Table rename and partitioned table creation
+        _execute_table_transformation_steps(
+            conn, table_to_partition_name, actual_schema, context, partition_by_field, dry_run
+        )
+
+        # Information summary and finalization
+        _execute_finalization_steps(conn, actual_schema, context, dry_run)
+
+        print_message(f"\n{Style.SUCCESS} Full partitioning process for {actual_schema}.{context['new_partitioned_table_name']} {'simulated.' if dry_run else 'completed successfully.'}", "SUCCESS")
+        return context['related_tables_result']
+
+    except (psycopg2.Error, psycopg2.DatabaseError, ValueError) as e:
+        return _handle_partition_error(e, conn, actual_schema, table_to_partition_name, context, dry_run)
 
 def print_final_summary(summary_data):
     """Prints the final summary of the migration."""
@@ -1320,6 +1858,7 @@ def main_flow(dry_run=False):
     finally:
         print_final_summary(migration_summary)
         close_connection_if_open(locals().get('conn'))
+        print_message("Execute './gradlew update.database -Dforce=yes' to complete the operation", "IMPORTANT")
 
     return all(entry['status'] == 'SUCCESS' for entry in migration_summary)
 
@@ -1341,7 +1880,7 @@ def connect_to_database(params):
     return psycopg2.connect(**params)
 
 def apply_session_config(conn, properties, dry_run):
-    session_config = properties.get('bbdd.sessionConfig')
+    session_config = properties.get(BBDD_SESSIONCONFIG)
     if session_config:
         with conn.cursor() as cur:
             if dry_run:
@@ -1465,7 +2004,7 @@ if __name__ == "__main__":
     if args.dry_run:
         print_message(f"\n{run_mode_header}", "RUN_MODE")
         print_message(f"{Style.DRY_RUN} *** DRY RUN MODE ENABLED     ***", "RUN_MODE")
-        print_message(f"*** No actual changes will be made to the database. ***", "RUN_MODE")
+        print_message("*** No actual changes will be made to the database. ***", "RUN_MODE")
         print_message(run_mode_header, "RUN_MODE")
     else:
         print_message(f"\n{run_mode_header}", "RUN_MODE")

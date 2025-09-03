@@ -17,7 +17,15 @@
 
 package com.etendoerp.db.extended.handler;
 
-import com.etendoerp.db.extended.data.TableConfig;
+import java.sql.Connection;
+import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.util.Locale;
+import java.util.regex.Pattern;
+
+import javax.enterprise.event.Observes;
+
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -30,15 +38,44 @@ import org.openbravo.client.kernel.event.EntityPersistenceEventObserver;
 import org.openbravo.dal.service.OBDal;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
 
-import javax.enterprise.event.Observes;
-import java.sql.Connection;
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
-import java.sql.SQLException;
+import com.etendoerp.db.extended.data.TableConfig;
 
 public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
   private static final Logger logger = LogManager.getLogger();
   private static final Entity[] entities = { ModelProvider.getInstance().getEntity(TableConfig.ENTITY_NAME) };
+  public static final String ETARC_COULD_NOT_RETRIEVE_TABLES = "ETARC_CouldNotRetrieveTables";
+
+  private static final Pattern IDENTIFIER = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+  private static final String DEFAULT_SCHEMA = "public";
+
+  /**
+   * Validates and safely quotes an SQL identifier (schema/table/column) for use in
+   * dynamic SQL. The identifier must match the allowed {@code IDENTIFIER} pattern
+   * (by default: {@code [A-Za-z_][A-Za-z0-9_]*}); otherwise an {@link OBException} is thrown.
+   * <p>
+   * The returned value is wrapped in double quotes, and any embedded double quotes
+   * are escaped by doubling them, following ANSI/PostgreSQL rules.
+   * <p>
+   * <b>Note:</b> Use this only for identifiers. Do not use it for values; use
+   * {@link java.sql.PreparedStatement} parameters instead.
+   *
+   * <pre>{@code
+   * quoteIdent("orders");    // -> "\"orders\""
+   * quoteIdent("OrderItem"); // -> "\"OrderItem\""
+   * }</pre>
+   *
+   * @param id
+   *     the identifier to validate and quote; must not be {@code null}
+   * @return the quoted identifier with internal double quotes escaped
+   * @throws OBException
+   *     if {@code id} is {@code null} or does not match the allowed pattern
+   */
+  private static String quoteIdent(String id) {
+    if (id == null || !IDENTIFIER.matcher(id).matches()) {
+      throw new OBException("Invalid SQL identifier: " + id);
+    }
+    return "\"" + id.replace("\"", "\"\"") + "\"";
+  }
 
   public void onNew(@Observes EntityNewEvent event) {
     if (!isValidEvent(event)) {
@@ -47,6 +84,39 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
 
     TableConfig actualTableConfig = (TableConfig) event.getTargetInstance();
     String partitionedTable = actualTableConfig.getTable().getDBTableName();
+
+    try {
+      String selectedColumn = actualTableConfig.getColumn() != null
+          ? actualTableConfig.getColumn().getDBColumnName()
+          : null;
+
+      final String schema = quoteIdent(DEFAULT_SCHEMA);
+      final String table = quoteIdent(partitionedTable.toLowerCase(Locale.ROOT));
+      final String column = quoteIdent(selectedColumn.toLowerCase(Locale.ROOT));
+
+      final String nullCheckSql =
+          "SELECT CASE WHEN EXISTS (SELECT 1 FROM " + schema + "." + table +
+              " WHERE " + column + " IS NULL) THEN 'Y' ELSE 'N' END AS hasnull";
+
+      String hasNulls = "N";
+      try (Connection connection = OBDal.getInstance().getConnection(false);
+           PreparedStatement ps = connection.prepareStatement(nullCheckSql);
+           ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) {
+          hasNulls = rs.getString("hasnull");
+        }
+      }
+
+      if (StringUtils.equals("Y", hasNulls)) {
+        throw new OBException(OBMessageUtils.messageBD("ETARC_SelectedColumnHasNulls"));
+      }
+    } catch (SQLException e) {
+      logSQLError(e);
+      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
+    } catch (Exception e) {
+      throw new OBException(e);
+    }
+
     String sql =
         "SELECT " +
             "  CASE WHEN EXISTS ( " +
@@ -59,19 +129,17 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
 
     String hasUnique = "";
 
-    try {
-      Connection connection = OBDal.getInstance().getConnection(false);
-      try (PreparedStatement ps = connection.prepareStatement(sql)) {
-        ps.setString(1, partitionedTable.toLowerCase());
-        try (ResultSet rs = ps.executeQuery()) {
-          while (rs.next()) {
-            hasUnique = rs.getString("hasunique");
-          }
+    try (Connection connection = OBDal.getInstance().getConnection(false);
+         PreparedStatement ps = connection.prepareStatement(sql)) {
+      ps.setString(1, partitionedTable.toLowerCase(Locale.ROOT));
+      try (ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) {
+          hasUnique = rs.getString("hasunique");
         }
       }
     } catch (SQLException e) {
       logSQLError(e);
-      throw new OBException(OBMessageUtils.messageBD("ETARC_CouldNotRetrieveTables"), e);
+      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
     } catch (Exception e) {
       throw new OBException(e);
     }
@@ -112,7 +180,7 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
       }
     } catch (SQLException e) {
       logSQLError(e);
-      throw new OBException(OBMessageUtils.messageBD("ETARC_CouldNotRetrieveTables"), e);
+      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
     }
     if (StringUtils.equals("Y", isPartitioned)) {
       throw new OBException(OBMessageUtils.messageBD("ETARC_DeleteAlreadyPartTable"));
@@ -121,10 +189,11 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
 
   private static void logSQLError(SQLException e) {
     logger.error("Error executing SQL query. Message: {}, SQLState: {}, ErrorCode: {}",
-            e.getMessage(), e.getSQLState(), e.getErrorCode());
+        e.getMessage(), e.getSQLState(), e.getErrorCode());
   }
 
-
   @Override
-  protected Entity[] getObservedEntities() { return entities; }
+  protected Entity[] getObservedEntities() {
+    return entities;
+  }
 }

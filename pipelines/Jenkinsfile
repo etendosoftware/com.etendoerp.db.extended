@@ -501,7 +501,7 @@ spec:
             cd ${CLASSIC_DIR}
             bash -c "
               source ./modules/com.etendoerp.db.extended/.venv/bin/activate
-              python3 modules/com.etendoerp.db.extended/tool/unpartition.py "etarc_table_config"
+              echo yes | python3 modules/com.etendoerp.db.extended/tool/unpartition.py "etarc_table_config"
             "
             """
 

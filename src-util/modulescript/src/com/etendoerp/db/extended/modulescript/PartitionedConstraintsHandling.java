@@ -17,283 +17,113 @@
 
 package com.etendoerp.db.extended.modulescript;
 
-import com.etendoerp.db.extended.utils.TableDefinitionComparator;
-import org.apache.commons.lang3.StringUtils;
-import org.apache.logging.log4j.LogManager;
-import org.apache.logging.log4j.Logger;
-import org.openbravo.database.ConnectionProvider;
-import org.openbravo.modulescript.ModuleScript;
-import org.w3c.dom.Document;
-import org.w3c.dom.Element;
-import org.w3c.dom.NodeList;
-import org.xml.sax.SAXException;
-
-import javax.xml.XMLConstants;
-import javax.xml.parsers.DocumentBuilder;
-import javax.xml.parsers.DocumentBuilderFactory;
-import javax.xml.parsers.ParserConfigurationException;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.NoSuchFileException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
-import java.util.Objects;
+import java.util.Set;
 import java.util.stream.Collectors;
-import java.util.stream.Stream;
+
+import javax.xml.XMLConstants;
+import javax.xml.parsers.DocumentBuilder;
+import javax.xml.parsers.DocumentBuilderFactory;
+import javax.xml.parsers.ParserConfigurationException;
+
+import org.apache.commons.lang3.StringUtils;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
+import org.openbravo.base.exception.OBException;
+import org.openbravo.database.ConnectionProvider;
+import org.openbravo.modulescript.ModuleScript;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.NamedNodeMap;
+import org.w3c.dom.NodeList;
+import org.xml.sax.SAXException;
+
+import com.etendoerp.db.extended.utils.TableDefinitionComparator;
 
 public class PartitionedConstraintsHandling extends ModuleScript {
 
-  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
-  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
-  public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
-  private static final Logger log4j = LogManager.getLogger();
-  public static final String MODULES_JAR  = "build/etendo/modules";
+  public static final String MODULES_JAR = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
-  private static final String[] moduleDirs = new String[] {MODULES_BASE, MODULES_CORE, MODULES_JAR};
   public static final String SEPARATOR = "=======================================================";
+  public static final String TABLE_NAME = "tableName";
+  public static final String TABLE = "table";
+  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
+  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
+  private static final Logger log4j = LogManager.getLogger();
+  private static final String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
 
+  // Backup infrastructure
+  private static final String BACKUP_SCHEMA = "etarc_backups";
+  private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
+  private static final int MAX_BACKUPS_PER_TABLE = 5;
+  private static final int BACKUP_RETENTION_DAYS = 7;
+
+  // SQL templates
+  private static final String DROP_PK =
+      "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
+  private static final String ADD_PK_PARTITIONED =
+      "ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
+  private static final String ADD_PK_SIMPLE =
+      "ALTER TABLE %s ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
+  private static final String DROP_FK =
+      "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;\n";
+  private static final String ADD_COL_IF_NOT_EXISTS =
+      "ALTER TABLE %s\nADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
+  private static final String UPDATE_HELPER_COL =
+      "UPDATE %s SET %s = F.%s FROM %s F WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
+  private static final String ADD_FK_PARTITIONED =
+      "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s, %s) " +
+          "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ON UPDATE CASCADE ON DELETE NO ACTION;\n";
+  private static final String ADD_FK_SIMPLE =
+      "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) " +
+          "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
+
+  /**
+   * Null/blank convenience, kept for readability in callers.
+   */
   public static boolean isBlank(String str) {
     return StringUtils.isBlank(str);
   }
 
-  public static boolean isEqualsIgnoreCase(String str1, String str2) {
-    return str1 != null && str1.equalsIgnoreCase(str2);
-  }
-
-  public void execute() {
-    try {
-      ConnectionProvider cp = getConnectionProvider();
-      List<Map<String, String>> tableConfigs = loadTableConfigs(cp);
-
-      if (!tableConfigs.isEmpty()) {
-        logSeparator();
-        log4j.info("============== Partitioning process info ==============");
-        logSeparator();
-      }
-      StringBuilder sql = new StringBuilder();
-      for (Map<String, String> cfg : tableConfigs) {
-        processTableConfig(cp, cfg, sql);
-      }
-      if (!tableConfigs.isEmpty()) {
-        logSeparator();
-      }
-      executeConstraintSqlIfNeeded(cp, sql.toString());
-
-    } catch (Exception e) {
-      handleError(e);
-    }
-  }
-
   /**
-   * Logs a separator line to the application log using the info level.
-   * <p>
-   * This method is typically used to visually separate sections in the log output,
-   * improving readability during debugging or tracing execution flow.
+   * Logs a separator line at INFO, useful to visually split log sections.
    */
   private static void logSeparator() {
     log4j.info(SEPARATOR);
   }
 
   /**
-   * Loads the table configuration from the `ETARC_TABLE_CONFIG` table.
-   * This includes the table name, the partition column, and the primary key column.
+   * Parses an XML file into a normalized DOM {@link Document} with XXE protections enabled.
    *
-   * @param cp the connection provider for accessing the database.
-   * @return a list of maps, where each map contains the keys:
-   *         "tableName", "columnName", and "pkColumnName".
-   * @throws Exception if a database access error occurs.
-   */
-  private List<Map<String, String>> loadTableConfigs(ConnectionProvider cp) throws Exception {
-    String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, "
-            + "UPPER(COL.COLUMNNAME) COLUMNNAME, "
-            + "UPPER(COL_PK.COLUMNNAME) PK_COLUMNNAME "
-            + "FROM ETARC_TABLE_CONFIG CFG "
-            + "JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID "
-            + "JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID "
-            + "JOIN AD_COLUMN COL_PK ON COL_PK.AD_TABLE_ID = TBL.AD_TABLE_ID AND COL_PK.ISKEY = 'Y'";
-
-    List<Map<String, String>> tableConfigs = new ArrayList<>();
-    try (PreparedStatement ps = cp.getPreparedStatement(configSql);
-         ResultSet rs = ps.executeQuery()) {
-      while (rs.next()) {
-        Map<String, String> cfg = new HashMap<>();
-        cfg.put("tableName", rs.getString("TABLENAME"));
-        cfg.put("columnName", rs.getString("COLUMNNAME"));
-        cfg.put("pkColumnName", rs.getString("PK_COLUMNNAME"));
-        tableConfigs.add(cfg);
-      }
-    }
-    return tableConfigs;
-  }
-
-  /**
-   * Processes a single table configuration, determining whether constraints
-   * need to be recreated. If the table is not yet partitioned correctly
-   * or its structure has changed, it generates the corresponding SQL.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param cfg a map containing the table configuration (table name, partition column, primary key).
-   * @param sql the SQL builder to which constraint SQL will be appended if necessary.
-   * @throws Exception if an error occurs during processing or querying the database.
-   */
-  private void processTableConfig(ConnectionProvider cp, Map<String, String> cfg, StringBuilder sql) throws Exception {
-    String tableName = cfg.get("tableName");
-    String partitionCol = cfg.get("columnName");
-    String pkCol = cfg.get("pkColumnName");
-
-    log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}", tableName, partitionCol, pkCol);
-
-    boolean isIncomplete = isBlank(tableName) || isBlank(partitionCol) || isBlank(pkCol);
-    List<File> xmlFiles = isIncomplete ? Collections.emptyList() : findTableXmlFiles(tableName);
-
-    boolean isUnchanged = !isIncomplete &&
-            !(new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
-
-    boolean isPartitioned = isTablePartitioned(cp, tableName);
-    List<String> pkCols = getPrimaryKeyColumns(cp, tableName);
-    boolean firstPartitionRun = isPartitioned && pkCols.isEmpty();
-
-    log4j.info("Table {} partitioned = {} existing PK cols = {}", tableName, isPartitioned, pkCols);
-
-    if (shouldSkipTable(isIncomplete, firstPartitionRun, isUnchanged)) {
-      logSkipReason(isIncomplete, tableName, pkCol, partitionCol);
-      return;
-    }
-
-    log4j.info("Recreating constraints for {} (firstRun = {}, xmlChanged = {})", tableName, firstPartitionRun, !isUnchanged);
-    sql.append(buildConstraintSql(tableName, cp, pkCol, partitionCol));
-  }
-
-  /**
-   * Determines whether a table should be skipped based on its configuration
-   * and partitioning state.
-   *
-   * @param isIncomplete true if the table configuration is incomplete.
-   * @param firstPartitionRun true if this is the first partitioning run for the table.
-   * @param isUnchanged true if the table definition has not changed.
-   * @return true if the table should be skipped, false otherwise.
-   */
-  private boolean shouldSkipTable(boolean isIncomplete, boolean firstPartitionRun, boolean isUnchanged) {
-    return isIncomplete || (!firstPartitionRun && isUnchanged);
-  }
-
-  /**
-   * Logs the reason why a table is being skipped during processing.
-   *
-   * @param isIncomplete true if the configuration is incomplete.
-   * @param tableName the name of the table being skipped.
-   * @param pkCol the primary key column name.
-   * @param partitionCol the partition column name.
-   */
-  private void logSkipReason(boolean isIncomplete, String tableName, String pkCol, String partitionCol) {
-    if (isIncomplete) {
-      log4j.warn("Skipping incomplete configuration for table {} (pk = {}, partition = {})", tableName, pkCol, partitionCol);
-    } else {
-      log4j.info("Skipping {}: already processed and no XML changes", tableName);
-    }
-  }
-
-  /**
-   * Checks whether the given table is currently partitioned in the PostgreSQL database.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param tableName the name of the table to check.
-   * @return true if the table is partitioned, false otherwise.
-   * @throws Exception if a database access error occurs.
-   */
-  private boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws Exception {
-    try (PreparedStatement ps = cp.getPreparedStatement(
-            "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)")) {
-      ps.setString(1, tableName);
-      try (ResultSet rs = ps.executeQuery()) {
-        return rs.next();
-      }
-    }
-  }
-
-  /**
-   * Retrieves the list of columns that make up the primary key of the given table.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param tableName the name of the table.
-   * @return a list of column names that are part of the primary key.
-   * @throws Exception if a database access error occurs.
-   */
-  private List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws Exception {
-    List<String> pkCols = new ArrayList<>();
-    String sql = "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
-            + "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
-            + "WHERE i.indrelid = to_regclass(?) AND i.indisprimary";
-    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-      ps.setString(1, tableName);
-      try (ResultSet rs = ps.executeQuery()) {
-        while (rs.next()) {
-          pkCols.add(rs.getString(1));
-        }
-      }
-    }
-    return pkCols;
-  }
-
-  /**
-   * Executes the constraint SQL if it is not blank.
-   * This typically includes adding or modifying table constraints after analyzing configurations.
-   *
-   * @param cp the connection provider for accessing the database.
-   * @param sql the SQL string to execute.
-   * @throws Exception if a database access error occurs.
-   */
-  private void executeConstraintSqlIfNeeded(ConnectionProvider cp, String sql) throws Exception {
-    if (isBlank(sql)) {
-      log4j.info("No constraints to handle for the provided configurations.");
-      return;
-    }
-
-    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-      ps.executeUpdate();
-    }
-  }
-
-  /**
-   * Parses the specified XML file into a normalized DOM Document with
-   * XXE protections enabled.
-   * <p>
-   * Configures the parser to:
+   * <p>The parser is configured to:</p>
    * <ul>
-   *   <li>Disallow DOCTYPE declarations (no DTDs).</li>
-   *   <li>Disable resolution of external general and parameter entities.</li>
-   *   <li>Enable secure processing to limit resource usage.</li>
-   *   <li>Disable XInclude processing and entity expansion.</li>
+   *   <li>Disallow DOCTYPE declarations</li>
+   *   <li>Disable external entities (general and parameter)</li>
+   *   <li>Enable secure processing</li>
+   *   <li>Disable XInclude and entity expansion</li>
    * </ul>
-   *
-   * @param xml the XML file to parse
-   * @return a normalized {@link org.w3c.dom.Document} representing the XML content
-   * @throws ParserConfigurationException if a parser cannot be configured
-   * @throws SAXException                 if a parsing error occurs
-   * @throws IOException                  if an I/O error occurs reading the file
    */
-  private static Document getDocument(File xml) throws ParserConfigurationException, SAXException, IOException {
+  private static Document getDocument(File xml)
+      throws ParserConfigurationException, SAXException, IOException {
     DocumentBuilderFactory factory = DocumentBuilderFactory.newInstance();
-
-    // 1. Disallow DTDs entirely (no DOCTYPE)
-    //    This prevents any <!DOCTYPE…> declarations
     factory.setFeature("http://apache.org/xml/features/disallow-doctype-decl", true);
-
-    // 2. Disable external entities
     factory.setFeature("http://xml.org/sax/features/external-general-entities", false);
     factory.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
-
-    // 3. (Optional) Enable the secure-processing feature
     factory.setFeature(XMLConstants.FEATURE_SECURE_PROCESSING, true);
-
-    // 4. Further hardening
     factory.setXIncludeAware(false);
     factory.setExpandEntityReferences(false);
 
@@ -304,30 +134,41 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Searches the provided list of XML table definition files for the "primaryKey"
-   * attribute on the single <table> element in each file.
+   * Scans a list of XML files to locate and return the primary key attribute
+   * defined in a <table> element.
    * <p>
-   * For each XML file:
+   * The method processes each XML file in the given list sequentially, skipping
+   * files whose path contains the string {@code "modifiedTables"}. For each valid
+   * XML file, it parses the document to locate <table> tags:
    * <ul>
-   *   <li>If the file does not exist, logs an error and returns null.</li>
-   *   <li>If exactly one <table> element is found, and it has a "primaryKey" attribute,
-   *       returns that attribute’s value.</li>
-   *   <li>If no <table> elements or multiple <table> elements are found, or if the
-   *       attribute is missing, logs the appropriate warning/error and returns null.</li>
+   *   <li>If exactly one <table> tag is found and it contains a {@code primaryKey}
+   *       attribute, the value of that attribute is returned.</li>
+   *   <li>If the <table> tag is missing the {@code primaryKey} attribute, a warning
+   *       is logged and {@code null} is returned.</li>
+   *   <li>If no <table> tags or more than one <table> tag is found, an error is logged
+   *       and {@code null} is returned.</li>
    * </ul>
+   * If an exception occurs during processing (e.g., parsing errors, I/O errors),
+   * the exception is logged and {@code null} is returned.
    *
-   * @param xmlFiles the list of XML files to inspect
-   * @return the name of the primary key if found, or null if missing or on error
+   * @param xmlFiles
+   *     the list of XML files to scan for a primary key definition
+   * @return the value of the {@code primaryKey} attribute if found, or {@code null}
+   *     if the attribute is missing, multiple/no <table> tags are found,
+   *     the file does not exist, or an error occurs
    */
   public static String findPrimaryKey(List<File> xmlFiles) {
     try {
       for (File xml : xmlFiles) {
+        if (StringUtils.contains(xml.getAbsolutePath(), "modifiedTables")) {
+          continue;
+        }
         if (!xml.exists()) {
           log4j.error("Error: XML file does not exist: {}", xml.getAbsolutePath());
           return null;
         }
         Document doc = getDocument(xml);
-        NodeList tableList = doc.getElementsByTagName("table");
+        NodeList tableList = doc.getElementsByTagName(TABLE);
 
         if (tableList.getLength() == 1) {
           Element tableEl = (Element) tableList.item(0);
@@ -341,8 +182,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
           log4j.error("Error: No <table> tag found in: {}", xml.getAbsolutePath());
           return null;
         } else {
-          log4j.error("Error: Found {} <table> tags in: {}", tableList.getLength(),
-              xml.getAbsolutePath());
+          log4j.error("Error: Found {} <table> tags in: {}", tableList.getLength(), xml.getAbsolutePath());
           return null;
         }
       }
@@ -353,193 +193,1157 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   }
 
   /**
-   * Gathers all directories that potentially contain table XML files.
+   * Logs an informational message when an XML file cannot be parsed during a scan for foreign key references.
    * <p>
-   * Scans each module directory under the project root (as defined by ModulesUtil),
-   * adding:
-   * <ul>
-   *   <li>The module’s own “src-db/database/model/tables” directory, if present.</li>
-   *   <li>That same tables directory under each immediate subdirectory of the module.</li>
-   * </ul>
-   * Finally, adds the project‐root “src-db/database/model/tables” directory.
-   * Only existing directories are returned.
+   * The log entry includes the absolute path of the source XML file and the exception message
+   * describing the parsing failure.
+   * </p>
    *
-   * @return a List of File objects representing each valid tables directory
+   * @param sourceXmlFile
+   *     the XML file that could not be parsed
+   * @param e
+   *     the exception thrown while attempting to parse the XML file
+   */
+  private static void logUnparseableXML(File sourceXmlFile, Exception e) {
+    log4j.info("Skipping unparsable XML while scanning for FK refs: {} -> {}",
+        sourceXmlFile.getAbsolutePath(), e.getMessage());
+  }
+
+  /**
+   * Logs an informational message after cleaning up old or excess backups.
+   * <p>
+   * The log entry includes the number of backups deleted, the name of the table,
+   * and the configured retention period in days.
+   * </p>
+   *
+   * @param message
+   *     the log message template with placeholders for size, table name, and retention days
+   * @param backupsToDelete
+   *     the list of backup table names that were removed
+   * @param tableName
+   *     the name of the table for which the cleanup was performed
+   */
+  private static void logCleanOldBackups(String message, List<String> backupsToDelete, String tableName) {
+    log4j.info(message,
+        backupsToDelete.size(), tableName, BACKUP_RETENTION_DAYS);
+  }
+
+  /**
+   * Logs a warning when a backup table could not be dropped.
+   * <p>
+   * The log entry includes the backup table name and the exception message.
+   * </p>
+   *
+   * @param backupName
+   *     the name of the backup table that failed to drop
+   * @param e
+   *     the exception thrown during the drop attempt
+   */
+  private static void logFailedDropBackupTable(String backupName, Exception e) {
+    log4j.warn("Failed to drop backup table {}: {}", backupName, e.getMessage());
+  }
+
+  @Override
+  public void execute() {
+    try {
+      ConnectionProvider cp = getConnectionProvider();
+      List<Map<String, String>> tableConfigs = loadTableConfigs(cp);
+
+      if (!tableConfigs.isEmpty()) {
+        logSeparator();
+        log4j.info("============== Partitioning process info ==============");
+        logSeparator();
+      }
+
+      // Ensure backup infra and clear old backups before making changes
+      ensureBackupInfrastructure(cp);
+      cleanupExcessBackups(cp);
+
+      Map<String, Long> timings = new LinkedHashMap<>();
+      boolean hasPartitioned = quickCheckPartitioned(cp, tableConfigs);
+
+      for (Map<String, String> cfg : tableConfigs) {
+        String tName = cfg.get(TABLE_NAME);
+        long elapsed = processTableSafely(cp, cfg);
+        timings.put(tName, elapsed);
+      }
+
+      boolean anyProcessed = timings.values().stream().anyMatch(v -> v != null && v >= 0L);
+      if (anyProcessed || hasPartitioned) {
+        logSeparator();
+        log4j.info("Partitioning processing summary (ms):");
+        for (Map.Entry<String, Long> e : timings.entrySet()) {
+          log4j.info(" - {} => {}", e.getKey(), e.getValue());
+        }
+      }
+      if (!tableConfigs.isEmpty()) {
+        logSeparator();
+      }
+
+    } catch (Exception e) {
+      handleError(e);
+    }
+  }
+
+  /**
+   * Quickly checks whether any configured table is already partitioned.
+   * Errors are swallowed to avoid failing the whole execution.
+   */
+  private boolean quickCheckPartitioned(ConnectionProvider cp, List<Map<String, String>> tableConfigs) {
+    try {
+      for (Map<String, String> cfg : tableConfigs) {
+        String tName = cfg.get(TABLE_NAME);
+        if (safeIsTablePartitioned(cp, tName)) {
+          return true;
+        }
+      }
+    } catch (Exception ignore) {
+      // ignore global failures
+    }
+    return false;
+  }
+
+  /**
+   * Wrapper around {@link #isTablePartitioned(ConnectionProvider, String)} that returns {@code false}
+   * on failure instead of throwing.
+   */
+  private boolean safeIsTablePartitioned(ConnectionProvider cp, String tableName) {
+    try {
+      return isTablePartitioned(cp, tableName);
+    } catch (Exception e) {
+      return false;
+    }
+  }
+
+  /**
+   * Processes one table configuration and returns elapsed time in milliseconds,
+   * or {@code -1} if not processed or on error.
+   */
+  private long processTableSafely(ConnectionProvider cp, Map<String, String> cfg) {
+    long start = System.currentTimeMillis();
+    try {
+      boolean processed = processTableConfig(cp, cfg);
+      return processed ? (System.currentTimeMillis() - start) : -1L;
+    } catch (Exception e) {
+      return -1L;
+    }
+  }
+
+  /**
+   * Loads table configuration from {@code ETARC_TABLE_CONFIG}:
+   * table name, partition column, and PK column.
+   */
+  private List<Map<String, String>> loadTableConfigs(ConnectionProvider cp) throws Exception {
+    String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, "
+        + "UPPER(COL.COLUMNNAME) COLUMNNAME, "
+        + "UPPER(COL_PK.COLUMNNAME) PK_COLUMNNAME "
+        + "FROM ETARC_TABLE_CONFIG CFG "
+        + "JOIN AD_TABLE TBL ON TBL.AD_TABLE_ID = CFG.AD_TABLE_ID "
+        + "JOIN AD_COLUMN COL ON COL.AD_COLUMN_ID = CFG.AD_COLUMN_ID "
+        + "JOIN AD_COLUMN COL_PK ON COL_PK.AD_TABLE_ID = TBL.AD_TABLE_ID AND COL_PK.ISKEY = 'Y'";
+
+    List<Map<String, String>> tableConfigs = new ArrayList<>();
+    try (PreparedStatement ps = cp.getPreparedStatement(configSql);
+         ResultSet rs = ps.executeQuery()) {
+      while (rs.next()) {
+        Map<String, String> cfg = new HashMap<>();
+        cfg.put(TABLE_NAME, rs.getString("TABLENAME"));
+        cfg.put("columnName", rs.getString("COLUMNNAME"));
+        cfg.put("pkColumnName", rs.getString("PK_COLUMNNAME"));
+        tableConfigs.add(cfg);
+      }
+    }
+    return tableConfigs;
+  }
+
+  /**
+   * Decides whether constraints must be (re)created for a table by checking:
+   * configuration completeness, XML changes, and partitioning state.
+   * Executes schema diffs and FK/PK SQL with backup/restore safety.
+   */
+  private boolean processTableConfig(ConnectionProvider cp, Map<String, String> cfg) throws Exception {
+    String tableName = cfg.get(TABLE_NAME);
+    String partitionCol = cfg.get("columnName");
+    String pkCol = cfg.get("pkColumnName");
+
+    log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}",
+        tableName, partitionCol, pkCol);
+
+    boolean isIncomplete = isBlank(tableName) || isBlank(partitionCol) || isBlank(pkCol);
+    List<File> xmlFiles = isIncomplete ? Collections.emptyList() : findTableXmlFiles(tableName);
+
+    boolean isUnchanged = !isIncomplete &&
+        !(new TableDefinitionComparator()).isTableDefinitionChanged(tableName, cp, xmlFiles);
+
+    // If XML for this table didn't change but other XMLs now reference it, still process.
+    if (isUnchanged) {
+      try {
+        if (hasForeignReferencesInXml(tableName)) {
+          log4j.info("Detected external XML foreign-key references to {} — forcing processing.", tableName);
+          isUnchanged = false;
+        }
+      } catch (Exception e) {
+        // Be conservative on errors: if detection fails, do not block processing
+        log4j.info("Failed to scan for external foreign-key references for {}: {}", tableName, e.getMessage());
+      }
+    }
+
+    boolean isPartitioned = isTablePartitioned(cp, tableName);
+    List<String> pkCols = getPrimaryKeyColumns(cp, tableName);
+    boolean firstPartitionRun = isPartitioned && pkCols.isEmpty();
+
+    log4j.info("Table {} partitioned = {} existing PK cols = {}", tableName, isPartitioned, pkCols);
+
+    if (shouldSkipTable(isIncomplete, firstPartitionRun, isUnchanged)) {
+      logSkipReason(isIncomplete, tableName, pkCol, partitionCol);
+      return false;
+    }
+
+    log4j.info("Recreating constraints for {} (firstRun = {}, xmlChanged = {})",
+        tableName, firstPartitionRun, !isUnchanged);
+
+    String tableSql = buildConstraintSql(tableName, cp, pkCol, partitionCol);
+
+    try {
+      TableDefinitionComparator.ColumnDiff diff =
+          (new TableDefinitionComparator()).diffTableDefinition(tableName, cp, xmlFiles);
+
+      StringBuilder alterSql = getAlterSql(diff, tableName);
+
+      if (!alterSql.isEmpty()) {
+        executeSqlWithBackup(cp, tableName, isPartitioned, alterSql.toString());
+      }
+      if (!isBlank(tableSql)) {
+        executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+      }
+      return true;
+    } catch (Exception e) {
+      log4j.error("Failed to persist XML schema changes for {}: {}", tableName, e.getMessage(), e);
+      // Fallback: still try constraint SQL
+      try {
+        executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
+      } catch (Exception e2) {
+        log4j.error("Failed executing fallback constraint SQL for {}: {}", tableName, e2.getMessage(), e2);
+      }
+      return false;
+    }
+  }
+
+  /**
+   * Builds ALTER statements from XML diff: adds missing columns and drops removed ones.
+   */
+  private StringBuilder getAlterSql(TableDefinitionComparator.ColumnDiff diff, String tableName) {
+    StringBuilder alterSql = new StringBuilder();
+    for (Map.Entry<String, TableDefinitionComparator.ColumnDefinition> e : diff.added.entrySet()) {
+      String col = e.getKey();
+      TableDefinitionComparator.ColumnDefinition def = e.getValue();
+      String sqlType = mapXmlTypeToSql(def.getDataType(), def.getLength()); // best-effort
+      alterSql.append(String.format(
+          "ALTER TABLE public.%s ADD COLUMN IF NOT EXISTS %s %s %s;",
+          tableName, col, sqlType, def.isNullable() ? "" : "NOT NULL"));
+    }
+    for (Map.Entry<String, TableDefinitionComparator.ColumnDefinition> e : diff.removed.entrySet()) {
+      String col = e.getKey();
+      alterSql.append(String.format(
+          "ALTER TABLE public.%s DROP COLUMN IF EXISTS %s CASCADE;",
+          tableName, col));
+    }
+    return alterSql;
+  }
+
+  /**
+   * Scans table XMLs for any {@code <foreign-key foreignTable="...">} referencing {@code tableName}.
+   * Uses a lightweight "scan only new/modified" heuristic via {@code lastProcessed}.
+   */
+  private boolean hasForeignReferencesInXml(String tableName) throws NoSuchFileException {
+    Timestamp lastProcessed = getLastProcessed(getConnectionProvider(), tableName);
+    for (File xml : collectAllXmlFiles()) {
+      if (!shouldScan(xml, lastProcessed)) continue;
+      if (fileReferencesTable(xml, tableName)) {
+        setLastProcessed(getConnectionProvider(), tableName); // avoid repeated forced runs
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * True if the file should be scanned (always for paths containing {@code modifiedTables};
+   * otherwise only if its mtime is newer than {@code lastProcessed}).
+   */
+  private boolean shouldScan(File xml, Timestamp lastProcessed) {
+    boolean inModified = StringUtils.contains(xml.getAbsolutePath(), "modifiedTables");
+    if (inModified) return true;
+    if (lastProcessed == null) return true;
+    return xml.lastModified() > lastProcessed.getTime();
+  }
+
+  /**
+   * Returns {@code true} if the XML contains a {@code <foreign-key>} that references {@code tableName}.
+   * Parsing errors are logged and treated as "no reference".
+   */
+  private boolean fileReferencesTable(File xml, String tableName) {
+    try {
+      Document doc = getDocument(xml);
+      return hasForeignKeyRef(doc, tableName, xml);
+    } catch (Exception e) {
+      logUnparseableXML(xml, e);
+      return false;
+    }
+  }
+
+  // --- Backup helpers ---
+
+  /**
+   * DOM scan for any matching {@code <foreign-key>} element; logs the number scanned at DEBUG.
+   */
+  private boolean hasForeignKeyRef(Document doc, String tableName, File sourceXml) {
+    NodeList fkList = doc.getElementsByTagName("foreign-key");
+    for (int i = 0; i < fkList.getLength(); i++) {
+      Element fkEl = (Element) fkList.item(i);
+      if (foreignKeyElementMatches(fkEl, tableName, sourceXml)) {
+        return true;
+      }
+    }
+    log4j.debug("Scanned {} and found {} foreign-key elements",
+        sourceXml.getAbsolutePath(), fkList.getLength());
+    return false;
+  }
+
+  /**
+   * Returns {@code true} if the given {@code <foreign-key>} element references {@code tableName}.
+   * Checks the fast path attribute {@code foreignTable} first; then inspects all attributes.
+   */
+  private boolean foreignKeyElementMatches(Element fkEl, String tableName, File sourceXml) {
+    String foreignTable = fkEl.getAttribute("foreignTable");
+    if (tableName.equalsIgnoreCase(foreignTable)) {
+      log4j.debug("Found external FK reference to {} in file {} (attribute foreignTable)",
+          tableName, sourceXml.getAbsolutePath());
+      return true;
+    }
+    NamedNodeMap attrs = fkEl.getAttributes();
+    for (int a = 0; a < attrs.getLength(); a++) {
+      String attrName = attrs.item(a).getNodeName();
+      String attrVal = attrs.item(a).getNodeValue();
+      if (tableName.equalsIgnoreCase(attrVal)) {
+        log4j.debug("Found external FK reference to {} in file {} (attribute {})",
+            tableName, sourceXml.getAbsolutePath(), attrName);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Creates backup schema/tables if missing. Best-effort, non-throwing.
+   */
+  private void ensureBackupInfrastructure(ConnectionProvider cp) {
+    String createSchema = "CREATE SCHEMA IF NOT EXISTS " + BACKUP_SCHEMA + ";";
+    String createMeta = "CREATE TABLE IF NOT EXISTS " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
+        + " (backup_name TEXT PRIMARY KEY, table_name TEXT, created_at TIMESTAMP);";
+    String createProc = "CREATE TABLE IF NOT EXISTS " + BACKUP_SCHEMA + ".processing_metadata"
+        + " (table_name TEXT PRIMARY KEY, last_processed TIMESTAMP);";
+    try (PreparedStatement ps = cp.getPreparedStatement(createSchema + " " + createMeta + " " + createProc)) {
+      ps.executeUpdate();
+    } catch (Exception e) {
+      log4j.warn("Could not ensure backup infrastructure: {}", e.getMessage());
+    }
+  }
+
+  /**
+   * Returns the last processed timestamp for a table, or {@code null} if unknown.
+   */
+  private Timestamp getLastProcessed(ConnectionProvider cp, String tableName) {
+    String sql = "SELECT last_processed FROM " + BACKUP_SCHEMA + ".processing_metadata WHERE lower(table_name) = lower(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        if (rs.next()) {
+          return rs.getTimestamp(1);
+        }
+      }
+    } catch (Exception e) {
+      log4j.warn("Could not read last_processed for {}: {}", tableName, e.getMessage());
+    }
+    return null;
+  }
+
+  /**
+   * Sets {@code last_processed = now()} for the given table. Best-effort.
+   */
+  private void setLastProcessed(ConnectionProvider cp, String tableName) {
+    String sql = "INSERT INTO " + BACKUP_SCHEMA + ".processing_metadata (table_name, last_processed) VALUES (?, now())"
+        + " ON CONFLICT (table_name) DO UPDATE SET last_processed = EXCLUDED.last_processed";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      ps.executeUpdate();
+    } catch (Exception e) {
+      log4j.warn("Could not set last_processed for {}: {}", tableName, e.getMessage());
+    }
+  }
+
+  /**
+   * Cleans old/excess backups across all tables and logs a summary.
+   */
+  private void cleanupExcessBackups(ConnectionProvider cp) {
+    logStartCleanup();
+
+    List<String> tableNames = fetchDistinctTableNames(cp);
+    if (tableNames.isEmpty()) {
+      log4j.info("No tables found in {}.{}", BACKUP_SCHEMA, BACKUP_METADATA_TABLE);
+      return;
+    }
+
+    int totalDeleted = 0;
+    for (String tableName : tableNames) {
+      totalDeleted += cleanupBackupsForTable(cp, tableName);
+    }
+    logSummary(totalDeleted);
+  }
+
+  /**
+   * Writes initial retention policy line.
+   */
+  private void logStartCleanup() {
+    log4j.info(
+        "Starting backup cleanup - will keep {} most recent backups per table and delete backups older than {} days",
+        MAX_BACKUPS_PER_TABLE, BACKUP_RETENTION_DAYS);
+  }
+
+  /**
+   * Lists distinct logical table names with backups recorded.
+   */
+  private List<String> fetchDistinctTableNames(ConnectionProvider cp) {
+    String sql = "SELECT DISTINCT table_name FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE;
+    List<String> tables = new ArrayList<>();
+    try (PreparedStatement ps = cp.getPreparedStatement(sql);
+         ResultSet rs = ps.executeQuery()) {
+      while (rs.next()) {
+        tables.add(rs.getString(1));
+      }
+    } catch (Exception e) {
+      log4j.warn("Failed to list tables in backup metadata: {}", e.getMessage());
+    }
+    return tables;
+  }
+
+  /**
+   * Deletes backups for a single logical table according to both policies:
+   * keep only the N most recent; delete any older than the retention window.
+   *
+   * @return number of backups selected for deletion (not necessarily successfully dropped)
+   */
+  private int cleanupBackupsForTable(ConnectionProvider cp, String tableName) {
+    List<String> backupsToDelete = findBackupsToDelete(cp, tableName);
+    if (backupsToDelete.isEmpty()) {
+      return 0;
+    }
+    for (String backupName : backupsToDelete) {
+      dropBackupTableQuietly(cp, backupName);
+      deleteBackupMetadataQuietly(cp, backupName);
+    }
+    logCleanOldBackups("Cleaned up {} backups for table {} (excess count + older than {} days)", backupsToDelete,
+        tableName);
+    return backupsToDelete.size();
+  }
+
+  /**
+   * Computes which backup tables to delete for a logical table.
+   */
+  private List<String> findBackupsToDelete(ConnectionProvider cp, String tableName) {
+    String sql =
+        "SELECT backup_name FROM (" +
+            "  SELECT backup_name, " +
+            "         ROW_NUMBER() OVER (ORDER BY created_at DESC) AS rn, " +
+            "         created_at " +
+            "  FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " " +
+            "  WHERE table_name = ?" +
+            ") ranked " +
+            "WHERE rn > " + MAX_BACKUPS_PER_TABLE + " " +
+            "   OR created_at < now() - interval '" + BACKUP_RETENTION_DAYS + " days'";
+
+    List<String> backupNames = new ArrayList<>();
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+          backupNames.add(rs.getString(1));
+        }
+      }
+    } catch (Exception e) {
+      log4j.warn("Failed to compute backups to delete for {}: {}", tableName, e.getMessage());
+    }
+    return backupNames;
+  }
+
+  /**
+   * Drops a backup table; logs and continues on failure.
+   */
+  private void dropBackupTableQuietly(ConnectionProvider cp, String backupName) {
+    String dropSql = "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName;
+    try (PreparedStatement drop = cp.getPreparedStatement(dropSql)) {
+      drop.executeUpdate();
+      log4j.debug("Dropped backup table: {}", backupName);
+    } catch (Exception e) {
+      logFailedDropBackupTable(backupName, e);
+    }
+  }
+
+  /**
+   * Deletes the metadata row for a backup; logs and continues on failure.
+   */
+  private void deleteBackupMetadataQuietly(ConnectionProvider cp, String backupName) {
+    String deleteMetaSql =
+        "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
+    try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
+      del.setString(1, backupName);
+      del.executeUpdate();
+    } catch (Exception e) {
+      logFailedDropBackupTable(backupName, e);
+    }
+  }
+
+  /**
+   * Logs the cleanup summary.
+   */
+  private void logSummary(int totalDeleted) {
+    if (totalDeleted > 0) {
+      log4j.info("Total cleanup: removed {} old/excess backup tables", totalDeleted);
+    } else {
+      log4j.info("No excess or old backups found to clean up");
+    }
+  }
+
+  /**
+   * Cleans old/excess backups for a specific logical table only.
+   */
+  private void cleanupExcessBackupsForTable(ConnectionProvider cp, String tableName) {
+    String deleteMetaSql = "DELETE FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE + " WHERE backup_name = ?";
+
+    try {
+      String selectBackupsToDeleteSql =
+          "SELECT backup_name FROM (" +
+              "  SELECT backup_name, " +
+              "         ROW_NUMBER() OVER (ORDER BY created_at DESC) as rn, " +
+              "         created_at " +
+              "  FROM " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE +
+              "  WHERE table_name = ?" +
+              ") ranked " +
+              "WHERE rn > " + MAX_BACKUPS_PER_TABLE +
+              "   OR created_at < now() - interval '" + BACKUP_RETENTION_DAYS + " days'";
+
+      try (PreparedStatement psBackups = cp.getPreparedStatement(selectBackupsToDeleteSql)) {
+        psBackups.setString(1, tableName);
+        try (ResultSet rsBackups = psBackups.executeQuery()) {
+          List<String> backupsToDelete = new ArrayList<>();
+          while (rsBackups.next()) {
+            backupsToDelete.add(rsBackups.getString(1));
+          }
+
+          for (String backupName : backupsToDelete) {
+            dropBackupTable(cp, tableName, backupName);
+            deleteBackupMetadata(cp, backupName, deleteMetaSql);
+          }
+
+          if (!backupsToDelete.isEmpty()) {
+            logCleanOldBackups(
+                "Cleaned up {} backups for table {} after creating new backup (excess count + older than {} days)",
+                backupsToDelete, tableName);
+          }
+        }
+      }
+    } catch (Exception e) {
+      log4j.warn("Failed to cleanup excess backups for table {}: {}", tableName, e.getMessage());
+    }
+  }
+
+  /**
+   * Attempts to drop a specific backup table from the backup schema.
+   * <p>
+   * This method executes a {@code DROP TABLE IF EXISTS} statement for the given backup name.
+   * If the table is successfully dropped, an informational log entry is created.
+   * If an error occurs, it is caught and logged as a warning.
+   * </p>
+   *
+   * @param cp
+   *     the {@link ConnectionProvider} used to obtain the database connection
+   * @param tableName
+   *     the name of the original table for which the backup was created
+   * @param backupName
+   *     the name of the backup table to drop
+   */
+  private void dropBackupTable(ConnectionProvider cp, String tableName, String backupName) {
+    try (PreparedStatement drop = cp.getPreparedStatement(
+        "DROP TABLE IF EXISTS " + BACKUP_SCHEMA + "." + backupName)) {
+      drop.executeUpdate();
+      log4j.info("Dropped backup table for {}: {} (excess or > {} days old)",
+          tableName, backupName, BACKUP_RETENTION_DAYS);
+    } catch (Exception e) {
+      logFailedDropBackupTable(backupName, e);
+    }
+  }
+
+  /**
+   * Deletes the metadata entry corresponding to a given backup table.
+   * <p>
+   * This method executes a {@code DELETE} statement on the backup metadata table,
+   * removing the record associated with the specified backup name.
+   * If an error occurs during deletion, the exception is caught and logged as a warning.
+   * </p>
+   *
+   * @param cp
+   *     the {@link ConnectionProvider} used to obtain the database connection
+   * @param backupName
+   *     the name of the backup table whose metadata should be removed
+   * @param deleteMetaSql
+   *     the SQL statement used to delete the backup metadata record
+   */
+  private void deleteBackupMetadata(ConnectionProvider cp, String backupName, String deleteMetaSql) {
+    try (PreparedStatement del = cp.getPreparedStatement(deleteMetaSql)) {
+      del.setString(1, backupName);
+      del.executeUpdate();
+    } catch (Exception e) {
+      log4j.warn("Failed to delete metadata for backup {}: {}", backupName, e.getMessage());
+    }
+  }
+
+  /**
+   * Creates a snapshot table in {@code BACKUP_SCHEMA} and records it in metadata.
+   */
+  private String createTableBackup(ConnectionProvider cp, String tableName) throws Exception {
+    String backupName = tableName.toLowerCase() + "_backup_" + System.currentTimeMillis();
+    String sql = "CREATE TABLE " + BACKUP_SCHEMA + "." + backupName + " AS TABLE public." + tableName + ";";
+    String metaSql = "INSERT INTO " + BACKUP_SCHEMA + "." + BACKUP_METADATA_TABLE
+        + " (backup_name, table_name, created_at) VALUES (?, ?, ?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.executeUpdate();
+    }
+    try (PreparedStatement ps = cp.getPreparedStatement(metaSql)) {
+      ps.setString(1, backupName);
+      ps.setString(2, tableName);
+      ps.setTimestamp(3, new Timestamp(System.currentTimeMillis()));
+      ps.executeUpdate();
+    }
+    cleanupExcessBackupsForTable(cp, tableName);
+    return backupName;
+  }
+
+  /**
+   * Best-effort restore: truncates target table and inserts from the backup.
+   */
+  private void restoreBackup(ConnectionProvider cp, String tableName, String backupName) throws Exception {
+    String truncate = "TRUNCATE TABLE public." + tableName + " RESTART IDENTITY CASCADE;";
+    String insert = "INSERT INTO public." + tableName + " SELECT * FROM " + BACKUP_SCHEMA + "." + backupName + ";";
+    try (PreparedStatement ps = cp.getPreparedStatement(truncate + " " + insert)) {
+      ps.executeUpdate();
+    }
+  }
+
+  /**
+   * Executes the given SQL against the table. If the table is partitioned, creates a backup
+   * beforehand and restores it on failure.
+   */
+  private void executeSqlWithBackup(ConnectionProvider cp, String tableName, boolean isPartitioned, String sql)
+      throws Exception {
+    String backupName = null;
+    try {
+      if (isPartitioned) {
+        backupName = createTableBackup(cp, tableName);
+        log4j.info("Created backup {} for table {}", backupName, tableName);
+      }
+      if (isBlank(sql)) {
+        log4j.info("No SQL to execute for table {}", tableName);
+        return;
+      }
+      try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+        ps.executeUpdate();
+      }
+    } catch (Exception e) {
+      log4j.error("Error executing SQL for table {}: {}", tableName, e.getMessage(), e);
+      if (backupName != null) {
+        try {
+          restoreBackup(cp, tableName, backupName);
+          log4j.info("Restored backup {} to table {} after failure", backupName, tableName);
+        } catch (Exception re) {
+          log4j.error("Failed to restore backup {} for table {}: {}", backupName, tableName, re.getMessage(), re);
+        }
+      }
+      throw e;
+    }
+  }
+
+  /**
+   * Best-effort mapping from XML datatype to PostgreSQL type.
+   */
+  private String mapXmlTypeToSql(String xmlType, Integer length) {
+    if (xmlType == null) return "text";
+    String t = xmlType.toLowerCase();
+    return switch (t) {
+      case "varchar", "character varying", "string" ->
+          length != null && length > 0 ? "varchar(" + length + ")" : "text";
+      case "int", "integer" -> "integer";
+      case "bigint" -> "bigint";
+      case "timestamp", "datetime" -> "timestamp without time zone";
+      case "boolean", "bool" -> "boolean";
+      case "numeric", "decimal" -> "numeric";
+      default -> t;
+    };
+  }
+
+  /**
+   * Skip logic used by {@link #processTableConfig(ConnectionProvider, Map)}.
+   */
+  private boolean shouldSkipTable(boolean isIncomplete, boolean firstPartitionRun, boolean isUnchanged) {
+    return isIncomplete || (!firstPartitionRun && isUnchanged);
+  }
+
+  /**
+   * Logs the reason a table was skipped.
+   */
+  private void logSkipReason(boolean isIncomplete, String tableName, String pkCol, String partitionCol) {
+    if (isIncomplete) {
+      log4j.warn("Skipping incomplete configuration for table {} (pk = {}, partition = {})",
+          tableName, pkCol, partitionCol);
+    } else {
+      log4j.info("Skipping {}: already processed and no XML changes", tableName);
+    }
+  }
+
+  /**
+   * True if the table is partitioned in PostgreSQL.
+   */
+  private boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws Exception {
+    try (PreparedStatement ps = cp.getPreparedStatement(
+        "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)")) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
+   * Returns the list of PK columns for the given table.
+   */
+  private List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws Exception {
+    List<String> pkCols = new ArrayList<>();
+    String sql = "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
+        + "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+        + "WHERE i.indrelid = to_regclass(?) AND i.indisprimary";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        while (rs.next()) {
+          pkCols.add(rs.getString(1));
+        }
+      }
+    }
+    return pkCols;
+  }
+
+  /**
+   * True if a column exists on the given table.
+   */
+  private boolean columnExists(ConnectionProvider cp, String tableName, String columnName) throws Exception {
+    String sql = "SELECT 1 FROM information_schema.columns " +
+        "WHERE lower(table_name) = lower(?) AND lower(column_name) = lower(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      ps.setString(2, columnName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
+   * True if a constraint with the given name exists on the table.
+   */
+  private boolean constraintExists(ConnectionProvider cp, String tableName, String constraintName) throws Exception {
+    String sql = "SELECT 1 FROM information_schema.table_constraints " +
+        "WHERE lower(table_name) = lower(?) AND lower(constraint_name) = lower(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      ps.setString(2, constraintName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
+      }
+    }
+  }
+
+  /**
+   * Collects directories that may contain table XMLs.
+   * Returns only existing directories; never {@code null}.
    */
   private List<File> collectTableDirs() throws NoSuchFileException {
     List<File> dirs = new ArrayList<>();
     File root = new File(getSourcePath());
-    for (String mod : this.moduleDirs) {
+    for (String mod : moduleDirs) {
       File modBase = new File(root, mod);
       if (!modBase.isDirectory()) continue;
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_TABLES));
-      for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
+      File[] subDirs = modBase.listFiles(File::isDirectory);
+      if (subDirs != null) {
+        for (File sd : subDirs) {
+          dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_TABLES));
+        }
       }
       dirs.add(new File(modBase, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
-      for (File sd : Objects.requireNonNull(modBase.listFiles(File::isDirectory))) {
-        dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+      if (subDirs != null) {
+        for (File sd : subDirs) {
+          dirs.add(new File(sd, SRC_DB_DATABASE_MODEL_MODIFIED_TABLES));
+        }
       }
     }
     dirs.add(new File(root, SRC_DB_DATABASE_MODEL_TABLES));
     return dirs.stream().filter(File::isDirectory).collect(Collectors.toList());
   }
 
+  /* =========================
+     Primary table helpers
+     ========================= */
+
   /**
-   * Finds the .xml file(s) matching the given table name (case-insensitive)
-   * under each module’s “tables” directory and under the project's root.
-   * <p>
-   * Constructs a target filename of the form {@code tableName + ".xml"}, then
-   * filters all XMLs in the discovered directories to only those whose name
-   * equals the target.
-   *
-   * @param tableName the base name of the table (without the .xml extension)
-   * @return a List of matching XML files (maybe empty if none found)
+   * Finds XML files that define {@code tableName} either by filename (fast path)
+   * or by containing a {@code <table name="...">} with the same name.
+   * Deduplicates while preserving first-seen order.
    */
   public List<File> findTableXmlFiles(String tableName) throws NoSuchFileException {
-    String target = tableName.toLowerCase() + ".xml";
-    return collectTableDirs().stream()
-        .flatMap(dir -> {
-          File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
-          return files == null ? Stream.empty() : Arrays.stream(files);
-        })
-        .filter(f -> f.isFile() && f.getName().equalsIgnoreCase(target))
-        .collect(Collectors.toList());
+    String targetLower = normalizeLower(tableName);
+    Set<File> matches = new LinkedHashSet<>();
+    for (File xml : collectAllXmlFiles()) {
+      if (fileNameMatches(xml, targetLower) || containsTableDefinition(xml, tableName)) {
+        matches.add(xml);
+      }
+    }
+    return new ArrayList<>(matches);
   }
 
   /**
-   * Builds a SQL script to drop and re-create primary key and foreign key
-   * constraints for the specified table, taking partitioning into account.
-   * <p>
-   * Steps performed:
-   * <ol>
-   * <li>Checks whether {@code tableName} is partitioned.</li>
-   * <li>Loads the table’s XML to determine the primary key name.</li>
-   * <li>Drops existing PK and re-adds it (with or without partition column).</li>
-   * <li>Iterates all table XML definition files to find any foreign keys referencing
-   * {@code tableName}, then drops and re-adds those FKs (partitioned if needed).</li>
-   * </ol>
-   *
-   * @param tableName      the name of the table to modify
-   * @param cp             the ConnectionProvider used to query catalog tables
-   * @param pkField        the column name of the primary key
-   * @param partitionField the partition key column (if table is partitioned)
-   * @return the complete DDL script as a single String
-   * @throws Exception if any database or XML processing error occurs
+   * Returns a flattened list of all {@code .xml} files under the collected directories.
+   */
+  private List<File> collectAllXmlFiles() throws NoSuchFileException {
+    List<File> xmls = new ArrayList<>();
+    for (File dir : collectTableDirs()) {
+      Collections.addAll(xmls, listXmlFiles(dir));
+    }
+    return xmls;
+  }
+
+  /**
+   * Lists {@code .xml} files inside {@code dir}. Returns an empty array if none/inaccessible.
+   */
+  private File[] listXmlFiles(File dir) {
+    File[] files = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
+    return files != null ? files : new File[0];
+  }
+
+  /* =========================
+     FK scanning & generation
+     ========================= */
+
+  /**
+   * Filename fast path: equals {@code <table>.xml} (case-insensitive).
+   */
+  private boolean fileNameMatches(File xml, String targetLower) {
+    return (xml != null) && xml.getName().equalsIgnoreCase(targetLower + ".xml");
+  }
+
+  /**
+   * True if the XML contains a {@code <table name="...">} for {@code tableName}.
+   */
+  private boolean containsTableDefinition(File xml, String tableName) {
+    try {
+      Document doc = getDocument(xml);
+      NodeList tableNodes = doc.getElementsByTagName(TABLE);
+      return nodeListHasTableName(tableNodes, tableName);
+    } catch (Exception e) {
+      logUnparseableXML(xml, e);
+      return false;
+    }
+  }
+
+  /**
+   * Scans a {@link NodeList} of {@code <table>} elements for a matching {@code name}.
+   */
+  private boolean nodeListHasTableName(NodeList tableNodes, String tableName) {
+    for (int i = 0; i < tableNodes.getLength(); i++) {
+      Element el = (Element) tableNodes.item(i);
+      if (tableName.equalsIgnoreCase(el.getAttribute("name"))) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /* =========================
+     XML utils
+     ========================= */
+
+  /**
+   * Lowercases with {@link Locale#ROOT} to avoid locale-specific surprises.
+   */
+  private String normalizeLower(String s) {
+    return s == null ? null : s.toLowerCase(Locale.ROOT);
+  }
+
+  /**
+   * Builds SQL to (re)create PK/FK constraints for {@code tableName}, handling partitioned vs non-partitioned.
    */
   public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
-      String partitionField) throws Exception {
-    // Check if table is partitioned
-    String checkPartition = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";
-    PreparedStatement psCheck = cp.getPreparedStatement(checkPartition);
-    psCheck.setString(1, tableName);
-    boolean isPartitioned = psCheck.executeQuery().next();
-    psCheck.close();
+      String partitionField) throws OBException, NoSuchFileException {
 
-    // Get required information from the primary table's XML
-    List<File> tableXmlFiles = findTableXmlFiles(tableName);
-    if (tableXmlFiles.isEmpty()) {
-      throw new Exception("Entity XML file for " + tableName + " not found.");
-    }
-    String pkName = findPrimaryKey(tableXmlFiles);
-    if (pkName == null) {
-      throw new Exception("Primary Key for entity " + tableName + " not found in XML.");
-    }
+    boolean isPartitioned = isPartitioned(cp, tableName);
+    String pkName = resolvePrimaryKeyName(tableName); // throws if not found
 
-    // SQL templates for primary table
-    String dropPrimaryKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
-    String addPartitionedPrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s, %s);\n";
-    String addSimplePrimaryKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s PRIMARY KEY (%s);\n";
+    StringBuilder sql = new StringBuilder(512);
+    appendPrimaryTableSql(sql, tableName, pkName, pkField, partitionField, isPartitioned);
+    FkContext ctx = new FkContext(cp, tableName, pkField, partitionField, isPartitioned);
+    appendAllForeignKeySql(sql, ctx);
+    return sql.toString();
+  }
 
-    // Build SQL script for primary table
-    StringBuilder sql = new StringBuilder();
-    sql.append(String.format(dropPrimaryKeySQL, tableName, pkName));
-
+  /**
+   * Appends DROP/ADD PK for the target table.
+   */
+  private void appendPrimaryTableSql(StringBuilder sql, String tableName, String pkName,
+      String pkField, String partitionField, boolean isPartitioned) {
+    sql.append(String.format(DROP_PK, tableName, pkName));
     if (isPartitioned) {
-      sql.append(
-          String.format(addPartitionedPrimaryKeySQL, tableName, pkName, pkField, partitionField));
+      sql.append(String.format(ADD_PK_PARTITIONED, tableName, pkName, pkField, partitionField));
     } else {
-      sql.append(String.format(addSimplePrimaryKeySQL, tableName, pkName, pkField));
+      sql.append(String.format(ADD_PK_SIMPLE, tableName, pkName, pkField));
     }
+  }
 
-    // SQL templates for foreign key constraints
-    String dropForeignKeySQL = ALTER_TABLE + "DROP CONSTRAINT IF EXISTS %s;\n";
-    String addColumnSQL = "ALTER TABLE %s\n" + "ADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
-    String updateColumnSQL = "UPDATE %s SET %s = F.%s FROM %s F "
-        + "WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
-    String addPartitionedForeignKeySQL = ALTER_TABLE
-        + "ADD CONSTRAINT %s FOREIGN KEY (%s, %s) "
-        + "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE "
-        + "ON UPDATE CASCADE ON DELETE NO ACTION;\n";
-    String addSimpleForeignKeySQL = ALTER_TABLE + "ADD CONSTRAINT %s FOREIGN KEY (%s) "
-        + "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE "
-        + "ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
+  /**
+   * Resolves the PK constraint name from table XML or throws {@link OBException}.
+   */
+  private String resolvePrimaryKeyName(String tableName) throws OBException, NoSuchFileException {
+    List<File> xmls = findTableXmlFiles(tableName);
+    if (xmls.isEmpty()) {
+      throw new OBException("Entity XML file for " + tableName + " not found.");
+    }
+    String pkName = findPrimaryKey(xmls);
+    if (pkName == null) {
+      throw new OBException("Primary Key for entity " + tableName + " not found in XML.");
+    }
+    return pkName;
+  }
 
-    // Iterate over all table XMLs to find references to our target table
-    for (File dir : collectTableDirs()) {
-      File[] xmlsInDir = dir.listFiles(f -> f.isFile() && f.getName().endsWith(".xml"));
-      if (xmlsInDir == null) {
-        continue;
+  /**
+   * Safe partitioned-table check used by {@link #buildConstraintSql}.
+   */
+  private boolean isPartitioned(ConnectionProvider cp, String tableName) {
+    String sql = "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, tableName);
+      try (ResultSet rs = ps.executeQuery()) {
+        return rs.next();
       }
+    } catch (Exception e) {
+      log4j.warn("Could not check partitioning for {}: {}", tableName, e.getMessage());
+      return false;
+    }
+  }
 
-      for (File sourceXmlFile : xmlsInDir) {
-        try {
-          Document doc = getDocument(sourceXmlFile);
-          NodeList tableNodes = doc.getElementsByTagName("table");
-          if (tableNodes.getLength() != 1) {
-            continue;
-          }
+  /**
+   * Scans all known table XMLs and appends FK SQL for children referencing the parent in {@code ctx}.
+   */
+  private void appendAllForeignKeySql(StringBuilder sql, FkContext ctx) {
+    for (File dir : collectTableDirsSafe()) {
+      for (File xml : listXmlFiles(dir)) {
+        processXmlForForeignKeys(sql, ctx, xml);
+      }
+    }
+  }
 
-          Element tableEl = (Element) tableNodes.item(0);
-          // Skip views or the table we are already processing
-          if (Boolean.parseBoolean(tableEl.getAttribute("isView")) || tableName.equalsIgnoreCase(
-              tableEl.getAttribute("name"))) {
-            continue;
-          }
+  /* =========================
+     Existence checks (safe)
+     ========================= */
 
-          String relatedTableName = tableEl.getAttribute("name").toUpperCase();
-          NodeList fkList = tableEl.getElementsByTagName("foreign-key");
+  /**
+   * Processes one XML file: detects child table and appends FK SQL if it references {@code ctx.parentTable}.
+   */
+  private void processXmlForForeignKeys(StringBuilder sql, FkContext ctx, File xml) {
+    try {
+      Document doc = getDocument(xml);
+      Element tableEl = singleTableElementOrNull(doc);
+      if (tableEl == null || shouldSkipTableElement(tableEl, ctx.parentTable)) return;
 
-          for (int i = 0; i < fkList.getLength(); i++) {
-            Element fkEl = (Element) fkList.item(i);
-            if (tableName.equalsIgnoreCase(fkEl.getAttribute("foreignTable"))) {
-              // This table has a foreign key to our target table
-              String foreignKey = fkEl.getAttribute("name");
-              NodeList refList = fkEl.getElementsByTagName("reference");
-              if (refList.getLength() == 0) {
-                continue;
-              }
+      String childTable = tableEl.getAttribute("name").toUpperCase();
+      NodeList fkList = tableEl.getElementsByTagName("foreign-key");
 
-              // Assuming a single-column FK for this logic, like the original method
-              Element refEl = (Element) refList.item(0);
-              String relationColumn = refEl.getAttribute("local");
+      for (int i = 0; i < fkList.getLength(); i++) {
+        Element fkEl = (Element) fkList.item(i);
 
-              if (isBlank(foreignKey) || isBlank(relationColumn)) {
-                continue;
-              }
+        String fkName = fkEl.getAttribute("name");
+        String localCol = firstLocalColumn(fkEl);
 
-              sql.append(String.format(dropForeignKeySQL, relatedTableName, foreignKey));
+        boolean validReference = referencesTarget(fkEl, ctx.parentTable);
+        boolean validData = StringUtils.isNotBlank(fkName) && StringUtils.isNotBlank(localCol);
 
-              if (isPartitioned) {
-                String partitionColumn = "etarc_" + partitionField + "__" + foreignKey;
-                sql.append(String.format(addColumnSQL, relatedTableName, partitionColumn));
-                sql.append(String.format(updateColumnSQL, relatedTableName, partitionColumn,
-                    partitionField, tableName, pkField, relatedTableName, relationColumn,
-                    relatedTableName, partitionColumn));
-                sql.append(
-                    String.format(addPartitionedForeignKeySQL, relatedTableName, foreignKey,
-                        relationColumn, partitionColumn, tableName, pkField, partitionField));
-              } else {
-                sql.append(String.format(addSimpleForeignKeySQL, relatedTableName, foreignKey,
-                    relationColumn, tableName, pkField));
-              }
-            }
-          }
-        } catch (Exception e) {
-          log4j.error("Error processing XML file: {}", sourceXmlFile.getAbsolutePath(), e);
+        if (validReference && validData) {
+          appendFkSqlForChild(sql, ctx, new ChildRef(childTable, fkName, localCol));
         }
       }
+    } catch (Exception e) {
+      log4j.error("Error processing XML file: {}", xml.getAbsolutePath(), e);
     }
-    return sql.toString();
+  }
+
+  /**
+   * Appends SQL for a single child table referencing the target.
+   * If the parent is partitioned, conditionally adds the helper column and recreates FK only if missing.
+   * If not partitioned, always drops & recreates the simple FK.
+   */
+  private void appendFkSqlForChild(StringBuilder sql, FkContext ctx, ChildRef child) {
+    if (ctx.parentIsPartitioned) {
+      String helperCol = "etarc_" + ctx.partitionField + "__" + child.fkName;
+
+      boolean colExists = existsSafe(() -> {
+            try {
+              return columnExists(ctx.cp, child.childTable, helperCol);
+            } catch (Exception e) {
+              throw new OBException(e);
+            }
+          },
+          "columnExists", helperCol, child.childTable);
+      boolean fkExists = existsSafe(() -> {
+            try {
+              return constraintExists(ctx.cp, child.childTable, child.fkName);
+            } catch (Exception e) {
+              throw new OBException(e);
+            }
+          },
+          "constraintExists", child.fkName, child.childTable);
+
+      if (colExists && fkExists) {
+        log4j.debug("Skipping creation of helper column {} and FK {} on {} because both already exist",
+            helperCol, child.fkName, child.childTable);
+        return;
+      }
+      if (!colExists) {
+        sql.append(String.format(ADD_COL_IF_NOT_EXISTS, child.childTable, helperCol));
+        sql.append(String.format(UPDATE_HELPER_COL, child.childTable, helperCol,
+            ctx.partitionField, ctx.parentTable, ctx.pkField,
+            child.childTable, child.localCol, child.childTable, helperCol));
+      }
+      if (!fkExists) {
+        sql.append(String.format(DROP_FK, child.childTable, child.fkName));
+        sql.append(String.format(ADD_FK_PARTITIONED, child.childTable, child.fkName, child.localCol,
+            helperCol, ctx.parentTable, ctx.pkField, ctx.partitionField));
+      }
+    } else {
+      sql.append(String.format(DROP_FK, child.childTable, child.fkName));
+      sql.append(String.format(ADD_FK_SIMPLE, child.childTable, child.fkName,
+          child.localCol, ctx.parentTable, ctx.pkField));
+    }
+  }
+
+  /* =========================
+     SQL templates helpers
+     ========================= */
+
+  /**
+   * Returns the single {@code <table>} element if exactly one exists; otherwise {@code null}.
+   */
+  private Element singleTableElementOrNull(Document doc) {
+    NodeList tables = doc.getElementsByTagName(TABLE);
+    if (tables.getLength() != 1) return null;
+    return (Element) tables.item(0);
+  }
+
+  /**
+   * True if the element represents a view or is the same as the target.
+   */
+  private boolean shouldSkipTableElement(Element tableEl, String targetTable) {
+    if (Boolean.parseBoolean(tableEl.getAttribute("isView"))) return true;
+    return targetTable.equalsIgnoreCase(tableEl.getAttribute("name"));
+  }
+
+  /**
+   * True if the {@code <foreign-key>} points to {@code targetTable}.
+   */
+  private boolean referencesTarget(Element fkEl, String targetTable) {
+    return targetTable.equalsIgnoreCase(fkEl.getAttribute("foreignTable"));
+  }
+
+  /**
+   * Returns the first {@code local} attribute of a {@code <reference>} child (single-column FK).
+   */
+  private String firstLocalColumn(Element fkEl) {
+    NodeList refList = fkEl.getElementsByTagName("reference");
+    if (refList.getLength() == 0) return null;
+    Element refEl = (Element) refList.item(0);
+    return refEl.getAttribute("local");
+  }
+
+  /**
+   * Collects table directories; returns empty list (not null) on failure and logs a warning.
+   */
+  private List<File> collectTableDirsSafe() {
+    try {
+      return collectTableDirs();
+    } catch (Exception e) {
+      log4j.warn("Could not collect table dirs: {}", e.getMessage());
+      return List.of();
+    }
+  }
+
+  /**
+   * Wraps boolean existence checks that may throw; logs and returns {@code false} on failure.
+   */
+  private boolean existsSafe(Check op, String label, String name, String onTable) {
+    try {
+      return op.get();
+    } catch (Exception e) {
+      log4j.warn("Could not run {} for {} on {}: {}", label, name, onTable, e.getMessage());
+      return false;
+    }
+  }
+
+  @FunctionalInterface
+  private interface Check {
+    boolean get() throws OBException;
+  }
+
+  // =========================
+  // Parameter objects
+  // =========================
+
+  /**
+   * Immutable context describing the parent (referenced) table and DB access.
+   */
+  private static final class FkContext {
+    final ConnectionProvider cp;
+    final String parentTable;
+    final String pkField;
+    final String partitionField;
+    final boolean parentIsPartitioned;
+
+    FkContext(ConnectionProvider cp, String parentTable, String pkField,
+        String partitionField, boolean parentIsPartitioned) {
+      this.cp = cp;
+      this.parentTable = parentTable;
+      this.pkField = pkField;
+      this.partitionField = partitionField;
+      this.parentIsPartitioned = parentIsPartitioned;
+    }
+  }
+
+  /**
+   * Immutable holder for a single child-table FK reference.
+   */
+  private static final class ChildRef {
+    final String childTable;
+    final String fkName;
+    final String localCol;
+
+    ChildRef(String childTable, String fkName, String localCol) {
+      this.childTable = childTable;
+      this.fkName = fkName;
+      this.localCol = localCol;
+    }
   }
 }
