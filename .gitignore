@@ -1,8 +1,14 @@
-/build/
+# Ignorar archivo de artefacto
 etendo.artifact.properties
-!build/classes/
 
-build/
-etendo.artifact.properties
+# Ignorar entorno virtual de Python
 .venv
 
+# Mantener los compilados en build/classes
+!build/classes/
+
+# Nuevos ficheros/directorios a ignorar
+docs/
+patch.diff
+src-db/database/model/excludeFilter.xml
+tool/__pycache__/

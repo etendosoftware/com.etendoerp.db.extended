@@ -55,116 +55,18 @@ import org.xml.sax.SAXException;
  * (PKs and FKs) found in the model XML files instead of using information_schema.
  */
 public class CreateExcludeFilter extends BuildValidation {
-  private static final Logger logger = LogManager.getLogger();
-  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
-  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   public static final String MODULES_JAR = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
+  public static final String END_XML_FILE = "\"/>\n";
+  private static final Logger logger = LogManager.getLogger();
+  private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
+  private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   private static String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
 
   public static boolean isBlank(String str) {
     return str == null || str.trim().isEmpty();
-  }
-
-  @Override
-  public List<String> execute() {
-    Set<String> constraintsToExclude = new HashSet<>();
-    Set<String> columnsToExclude = new HashSet<>();
-
-    try {
-      ConnectionProvider connectionProvider = getConnectionProvider();
-
-      // 1) Retrieve all base tables configured in ETARC_Table_Config
-      String baseTablesQuery =
-          "SELECT LOWER(T.TABLENAME) TABLENAME, LOWER(C.COLUMNNAME) COLUMNNAME " +
-              "FROM ETARC_TABLE_CONFIG TC " +
-              "JOIN AD_TABLE T ON TC.AD_TABLE_ID = T.AD_TABLE_ID " +
-              "JOIN AD_COLUMN C ON C.AD_COLUMN_ID = TC.AD_COLUMN_ID";
-      logger.info("Executing query to retrieve base tables");
-      PreparedStatement baseTablesStmt = connectionProvider.getPreparedStatement(baseTablesQuery);
-      ResultSet baseTablesResult = baseTablesStmt.executeQuery();
-
-      while (baseTablesResult.next()) {
-        String baseTableName = baseTablesResult.getString("tablename");
-        String partitionColumnName = baseTablesResult.getString("columnname");
-        if (isBlank(baseTableName)) {
-          logger.warn("Received an empty or null base table name; skipping.");
-          continue;
-        }
-        logger.info("Processing base table: {}", baseTableName);
-
-        // 2) Extract the PRIMARY KEY (PK) from the XML files of that base table
-        List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
-        String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
-        if (!isBlank(primaryKeyName)) {
-          String primaryKeyUpper = primaryKeyName.toUpperCase();
-          constraintsToExclude.add(primaryKeyUpper);
-          logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
-        } else {
-          logger.warn("No PRIMARY KEY found in the XMLs of '{}'", baseTableName);
-        }
-
-        // 3) Extract all FOREIGN KEYS (FK) that reference this base table
-        Set<String> referencingFks = findAllForeignKeysReferencing(baseTableName);
-        if (!referencingFks.isEmpty()) {
-          logger.info("Found {} FKs referencing '{}'", referencingFks.size(), baseTableName);
-          constraintsToExclude.addAll(referencingFks);
-          logger.info("Partition column for '{}': {}", baseTableName, partitionColumnName);
-          if (!isBlank(partitionColumnName)) {
-            referencingFks.forEach(fk -> {
-              String columnToExclude = "ETARC_" + partitionColumnName.toUpperCase() + "__" + fk.toUpperCase();
-              columnsToExclude.add(columnToExclude);
-              logger.info("Adding column to exclude: {}", columnToExclude);
-            });
-          }
-        } else {
-          logger.info("No FKs found referencing '{}'", baseTableName);
-        }
-      }
-
-      baseTablesResult.close();
-      baseTablesStmt.close();
-
-      // 4) Write the excludeFilter.xml with all collected constraint names
-      logger.info("Generating excludeFilter.xml for {} excluded constraints", constraintsToExclude.size());
-      String sourcePath = getSourcePath();
-      Path outputFile = Paths.get(
-          sourcePath,
-          "modules",
-          "com.etendoerp.db.extended",
-          "src-db",
-          "database",
-          "model",
-          "excludeFilter.xml"
-      );
-      Files.createDirectories(outputFile.getParent());
-
-      StringBuilder xmlBuilder = new StringBuilder();
-      xmlBuilder.append("<vector>\n");
-      for (String constraintName : constraintsToExclude) {
-        xmlBuilder
-            .append("  <excludedConstraint name=\"")
-            .append(constraintName)
-            .append("\"/>\n");
-      }
-      for (String columnName : columnsToExclude) {
-        xmlBuilder
-            .append("  <excludedColumn name=\"")
-            .append(columnName)
-            .append("\"/>\n");
-      }
-      xmlBuilder.append("</vector>\n");
-
-      Files.writeString(outputFile, xmlBuilder.toString(), StandardCharsets.UTF_8);
-      logger.info("Generated excludeFilter.xml successfully.");
-
-    } catch (Exception e) {
-      logger.error("Error generating excludeFilter.xml: {}", e.getMessage(), e);
-    }
-
-    return List.of();
   }
 
   /**
@@ -211,54 +113,6 @@ public class CreateExcludeFilter extends BuildValidation {
     Document doc = builder.parse(xml);
     doc.getDocumentElement().normalize();
     return doc;
-  }
-
-  /**
-   * Scans all table XML definition files for <foreign-key> elements that reference
-   * the specified target table and returns their constraint names.
-   * <p>
-   * Uses {@link #findAllTableXmlFiles()} to retrieve every XML file, parses each
-   * safely via {@link #getDocument(File)}, and inspects all <foreign-key> elements.
-   * If a foreign-key’s <code>foreignTable</code> attribute matches
-   * {@code targetTable} (case-insensitive) and its <code>name</code> attribute
-   * is non-empty, the name (uppercased) is added to the result set.
-   * <p>
-   * Any parse or I/O errors are caught and logged; in such cases the method
-   * continues processing remaining files and ultimately returns whatever has
-   * been collected (possibly an empty set).
-   *
-   * @param targetTable
-   *     the name of the table whose foreign-key references are sought
-   * @return a Set of unique, uppercased foreign-key names referencing {@code targetTable},
-   *     or an empty set if none are found or errors occur
-   */
-  public Set<String> findAllForeignKeysReferencing(String targetTable) {
-    Set<String> fkNames = new HashSet<>();
-    try {
-      List<File> allXmlFiles = findAllTableXmlFiles();
-
-      for (File xmlFile : allXmlFiles) {
-        if (!xmlFile.exists()) {
-          continue;
-        }
-        Document document = getDocument(xmlFile);
-
-        NodeList foreignKeyList = document.getElementsByTagName("foreign-key");
-        for (int i = 0; i < foreignKeyList.getLength(); i++) {
-          Element foreignKeyElement = (Element) foreignKeyList.item(i);
-          String fkTarget = foreignKeyElement.getAttribute("foreignTable");
-          if (fkTarget != null && fkTarget.equalsIgnoreCase(targetTable)) {
-            String fkName = foreignKeyElement.getAttribute("name");
-            if (fkName != null && !fkName.trim().isEmpty()) {
-              fkNames.add(fkName.toUpperCase());
-            }
-          }
-        }
-      }
-    } catch (Exception e) {
-      logger.error("Error searching for FKs referencing '{}': {}", targetTable, e.getMessage());
-    }
-    return fkNames;
   }
 
   /**
@@ -312,6 +166,289 @@ public class CreateExcludeFilter extends BuildValidation {
       logger.error("Error processing XML: {}", e.getMessage(), e);
     }
     return null;
+  }
+
+  @Override
+  public List<String> execute() {
+    Set<String> constraintsToExclude = new HashSet<>();
+    Set<String> columnsToExclude = new HashSet<>();
+    Set<String> triggersToExclude = new HashSet<>();
+    Set<String> functionsToExclude = new HashSet<>();
+
+    try {
+      ConnectionProvider connectionProvider = getConnectionProvider();
+      String baseTablesQuery = getBaseTablesQuery();
+
+      processPartitionedTables(connectionProvider, baseTablesQuery, constraintsToExclude, columnsToExclude);
+      generateTriggersAndFunctionsForChildTables(connectionProvider, baseTablesQuery,
+          triggersToExclude, functionsToExclude);
+      writeExcludeFilterXml(constraintsToExclude, columnsToExclude, triggersToExclude, functionsToExclude);
+
+    } catch (Exception e) {
+      logger.error("Error generating excludeFilter.xml: {}", e.getMessage(), e);
+    }
+
+    return List.of();
+  }
+
+  private String getBaseTablesQuery() {
+    return "SELECT LOWER(T.TABLENAME) TABLENAME, LOWER(C.COLUMNNAME) COLUMNNAME " +
+        "FROM ETARC_TABLE_CONFIG TC " +
+        "JOIN AD_TABLE T ON TC.AD_TABLE_ID = T.AD_TABLE_ID " +
+        "JOIN AD_COLUMN C ON C.AD_COLUMN_ID = TC.AD_COLUMN_ID";
+  }
+
+  private void processPartitionedTables(ConnectionProvider connectionProvider, String baseTablesQuery,
+      Set<String> constraintsToExclude, Set<String> columnsToExclude) throws Exception {
+
+    logger.info("Executing query to retrieve base tables");
+    PreparedStatement baseTablesStmt = connectionProvider.getPreparedStatement(baseTablesQuery);
+    ResultSet baseTablesResult = baseTablesStmt.executeQuery();
+
+    while (baseTablesResult.next()) {
+      String baseTableName = baseTablesResult.getString("tablename");
+      String partitionColumnName = baseTablesResult.getString("columnname");
+
+      if (isBlank(baseTableName)) {
+        logger.warn("Received an empty or null base table name; skipping.");
+        continue;
+      }
+
+      processSingleTable(baseTableName, partitionColumnName, constraintsToExclude, columnsToExclude);
+    }
+
+    baseTablesResult.close();
+    baseTablesStmt.close();
+  }
+
+  private void processSingleTable(String baseTableName, String partitionColumnName,
+      Set<String> constraintsToExclude, Set<String> columnsToExclude) throws Exception {
+
+    logger.info("Processing base table: {}", baseTableName);
+
+    processPrimaryKey(baseTableName, constraintsToExclude);
+    processForeignKeys(baseTableName, partitionColumnName, constraintsToExclude, columnsToExclude);
+  }
+
+  private void processPrimaryKey(String baseTableName, Set<String> constraintsToExclude) throws Exception {
+    List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
+    String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
+
+    if (!isBlank(primaryKeyName)) {
+      String primaryKeyUpper = primaryKeyName.toUpperCase();
+      constraintsToExclude.add(primaryKeyUpper);
+      logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
+    } else {
+      logger.warn("No PRIMARY KEY found in the XMLs of '{}'", baseTableName);
+    }
+  }
+
+  private void processForeignKeys(String baseTableName, String partitionColumnName,
+      Set<String> constraintsToExclude, Set<String> columnsToExclude) {
+
+    Set<String> referencingFks = findAllForeignKeysReferencing(baseTableName);
+    if (referencingFks.isEmpty()) {
+      logger.info("No FKs found referencing '{}'", baseTableName);
+      return;
+    }
+
+    logger.info("Found {} FKs referencing '{}'", referencingFks.size(), baseTableName);
+    constraintsToExclude.addAll(referencingFks);
+    generatePartitionColumns(partitionColumnName, referencingFks, columnsToExclude);
+  }
+
+  private void generatePartitionColumns(String partitionColumnName, Set<String> referencingFks,
+      Set<String> columnsToExclude) {
+
+    logger.info("Partition column for table: {}", partitionColumnName);
+    if (isBlank(partitionColumnName)) {
+      return;
+    }
+
+    referencingFks.forEach(fk -> {
+      String columnToExclude = "ETARC_" + partitionColumnName.toUpperCase() + "__" + fk.toUpperCase();
+      columnsToExclude.add(columnToExclude);
+      logger.info("Adding column to exclude: {}", columnToExclude);
+    });
+  }
+
+  private void writeExcludeFilterXml(Set<String> constraintsToExclude, Set<String> columnsToExclude,
+      Set<String> triggersToExclude, Set<String> functionsToExclude) throws IOException {
+
+    logger.info("Generating excludeFilter.xml for {} excluded constraints, {} columns, {} triggers, {} functions",
+        constraintsToExclude.size(), columnsToExclude.size(), triggersToExclude.size(), functionsToExclude.size());
+
+    String sourcePath = getSourcePath();
+    Path outputFile = Paths.get(sourcePath, MODULES_BASE, "com.etendoerp.db.extended",
+        "src-db", "database", "model", "excludeFilter.xml");
+    Files.createDirectories(outputFile.getParent());
+
+    StringBuilder xmlBuilder = new StringBuilder();
+    xmlBuilder.append("<vector>\n");
+
+    appendXmlEntries(xmlBuilder, constraintsToExclude, "excludedConstraint");
+    appendXmlEntries(xmlBuilder, columnsToExclude, "excludedColumn");
+    appendXmlEntries(xmlBuilder, triggersToExclude, "excludedTrigger");
+    appendXmlEntries(xmlBuilder, functionsToExclude, "excludedFunction");
+
+    xmlBuilder.append("</vector>\n");
+
+    Files.writeString(outputFile, xmlBuilder.toString(), StandardCharsets.UTF_8);
+    logger.info("Generated excludeFilter.xml successfully.");
+  }
+
+  private void appendXmlEntries(StringBuilder xmlBuilder, Set<String> entries, String elementName) {
+    for (String entry : entries) {
+      xmlBuilder.append("  <").append(elementName).append(" name=\"")
+          .append(entry).append(END_XML_FILE);
+    }
+  }
+
+  /**
+   * Generates trigger and function names for child tables that reference partitioned parent tables.
+   * Uses the same naming convention as PartitionedConstraintsHandling.
+   */
+  private void generateTriggersAndFunctionsForChildTables(ConnectionProvider connectionProvider,
+      String baseTablesQuery, Set<String> triggersToExclude, Set<String> functionsToExclude) {
+
+    try {
+      // Get all partitioned base tables
+      PreparedStatement baseTablesStmt = connectionProvider.getPreparedStatement(baseTablesQuery);
+      ResultSet baseTablesResult = baseTablesStmt.executeQuery();
+
+      Set<String> partitionedTables = new HashSet<>();
+      while (baseTablesResult.next()) {
+        String baseTableName = baseTablesResult.getString("tablename");
+        if (!isBlank(baseTableName)) {
+          partitionedTables.add(baseTableName.toUpperCase());
+        }
+      }
+      baseTablesResult.close();
+      baseTablesStmt.close();
+
+      // Find all child tables that reference these partitioned tables
+      Set<String> processedChildTables = new HashSet<>();
+
+      for (String partitionedTable : partitionedTables) {
+        logger.info("Generating trigger exclusions for partitioned table: {}", partitionedTable);
+
+        // Find all FKs that reference this partitioned table
+        Set<String> referencingFks = findAllForeignKeysReferencing(partitionedTable);
+
+        for (String fkName : referencingFks) {
+          // Find the child table that contains this FK
+          String childTable = findChildTableForForeignKey(fkName);
+
+          if (!isBlank(childTable)) {
+            String childTableUpper = childTable.toUpperCase();
+
+            // Skip if we already processed this child table
+            if (processedChildTables.contains(childTableUpper)) {
+              continue;
+            }
+
+            // Generate trigger and function names using the same pattern as PartitionedConstraintsHandling
+            String triggerName = "ETARC_PARTITION_TRIGGER_" + childTableUpper;
+            String functionName = "ETARC_AUTO_PARTITION_" + childTableUpper;
+
+            triggersToExclude.add(triggerName);
+            functionsToExclude.add(functionName);
+            processedChildTables.add(childTableUpper);
+
+            logger.info("Added trigger exclusion: {} for child table: {}", triggerName, childTableUpper);
+            logger.info("Added function exclusion: {} for child table: {}", functionName, childTableUpper);
+          }
+        }
+      }
+
+    } catch (Exception e) {
+      logger.error("Error generating trigger and function exclusions: {}", e.getMessage(), e);
+    }
+  }
+
+  /**
+   * Finds the child table that contains the specified foreign key constraint.
+   */
+  private String findChildTableForForeignKey(String fkName) {
+    try {
+      List<File> allXmlFiles = findAllTableXmlFiles();
+
+      for (File xmlFile : allXmlFiles) {
+        if (!xmlFile.exists()) {
+          continue;
+        }
+
+        Document document = getDocument(xmlFile);
+        NodeList tableList = document.getElementsByTagName("table");
+
+        if (tableList.getLength() == 1) {
+          Element tableElement = (Element) tableList.item(0);
+          String tableName = tableElement.getAttribute("name");
+
+          // Check if this table contains the FK
+          NodeList foreignKeyList = document.getElementsByTagName("foreign-key");
+          for (int i = 0; i < foreignKeyList.getLength(); i++) {
+            Element foreignKeyElement = (Element) foreignKeyList.item(i);
+            String currentFkName = foreignKeyElement.getAttribute("name");
+
+            if (fkName.equalsIgnoreCase(currentFkName)) {
+              return tableName;
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      logger.error("Error finding child table for FK '{}': {}", fkName, e.getMessage());
+    }
+    return null;
+  }
+
+  /**
+   * Scans all table XML definition files for <foreign-key> elements that reference
+   * the specified target table and returns their constraint names.
+   * <p>
+   * Uses {@link #findAllTableXmlFiles()} to retrieve every XML file, parses each
+   * safely via {@link #getDocument(File)}, and inspects all <foreign-key> elements.
+   * If a foreign-key’s <code>foreignTable</code> attribute matches
+   * {@code targetTable} (case-insensitive) and its <code>name</code> attribute
+   * is non-empty, the name (uppercased) is added to the result set.
+   * <p>
+   * Any parse or I/O errors are caught and logged; in such cases the method
+   * continues processing remaining files and ultimately returns whatever has
+   * been collected (possibly an empty set).
+   *
+   * @param targetTable
+   *     the name of the table whose foreign-key references are sought
+   * @return a Set of unique, uppercased foreign-key names referencing {@code targetTable},
+   *     or an empty set if none are found or errors occur
+   */
+  public Set<String> findAllForeignKeysReferencing(String targetTable) {
+    Set<String> fkNames = new HashSet<>();
+    try {
+      List<File> allXmlFiles = findAllTableXmlFiles();
+
+      for (File xmlFile : allXmlFiles) {
+        if (!xmlFile.exists()) {
+          continue;
+        }
+        Document document = getDocument(xmlFile);
+
+        NodeList foreignKeyList = document.getElementsByTagName("foreign-key");
+        for (int i = 0; i < foreignKeyList.getLength(); i++) {
+          Element foreignKeyElement = (Element) foreignKeyList.item(i);
+          String fkTarget = foreignKeyElement.getAttribute("foreignTable");
+          if (fkTarget != null && fkTarget.equalsIgnoreCase(targetTable)) {
+            String fkName = foreignKeyElement.getAttribute("name");
+            if (fkName != null && !fkName.trim().isEmpty()) {
+              fkNames.add(fkName.toUpperCase());
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      logger.error("Error searching for FKs referencing '{}': {}", targetTable, e.getMessage());
+    }
+    return fkNames;
   }
 
   /**

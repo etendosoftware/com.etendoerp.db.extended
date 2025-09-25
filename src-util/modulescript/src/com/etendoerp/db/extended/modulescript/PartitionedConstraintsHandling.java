@@ -26,6 +26,7 @@ import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -60,17 +61,16 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   public static final String SEPARATOR = "=======================================================";
   public static final String TABLE_NAME = "tableName";
   public static final String TABLE = "table";
+  public static final String FOREIGN_KEY = "foreign-key";
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   private static final Logger log4j = LogManager.getLogger();
   private static final String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
-
   // Backup infrastructure
   private static final String BACKUP_SCHEMA = "etarc_backups";
   private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
   private static final int MAX_BACKUPS_PER_TABLE = 5;
   private static final int BACKUP_RETENTION_DAYS = 7;
-
   // SQL templates
   private static final String DROP_PK =
       "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s CASCADE;\n";
@@ -90,6 +90,30 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private static final String ADD_FK_SIMPLE =
       "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) " +
           "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
+  // Trigger templates for automatic partition column population
+  private static final String DROP_TRIGGER =
+      "DROP TRIGGER IF EXISTS %s ON %s;\n";
+  private static final String DROP_FUNCTION =
+      "DROP FUNCTION IF EXISTS %s();\n";
+  private static final String CREATE_TRIGGER_FUNCTION =
+      "CREATE OR REPLACE FUNCTION %s()\n" +
+          "RETURNS TRIGGER AS $$\n" +
+          "BEGIN\n" +
+          "    -- Auto-populate partition column from parent table\n" +
+          "    IF NEW.%s IS NULL THEN\n" +
+          "        SELECT %s INTO NEW.%s\n" +
+          "        FROM %s\n" +
+          "        WHERE %s = NEW.%s;\n" +
+          "    END IF;\n" +
+          "    \n" +
+          "    RETURN NEW;\n" +
+          "END;\n" +
+          "$$ LANGUAGE plpgsql;\n";
+  private static final String CREATE_TRIGGER =
+      "CREATE TRIGGER %s\n" +
+          "    BEFORE INSERT ON %s\n" +
+          "    FOR EACH ROW\n" +
+          "    EXECUTE FUNCTION %s();\n";
 
   /**
    * Null/blank convenience, kept for readability in callers.
@@ -497,7 +521,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    * DOM scan for any matching {@code <foreign-key>} element; logs the number scanned at DEBUG.
    */
   private boolean hasForeignKeyRef(Document doc, String tableName, File sourceXml) {
-    NodeList fkList = doc.getElementsByTagName("foreign-key");
+    NodeList fkList = doc.getElementsByTagName(FOREIGN_KEY);
     for (int i = 0; i < fkList.getLength(); i++) {
       Element fkEl = (Element) fkList.item(i);
       if (foreignKeyElementMatches(fkEl, tableName, sourceXml)) {
@@ -1113,6 +1137,13 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     appendPrimaryTableSql(sql, tableName, pkName, pkField, partitionField, isPartitioned);
     FkContext ctx = new FkContext(cp, tableName, pkField, partitionField, isPartitioned);
     appendAllForeignKeySql(sql, ctx);
+
+    // Add trigger creation for partitioned tables
+    if (isPartitioned) {
+      log4j.info("Creating triggers for partitioned table {}", tableName);
+      appendTriggerSql(sql, ctx);
+    }
+
     return sql.toString();
   }
 
@@ -1171,6 +1202,190 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     }
   }
 
+  /**
+   * Creates trigger SQL for child tables to automatically populate partition columns.
+   * This is called when processing partitioned parent tables.
+   */
+  private void appendTriggerSql(StringBuilder sql, FkContext ctx) {
+    if (!ctx.parentIsPartitioned) {
+      return; // Only create triggers for partitioned parent tables
+    }
+
+    Set<String> processedChildTables = new HashSet<>();
+    processTablesForTriggers(sql, ctx, processedChildTables);
+  }
+
+  private void processTablesForTriggers(StringBuilder sql, FkContext ctx, Set<String> processedChildTables) {
+    for (File dir : collectTableDirsSafe()) {
+      for (File xml : listXmlFiles(dir)) {
+        processXmlForTriggers(sql, ctx, xml, processedChildTables);
+      }
+    }
+  }
+
+  private void processXmlForTriggers(StringBuilder sql, FkContext ctx, File xml, Set<String> processedChildTables) {
+    try {
+      Document doc = getDocument(xml);
+      Element tableEl = singleTableElementOrNull(doc);
+      if (shouldSkipTableForTrigger(tableEl, ctx.parentTable)) {
+        return;
+      }
+
+      String childTable = tableEl.getAttribute("name").toUpperCase();
+      if (processedChildTables.contains(childTable)) {
+        return;
+      }
+
+      ForeignKeyInfo fkInfo = findFirstValidForeignKey(tableEl, ctx.parentTable);
+      if (fkInfo.isValid()) {
+        appendTriggerForChild(sql, ctx, childTable, fkInfo.getName(), fkInfo.getLocalColumn());
+        processedChildTables.add(childTable);
+      }
+    } catch (Exception e) {
+      log4j.error("Error processing XML file for triggers: {}", xml.getAbsolutePath(), e);
+    }
+  }
+
+  private boolean shouldSkipTableForTrigger(Element tableEl, String parentTable) {
+    return tableEl == null || shouldSkipTableElement(tableEl, parentTable);
+  }
+
+  private ForeignKeyInfo findFirstValidForeignKey(Element tableEl, String parentTable) {
+    NodeList fkList = tableEl.getElementsByTagName(FOREIGN_KEY);
+    
+    for (int i = 0; i < fkList.getLength(); i++) {
+      Element fkEl = (Element) fkList.item(i);
+      if (!referencesTarget(fkEl, parentTable)) {
+        continue;
+      }
+
+      String fkName = fkEl.getAttribute("name");
+      String localCol = firstLocalColumn(fkEl);
+      if (!isBlank(fkName) && !isBlank(localCol)) {
+        return new ForeignKeyInfo(fkName, localCol);
+      }
+    }
+    
+    return new ForeignKeyInfo(null, null);
+  }
+
+  private static class ForeignKeyInfo {
+    private final String name;
+    private final String localColumn;
+
+    public ForeignKeyInfo(String name, String localColumn) {
+      this.name = name;
+      this.localColumn = localColumn;
+    }
+
+    public boolean isValid() {
+      return name != null && localColumn != null;
+    }
+
+    public String getName() {
+      return name;
+    }
+
+    public String getLocalColumn() {
+      return localColumn;
+    }
+  }
+
+  /**
+   * Appends trigger creation SQL for a specific child table.
+   * Drops and recreates triggers to ensure they're current.
+   */
+  private void appendTriggerForChild(StringBuilder sql, FkContext ctx, String childTable,
+      String fkName, String localCol) {
+    String helperCol = "etarc_" + ctx.partitionField + "__" + fkName;
+    String triggerName = "etarc_partition_trigger_" + childTable.toLowerCase();
+    String functionName = "etarc_auto_partition_" + childTable.toLowerCase();
+
+    // Always drop and recreate to ensure trigger is current
+    sql.append(String.format(DROP_TRIGGER, triggerName, childTable));
+    sql.append(String.format(DROP_FUNCTION, functionName));
+
+    // Create function that populates the partition column
+    sql.append(String.format(CREATE_TRIGGER_FUNCTION,
+        functionName,           // function name
+        helperCol,             // NEW.helper_column (check if null)
+        ctx.partitionField,    // parent.partition_field (select this)
+        helperCol,             // NEW.helper_column (assign to this)
+        ctx.parentTable,       // parent table name
+        ctx.pkField,          // parent.pk_field (where condition)
+        localCol              // NEW.local_column (where value)
+    ));
+
+    // Create trigger
+    sql.append(String.format(CREATE_TRIGGER,
+        triggerName,          // trigger name
+        childTable,           // child table name
+        functionName          // function name
+    ));
+
+    log4j.info("Added trigger SQL for child table {} -> {} (partition column: {})",
+        childTable, ctx.parentTable, helperCol);
+  }
+
+  /**
+   * Creates SQL to clean up triggers for a table when it's no longer partitioned.
+   * This method scans all child tables and removes triggers that were created for
+   * the specified parent table.
+   */
+  public String buildTriggerCleanupSql(String tableName, ConnectionProvider cp) {
+    StringBuilder sql = new StringBuilder(256);
+    processTablesForCleanup(sql, tableName);
+    return sql.toString();
+  }
+
+  private void processTablesForCleanup(StringBuilder sql, String tableName) {
+    for (File dir : collectTableDirsSafe()) {
+      for (File xml : listXmlFiles(dir)) {
+        processXmlForCleanup(sql, xml, tableName);
+      }
+    }
+  }
+
+  private void processXmlForCleanup(StringBuilder sql, File xml, String tableName) {
+    try {
+      Document doc = getDocument(xml);
+      Element tableEl = singleTableElementOrNull(doc);
+      if (shouldSkipTableForCleanup(tableEl, tableName)) {
+        return;
+      }
+
+      String childTable = tableEl.getAttribute("name").toUpperCase();
+      processForeignKeysForCleanup(sql, tableEl, childTable, tableName);
+    } catch (Exception e) {
+      log4j.error("Error processing XML file for trigger cleanup: {}", xml.getAbsolutePath(), e);
+    }
+  }
+
+  private boolean shouldSkipTableForCleanup(Element tableEl, String tableName) {
+    return tableEl == null || shouldSkipTableElement(tableEl, tableName);
+  }
+
+  private void processForeignKeysForCleanup(StringBuilder sql, Element tableEl, String childTable, String tableName) {
+    NodeList fkList = tableEl.getElementsByTagName(FOREIGN_KEY);
+
+    for (int i = 0; i < fkList.getLength(); i++) {
+      Element fkEl = (Element) fkList.item(i);
+      if (referencesTarget(fkEl, tableName)) {
+        appendCleanupSqlForChild(sql, childTable);
+      }
+    }
+  }
+
+  private void appendCleanupSqlForChild(StringBuilder sql, String childTable) {
+    String triggerName = "etarc_partition_trigger_" + childTable.toLowerCase();
+    String functionName = "etarc_auto_partition_" + childTable.toLowerCase();
+
+    sql.append(String.format(DROP_TRIGGER, triggerName, childTable));
+    sql.append(String.format(DROP_FUNCTION, functionName));
+
+    log4j.info("Added cleanup SQL for child table {} triggers", childTable);
+  }
+
   /* =========================
      Existence checks (safe)
      ========================= */
@@ -1185,7 +1400,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (tableEl == null || shouldSkipTableElement(tableEl, ctx.parentTable)) return;
 
       String childTable = tableEl.getAttribute("name").toUpperCase();
-      NodeList fkList = tableEl.getElementsByTagName("foreign-key");
+      NodeList fkList = tableEl.getElementsByTagName(FOREIGN_KEY);
 
       for (int i = 0; i < fkList.getLength(); i++) {
         Element fkEl = (Element) fkList.item(i);
