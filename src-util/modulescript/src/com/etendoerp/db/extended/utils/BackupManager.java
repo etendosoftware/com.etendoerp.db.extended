@@ -29,12 +29,54 @@ import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
 
 /**
- * Manages backup operations for partitioned tables including creation, restoration,
- * and cleanup of old backups according to retention policies.
+ * Manages database backup operations for partitioned table constraint processing.
+ *
+ * <p>This class provides comprehensive backup functionality to ensure data safety during
+ * constraint modifications on partitioned tables. It implements a robust backup strategy
+ * with automatic cleanup and retention policies.
+ *
+ * <h3>Key Features:</h3>
+ * <ul>
+ *   <li><strong>Automatic Infrastructure:</strong> Creates backup schema and metadata tables as needed</li>
+ *   <li><strong>Smart Backup Creation:</strong> Only creates backups when actually needed</li>
+ *   <li><strong>Retention Management:</strong> Automatically cleans up old backups based on policies</li>
+ *   <li><strong>Metadata Tracking:</strong> Maintains detailed records of all backup operations</li>
+ *   <li><strong>Error Resilience:</strong> Continues operation even if backup operations fail</li>
+ * </ul>
+ *
+ * <h3>Backup Strategy:</h3>
+ * <ul>
+ *   <li><strong>Schema:</strong> All backups are stored in the {@code etarc_backups} schema</li>
+ *   <li><strong>Naming:</strong> Backup tables follow the pattern {@code backup_<tablename>_<timestamp>}</li>
+ *   <li><strong>Retention:</strong> Maximum of {@value #MAX_BACKUPS_PER_TABLE} backups per table</li>
+ *   <li><strong>Age Policy:</strong> Backups older than {@value #BACKUP_RETENTION_DAYS} days are eligible for cleanup</li>
+ * </ul>
+ *
+ * <h3>Backup Infrastructure:</h3>
+ * <p>The backup system uses the following database objects:
+ * <ul>
+ *   <li>{@code etarc_backups} schema - Contains all backup tables and metadata</li>
+ *   <li>{@code backup_metadata} table - Tracks backup creation times and relationships</li>
+ *   <li>{@code processing_metadata} table - Tracks processing timestamps for tables</li>
+ * </ul>
+ *
+ * <h3>Usage Pattern:</h3>
+ * <pre>{@code
+ * BackupManager backupManager = new BackupManager();
+ * backupManager.ensureBackupInfrastructure(connectionProvider);
+ * backupManager.cleanupExcessBackups(connectionProvider);
+ *
+ * // Execute SQL with automatic backup
+ * backupManager.executeSqlWithBackup(cp, "my_table", true, "ALTER TABLE ...");
+ * }</pre>
+ *
+ * @author Futit Services S.L.
+ * @see com.etendoerp.db.extended.modulescript.PartitionedConstraintsHandling
+ * @since ETP-2450
  */
 public class BackupManager {
   private static final Logger log4j = LogManager.getLogger();
-  
+
   // Backup infrastructure
   private static final String BACKUP_SCHEMA = "etarc_backups";
   private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
@@ -43,6 +85,8 @@ public class BackupManager {
 
   /**
    * Creates backup schema/tables if missing. Best-effort, non-throwing.
+   * 
+   * @param cp the ConnectionProvider for database access
    */
   public void ensureBackupInfrastructure(ConnectionProvider cp) {
     String createSchema = "CREATE SCHEMA IF NOT EXISTS " + BACKUP_SCHEMA + ";";
@@ -59,6 +103,12 @@ public class BackupManager {
 
   /**
    * Returns the last processed timestamp for a table, or {@code null} if unknown.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to query for processing timestamp
+   * @return the last processed timestamp, or null if not found or on error
    */
   public Timestamp getLastProcessed(ConnectionProvider cp, String tableName) {
     String sql = "SELECT last_processed FROM " + BACKUP_SCHEMA + ".processing_metadata WHERE lower(table_name) = lower(?)";
@@ -77,6 +127,11 @@ public class BackupManager {
 
   /**
    * Sets {@code last_processed = now()} for the given table. Best-effort.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to update processing timestamp for
    */
   public void setLastProcessed(ConnectionProvider cp, String tableName) {
     String sql = "INSERT INTO " + BACKUP_SCHEMA + ".processing_metadata (table_name, last_processed) VALUES (?, now())"
@@ -91,6 +146,9 @@ public class BackupManager {
 
   /**
    * Cleans old/excess backups across all tables and logs a summary.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
    */
   public void cleanupExcessBackups(ConnectionProvider cp) {
     logStartCleanup();
@@ -110,6 +168,14 @@ public class BackupManager {
 
   /**
    * Creates a snapshot table in {@code BACKUP_SCHEMA} and records it in metadata.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to create a backup for
+   * @return the backup table name that was created
+   * @throws Exception
+   *     if backup creation fails
    */
   public String createTableBackup(ConnectionProvider cp, String tableName) throws Exception {
     String backupName = tableName.toLowerCase() + "_backup_" + System.currentTimeMillis();
@@ -131,6 +197,15 @@ public class BackupManager {
 
   /**
    * Best-effort restore: truncates target table and inserts from the backup.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the target table name to restore to
+   * @param backupName
+   *     the backup table name to restore from
+   * @throws Exception
+   *     if restore operation fails
    */
   public void restoreBackup(ConnectionProvider cp, String tableName, String backupName) throws Exception {
     String truncate = "TRUNCATE TABLE public." + tableName + " RESTART IDENTITY CASCADE;";
@@ -143,6 +218,17 @@ public class BackupManager {
   /**
    * Executes the given SQL against the table. If the table is partitioned, creates a backup
    * beforehand and restores it on failure.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to execute SQL against
+   * @param isPartitioned
+   *     whether the table is partitioned (determines if backup is needed)
+   * @param sql
+   *     the SQL statement to execute
+   * @throws Exception
+   *     if SQL execution fails and restore is unsuccessful
    */
   public void executeSqlWithBackup(ConnectionProvider cp, String tableName, boolean isPartitioned, String sql)
       throws Exception {

@@ -34,7 +34,78 @@ import org.w3c.dom.NodeList;
 import org.openbravo.base.exception.OBException;
 
 /**
- * Processes constraints (primary keys and foreign keys) for partitioned tables.
+ * Orchestrates the complex processing of database constraints for partitioned tables.
+ *
+ * <p>This class serves as the central coordinator for constraint management in PostgreSQL
+ * partitioned tables. It combines table analysis, XML processing, and SQL generation to
+ * handle the intricate requirements of maintaining referential integrity in partitioned
+ * table environments.
+ *
+ * <h3>Core Responsibilities:</h3>
+ * <ul>
+ *   <li><strong>Constraint Analysis:</strong> Determines current constraint states and requirements</li>
+ *   <li><strong>Partitioning Detection:</strong> Identifies whether tables are partitioned in PostgreSQL</li>
+ *   <li><strong>SQL Orchestration:</strong> Coordinates SQL generation for constraint recreation</li>
+ *   <li><strong>Foreign Key Discovery:</strong> Finds child tables that reference the target table</li>
+ *   <li><strong>Primary Key Management:</strong> Handles primary key constraint modifications</li>
+ *   <li><strong>Trigger Integration:</strong> Incorporates trigger management into constraint processing</li>
+ * </ul>
+ *
+ * <h3>PostgreSQL Partitioning Challenges:</h3>
+ * <p>Partitioned tables in PostgreSQL have unique constraint requirements:
+ * <ul>
+ *   <li><strong>Primary Keys:</strong> Must include the partition key in addition to logical primary key</li>
+ *   <li><strong>Foreign Keys:</strong> Must reference all columns in the target table's primary key</li>
+ *   <li><strong>Uniqueness:</strong> Unique constraints must include the partition key</li>
+ *   <li><strong>Inheritance:</strong> Child tables inherit certain constraints from parent tables</li>
+ * </ul>
+ *
+ * <h3>Processing Strategy:</h3>
+ * <ol>
+ *   <li><strong>Analysis Phase:</strong> Determine table partitioning status and current constraints</li>
+ *   <li><strong>Discovery Phase:</strong> Find all child tables that reference the target table</li>
+ *   <li><strong>Planning Phase:</strong> Determine which constraints need to be dropped/recreated</li>
+ *   <li><strong>Execution Phase:</strong> Generate SQL for constraint modifications</li>
+ *   <li><strong>Integration Phase:</strong> Include trigger management as needed</li>
+ * </ol>
+ *
+ * <h3>Component Integration:</h3>
+ * <p>This processor coordinates with several other components:
+ * <ul>
+ *   <li>{@link XmlTableProcessor} - For XML table definition analysis</li>
+ *   <li>{@link SqlBuilder} - For SQL statement generation</li>
+ *   <li>{@link TriggerManager} - For database trigger management</li>
+ * </ul>
+ *
+ * <h3>Error Handling:</h3>
+ * <p>The processor implements defensive programming practices:
+ * <ul>
+ *   <li>Safe existence checks that don't fail on missing objects</li>
+ *   <li>Graceful degradation when optional operations fail</li>
+ *   <li>Detailed logging for debugging and monitoring</li>
+ * </ul>
+ *
+ * <h3>Usage Example:</h3>
+ * <pre>{@code
+ * ConstraintProcessor processor = new ConstraintProcessor(
+ *     xmlProcessor, sqlBuilder, triggerManager);
+ *
+ * // Check if table is partitioned
+ * boolean isPartitioned = processor.isTablePartitioned(cp, "C_Order");
+ *
+ * // Generate constraint SQL
+ * String sql = processor.buildConstraintSql("C_Order", cp, "C_Order_ID", "DateOrdered");
+ *
+ * // Get primary key columns
+ * List<String> pkCols = processor.getPrimaryKeyColumns(cp, "C_Order");
+ * }</pre>
+ *
+ * @author Futit Services S.L.
+ * @see XmlTableProcessor
+ * @see SqlBuilder
+ * @see TriggerManager
+ * @see com.etendoerp.db.extended.modulescript.PartitionedConstraintsHandling
+ * @since ETP-2450
  */
 public class ConstraintProcessor {
   private static final Logger log4j = LogManager.getLogger();
@@ -44,6 +115,16 @@ public class ConstraintProcessor {
   private final SqlBuilder sqlBuilder;
   private final TriggerManager triggerManager;
 
+  /**
+   * Constructs a new ConstraintProcessor with the specified dependencies.
+   *
+   * @param xmlProcessor
+   *     the XmlTableProcessor for processing table definitions
+   * @param sqlBuilder
+   *     the SqlBuilder for generating SQL statements
+   * @param triggerManager
+   *     the TriggerManager for handling database triggers
+   */
   public ConstraintProcessor(XmlTableProcessor xmlProcessor, SqlBuilder sqlBuilder, TriggerManager triggerManager) {
     this.xmlProcessor = xmlProcessor;
     this.sqlBuilder = sqlBuilder;
@@ -52,6 +133,16 @@ public class ConstraintProcessor {
 
   /**
    * Builds SQL to (re)create PK/FK constraints for {@code tableName}, handling partitioned vs non-partitioned.
+   *
+   * @param tableName
+   *     the table name to build constraints for
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param pkField
+   *     the primary key field name
+   * @param partitionField
+   *     the partition field name (if applicable)
+   * @return the complete SQL string for constraint creation
    */
   public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
       String partitionField) {
@@ -76,6 +167,14 @@ public class ConstraintProcessor {
 
   /**
    * True if the table is partitioned in PostgreSQL.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to check for partitioning
+   * @return true if the table is partitioned, false otherwise
+   * @throws Exception
+   *     if database query fails
    */
   public boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws Exception {
     try (PreparedStatement ps = cp.getPreparedStatement(
@@ -89,6 +188,14 @@ public class ConstraintProcessor {
 
   /**
    * Returns the list of PK columns for the given table.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to get primary key columns for
+   * @return a list of primary key column names
+   * @throws Exception
+   *     if database query fails
    */
   public List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws Exception {
     List<String> pkCols = new ArrayList<>();
@@ -108,6 +215,16 @@ public class ConstraintProcessor {
 
   /**
    * True if a column exists on the given table.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to check for column existence
+   * @param columnName
+   *     the column name to check for existence
+   * @return true if the column exists, false otherwise
+   * @throws Exception
+   *     if database query fails
    */
   public boolean columnExists(ConnectionProvider cp, String tableName, String columnName) throws Exception {
     String sql = "SELECT 1 FROM information_schema.columns " +
@@ -123,6 +240,16 @@ public class ConstraintProcessor {
 
   /**
    * True if a constraint with the given name exists on the table.
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
+   * @param tableName
+   *     the table name to check for constraint existence
+   * @param constraintName
+   *     the constraint name to check for existence
+   * @return true if the constraint exists, false otherwise
+   * @throws Exception
+   *     if database query fails
    */
   public boolean constraintExists(ConnectionProvider cp, String tableName, String constraintName) throws Exception {
     String sql = "SELECT 1 FROM information_schema.table_constraints " +
