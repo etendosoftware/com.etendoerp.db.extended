@@ -1,6 +1,7 @@
 # com.etendoerp.db.extended **(BETA MODULE)**
 
-This **BETA** module extends the database functionalities of the Etendo ERP, providing advanced tools to manage complex structures such as partitioned tables with intelligent constraint management.
+This **BETA** module extends the database functionalities of the Etendo ERP, providing advanced tools to manage complex
+structures such as partitioned tables with intelligent constraint management.
 
 ## 🔧 Main Features
 
@@ -46,14 +47,17 @@ pip3 install pyyaml psycopg2-binary
 ## 🚀 Usage
 
 ### 📌 1. Partition a Table
-⚠️ This process modifies the physical structure of the table. Use with caution and always validate backups before execution.
+
+⚠️ This process modifies the physical structure of the table. Use with caution and always validate backups before
+execution.
 
 #### Steps to Configure a Partitioned Table
+
 1. Log in as System Administrator.
-    Ensure you have the necessary privileges to modify system-level configurations.
+   Ensure you have the necessary privileges to modify system-level configurations.
 
 2. Navigate to the Partitioned Table Config window.
-    This section allows you to define how tables will be partitioned.
+   This section allows you to define how tables will be partitioned.
 
     1. Create a new configuration record.
 
@@ -74,8 +78,10 @@ python3 modules/com.etendoerp.db.extended/tool/migrate.py
 ./gradlew update.database -Dforce=yes smartbuild
 ```
 
-The first command automatically partitions tables configured either in the data dictionary or in a YAML definition file.  
-The `update.database` task generates the structure of the partitioned tables. It is forced because the first execution after partitioning triggers DB Source Manager to detect changes due to the new structure.
+The first command automatically partitions tables configured either in the data dictionary or in a YAML definition
+file.  
+The `update.database` task generates the structure of the partitioned tables. It is forced because the first execution
+after partitioning triggers DB Source Manager to detect changes due to the new structure.
 
 #### 🤖 Automated Constraint Management
 
@@ -88,12 +94,15 @@ Once tables are partitioned, the **PartitionedConstraintsHandling** module scrip
 - **Handles Dependencies**: Manages foreign key relationships with external tables
 
 The system runs automatically during module script execution and handles complex scenarios like:
+
 - First-time partitioning (creates new constraints)
 - Table definition changes (updates existing constraints)
 - External foreign key references (processes dependent tables)
 
 ### 📌 2. Unpartition a Table
-If you need to run `export.database` (only in development environments) and your module is under development, it's necessary to unpartition the tables beforehand:
+
+If you need to run `export.database` (only in development environments) and your module is under development, it's
+necessary to unpartition the tables beforehand:
 
 ```bash
 python3 modules/com.etendoerp.db.extended/tool/unpartition.py "table_name"
@@ -108,23 +117,29 @@ python3 modules/com.etendoerp.db.extended/tool/unpartition.py "etpur_archive"
 This will restore the table to its original (non-partitioned) structure, allowing the export to complete successfully.
 
 #### 🔁 Final Step After Unpartitioning
+
 To ensure consistency and proper functionality after unpartitioning a table, you must regenerate the database structure:
 
 ```bash
 ./gradlew update.database -Dforce=yes smartbuild
 ```
 
-This step updates the database metadata to reflect the restored (non-partitioned) table structure, ensuring the system continues to operate correctly.
+This step updates the database metadata to reflect the restored (non-partitioned) table structure, ensuring the system
+continues to operate correctly.
 
 ---
 
 ## 📚 Architecture Guide
 
-This section provides comprehensive architectural information for developers who need to understand, maintain, or extend the partition constraint management system.
+This section provides comprehensive architectural information for developers who need to understand, maintain, or extend
+the partition constraint management system.
 
 ### System Purpose
 
-The partition constraint management system addresses the complex challenges of maintaining database referential integrity when working with PostgreSQL table partitioning in the Etendo framework. It automatically manages the recreation of primary keys and foreign keys when table definitions change, ensuring that partitioned tables maintain proper constraint relationships.
+The partition constraint management system addresses the complex challenges of maintaining database referential
+integrity when working with PostgreSQL table partitioning in the Etendo framework. It automatically manages the
+recreation of primary keys and foreign keys when table definitions change, ensuring that partitioned tables maintain
+proper constraint relationships.
 
 ### Component Architecture
 
@@ -185,52 +200,60 @@ The partition constraint management system addresses the complex challenges of m
 ### Component Responsibilities
 
 #### 1. PartitionedConstraintsHandling (Main Coordinator)
+
 - **Responsibility**: Orchestrates the entire constraint management process
 - **Methods**: 11 methods (SonarQube compliant)
 - **Pattern**: Coordinator Pattern with Template Method structure
 
 #### 2. BackupManager (Data Protection)
+
 - **Responsibility**: Ensures data safety through comprehensive backup strategy
 - **Features**: Automatic infrastructure, retention policies, metadata tracking
 - **Database Objects**: `etarc_backups` schema, `backup_metadata` tables
 
 #### 3. XmlTableProcessor (Definition Analysis)
+
 - **Responsibility**: Analyzes XML table definitions and detects changes
 - **Security**: XXE attack protection, secure parsing
 - **Locations**: Searches across module directories for table definitions
 
 #### 4. ConstraintProcessor (Constraint Intelligence)
+
 - **Responsibility**: Central intelligence for constraint analysis and SQL coordination
 - **Features**: PostgreSQL partitioning detection, primary key analysis, foreign key discovery
 
 #### 5. SqlBuilder (SQL Generation)
+
 - **Responsibility**: Generates precise SQL statements for constraint modifications
 - **Strategy**: Template-based SQL with partition-aware logic
 - **Types**: Primary key operations, foreign key operations, ALTER statements
 
 #### 6. TriggerManager (Automation)
+
 - **Responsibility**: Creates triggers for automatic partition column population
 - **Pattern**: Analyzes XML → Creates PL/pgSQL functions → Implements triggers
 - **Naming**: `etarc_populate_<tablename>_<partition_field>()` functions
 
 ### Processing Decision Matrix
 
-| Condition | Action | Reason |
-|-----------|--------|--------|
-| Configuration incomplete | Skip | Missing required information |
-| No XML changes + Not first partition run | Skip | No changes to process |
-| XML changes detected | Process | Table definition modified |
-| First partition run | Process | Constraints need recreation |
-| External FK references found | Process | Other tables affected |
+| Condition                                | Action  | Reason                       |
+|------------------------------------------|---------|------------------------------|
+| Configuration incomplete                 | Skip    | Missing required information |
+| No XML changes + Not first partition run | Skip    | No changes to process        |
+| XML changes detected                     | Process | Table definition modified    |
+| First partition run                      | Process | Constraints need recreation  |
+| External FK references found             | Process | Other tables affected        |
 
 ### PostgreSQL Partitioning Specifics
 
 #### Key Differences
+
 - **Partitioned PK**: Must include both natural PK and partition key
 - **Non-Partitioned PK**: Uses only the natural primary key
 - **Foreign Keys**: Must reference all columns in target table's primary key
 
 #### Example SQL Generation
+
 ```sql
 -- Non-partitioned PK
 ALTER TABLE table_name ADD CONSTRAINT pk_name PRIMARY KEY (id);
@@ -255,6 +278,7 @@ $$ LANGUAGE plpgsql;
 ### Configuration Schema
 
 #### ETARC_TABLE_CONFIG Structure
+
 ```sql
 CREATE TABLE ETARC_TABLE_CONFIG (
     AD_TABLE_ID VARCHAR(32),     -- References AD_TABLE
@@ -263,27 +287,31 @@ CREATE TABLE ETARC_TABLE_CONFIG (
 ```
 
 #### Resolved Configuration
+
 ```java
 Map<String, String> config = {
-    "tableName": "C_ORDER",           // From AD_TABLE.TABLENAME
-    "columnName": "DATEORDERED",      // From AD_COLUMN.COLUMNNAME  
-    "pkColumnName": "C_ORDER_ID"      // From AD_COLUMN where ISKEY='Y'
-}
+    "tableName":"C_ORDER",           // From AD_TABLE.TABLENAME
+    "columnName":"DATEORDERED",      // From AD_COLUMN.COLUMNNAME  
+    "pkColumnName":"C_ORDER_ID"      // From AD_COLUMN where ISKEY='Y'
+    }
 ```
 
 ### Error Handling & Safety
 
 #### Defensive Programming
+
 - Safe existence checks for database objects
 - Graceful degradation on non-critical failures
 - Exception isolation between table processing
 
 #### Backup Strategy
+
 - Always backup before modifications
 - Continue processing even if backup fails
 - Retention policy: 5 backups per table, 7 days max age
 
 #### Logging Strategy
+
 - **INFO**: Normal operations, skip reasons, processing summaries
 - **WARN**: Recoverable issues, incomplete configurations
 - **ERROR**: Processing failures, SQL execution errors
@@ -291,6 +319,7 @@ Map<String, String> config = {
 ### Performance Considerations
 
 #### Optimization Features
+
 - Quick partitioning check to skip unnecessary processing
 - Batch processing with timing measurements
 - Efficient XML file caching and parsing
@@ -299,11 +328,13 @@ Map<String, String> config = {
 ### Extension Points
 
 #### Adding New Constraint Types
+
 1. Extend `SqlBuilder` with new templates
 2. Update `ConstraintProcessor` analysis logic
 3. Add corresponding methods to `FkContext` interface
 
 #### Custom Backup Strategies
+
 1. Extend `BackupManager` with new backup methods
 2. Implement custom retention policies
 3. Add backup verification logic
@@ -321,6 +352,7 @@ When working with this system:
 5. **Consider Backward Compatibility**: Changes should not break existing configurations
 
 #### Testing Strategies
+
 - **Unit Testing**: Mock `ConnectionProvider` for database independence
 - **Integration Testing**: Test with real PostgreSQL database
 - **Performance Testing**: Validate large dataset processing
@@ -340,7 +372,8 @@ This system was refactored from a monolithic 76-method class to a modular 6-comp
 - **After**: Main coordinator with 11 methods + 5 specialized utility classes
 - **Benefit**: 85% reduction in main class complexity, improved maintainability
 
-The refactoring maintains all original functionality while dramatically improving code organization, testability, and maintainability.
+The refactoring maintains all original functionality while dramatically improving code organization, testability, and
+maintainability.
 
 ---
 
@@ -376,12 +409,14 @@ When contributing to this module:
 ## 📞 Support & Contact
 
 For questions about this module:
+
 - **Technical Issues**: Review the troubleshooting section above
 - **Architecture Questions**: Consult the [Architecture Guide](ARCHITECTURE_GUIDE.md)
 - **Documentation**: All classes have comprehensive JavaDoc
 
 ---
 
-*This module was designed with future developers in mind. The comprehensive documentation and modular architecture should provide everything needed to understand, maintain, and extend the system effectively.* 
+*This module was designed with future developers in mind. The comprehensive documentation and modular architecture
+should provide everything needed to understand, maintain, and extend the system effectively.*
 
-**"For those who come after..." 🚀**
+**"For those who come after..."**

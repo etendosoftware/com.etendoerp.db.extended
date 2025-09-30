@@ -30,18 +30,18 @@ import org.w3c.dom.NodeList;
 
 /**
  * Manages database triggers for automatic partition column population in child tables.
- * 
+ *
  * <p>This class handles the creation and maintenance of PostgreSQL triggers that automatically
  * populate partition key columns in child tables when foreign key relationships exist to
  * partitioned parent tables. This automation is crucial for maintaining referential integrity
  * in partitioned table environments.
- * 
+ *
  * <h3>The Partitioning Challenge:</h3>
  * <p>When a parent table is partitioned, child tables that reference it must include the
  * partition key in their foreign key constraints. However, applications typically don't
  * populate these partition columns directly. This class solves that problem by creating
  * triggers that automatically populate the partition columns.
- * 
+ *
  * <h3>Key Features:</h3>
  * <ul>
  *   <li><strong>Automatic Population:</strong> Triggers populate partition columns from parent tables</li>
@@ -50,7 +50,7 @@ import org.w3c.dom.NodeList;
  *   <li><strong>Cleanup Handling:</strong> Properly drops old triggers and functions</li>
  *   <li><strong>Naming Conventions:</strong> Uses consistent naming for triggers and functions</li>
  * </ul>
- * 
+ *
  * <h3>Trigger Strategy:</h3>
  * <p>For each child table referencing a partitioned parent:
  * <ol>
@@ -59,7 +59,7 @@ import org.w3c.dom.NodeList;
  *   <li><strong>Trigger Creation:</strong> Create a BEFORE INSERT/UPDATE trigger</li>
  *   <li><strong>Validation:</strong> Ensure the partition column exists in the child table</li>
  * </ol>
- * 
+ *
  * <h3>Trigger Logic:</h3>
  * <p>The generated triggers implement the following logic:
  * <pre>{@code
@@ -69,13 +69,13 @@ import org.w3c.dom.NodeList;
  *     WHERE parent_table.pk = NEW.fk_column;
  * END IF;
  * }</pre>
- * 
+ *
  * <h3>Naming Conventions:</h3>
  * <ul>
  *   <li><strong>Trigger Functions:</strong> {@code etarc_populate_<tablename>_<partition_field>()}</li>
  *   <li><strong>Triggers:</strong> {@code etarc_trigger_<tablename>_<partition_field>}</li>
  * </ul>
- * 
+ *
  * <h3>XML Integration:</h3>
  * <p>The trigger manager analyzes XML table definitions to:
  * <ul>
@@ -84,7 +84,7 @@ import org.w3c.dom.NodeList;
  *   <li>Extract referencing column information</li>
  *   <li>Build appropriate trigger SQL</li>
  * </ul>
- * 
+ *
  * <h3>Error Handling:</h3>
  * <p>The manager implements robust error handling:
  * <ul>
@@ -93,23 +93,23 @@ import org.w3c.dom.NodeList;
  *   <li>Detailed logging for debugging</li>
  *   <li>Non-blocking failures for individual triggers</li>
  * </ul>
- * 
+ *
  * <h3>Usage Example:</h3>
  * <pre>{@code
  * TriggerManager triggerManager = new TriggerManager(xmlProcessor);
  * StringBuilder sql = new StringBuilder();
- * 
+ *
  * // Generate trigger SQL for a specific foreign key context
  * FkContext context = new MyFkContext(connectionProvider);
- * triggerManager.appendTriggerSql(sql, context, "C_OrderLine", "DateOrdered", 
+ * triggerManager.appendTriggerSql(sql, context, "C_OrderLine", "DateOrdered",
  *                                "C_Order", "C_Order_ID");
  * }</pre>
- * 
+ *
  * @author Futit Services S.L.
- * @since ETP-2450
  * @see XmlTableProcessor
  * @see ConstraintProcessor
  * @see SqlBuilder
+ * @since ETP-2450
  */
 public class TriggerManager {
   private static final Logger log4j = LogManager.getLogger();
@@ -144,8 +144,9 @@ public class TriggerManager {
 
   /**
    * Constructs a new TriggerManager with the specified XML table processor.
-   * 
-   * @param xmlProcessor the XmlTableProcessor for processing table definition files
+   *
+   * @param xmlProcessor
+   *     the XmlTableProcessor for processing table definition files
    */
   public TriggerManager(XmlTableProcessor xmlProcessor) {
     this.xmlProcessor = xmlProcessor;
@@ -153,9 +154,11 @@ public class TriggerManager {
 
   /**
    * Creates trigger SQL for child tables to automatically populate partition columns.
-   * 
-   * @param sql the StringBuilder to append trigger SQL statements to
-   * @param ctx the foreign key context containing partition information
+   *
+   * @param sql
+   *     the StringBuilder to append trigger SQL statements to
+   * @param ctx
+   *     the foreign key context containing partition information
    */
   public void appendTriggerSql(StringBuilder sql, SqlBuilder.FkContext ctx) {
     if (!ctx.isParentPartitioned()) {
@@ -255,7 +258,7 @@ public class TriggerManager {
     log4j.info("Added trigger SQL for child table {} -> {} (partition column: {})",
         childTable, ctx.getParentTable(), helperCol);
   }
-  
+
   /**
    * Immutable holder for foreign key information.
    */
@@ -280,6 +283,4 @@ public class TriggerManager {
       return localColumn;
     }
   }
-
-
 }

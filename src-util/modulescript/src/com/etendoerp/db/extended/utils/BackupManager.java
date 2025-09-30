@@ -85,8 +85,9 @@ public class BackupManager {
 
   /**
    * Creates backup schema/tables if missing. Best-effort, non-throwing.
-   * 
-   * @param cp the ConnectionProvider for database access
+   *
+   * @param cp
+   *     the ConnectionProvider for database access
    */
   public void ensureBackupInfrastructure(ConnectionProvider cp) {
     String createSchema = "CREATE SCHEMA IF NOT EXISTS " + BACKUP_SCHEMA + ";";

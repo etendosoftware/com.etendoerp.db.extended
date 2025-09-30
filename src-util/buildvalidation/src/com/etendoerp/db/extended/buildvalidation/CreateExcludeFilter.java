@@ -43,6 +43,7 @@ import javax.xml.parsers.ParserConfigurationException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
+import org.openbravo.base.exception.OBException;
 import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
 import org.w3c.dom.Document;
@@ -55,7 +56,6 @@ import org.xml.sax.SAXException;
  * (PKs and FKs) found in the model XML files instead of using information_schema.
  */
 public class CreateExcludeFilter extends BuildValidation {
-  public static final String ALTER_TABLE = "ALTER TABLE IF EXISTS PUBLIC.%s\n";
   public static final String MODULES_JAR = "build/etendo/modules";
   public static final String MODULES_BASE = "modules";
   public static final String MODULES_CORE = "modules_core";
@@ -64,10 +64,6 @@ public class CreateExcludeFilter extends BuildValidation {
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
   private static String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
-
-  public static boolean isBlank(String str) {
-    return str == null || str.trim().isEmpty();
-  }
 
   /**
    * Parses the specified XML file into a normalized DOM Document with
@@ -203,22 +199,22 @@ public class CreateExcludeFilter extends BuildValidation {
 
     logger.info("Executing query to retrieve base tables");
     PreparedStatement baseTablesStmt = connectionProvider.getPreparedStatement(baseTablesQuery);
-    ResultSet baseTablesResult = baseTablesStmt.executeQuery();
+    try (baseTablesStmt; ResultSet baseTablesResult = baseTablesStmt.executeQuery()) {
+      while (baseTablesResult.next()) {
+        String baseTableName = baseTablesResult.getString("tablename");
+        String partitionColumnName = baseTablesResult.getString("columnname");
 
-    while (baseTablesResult.next()) {
-      String baseTableName = baseTablesResult.getString("tablename");
-      String partitionColumnName = baseTablesResult.getString("columnname");
+        if (StringUtils.isBlank(baseTableName)) {
+          logger.warn("Received an empty or null base table name; skipping.");
+          continue;
+        }
 
-      if (isBlank(baseTableName)) {
-        logger.warn("Received an empty or null base table name; skipping.");
-        continue;
+        processSingleTable(baseTableName, partitionColumnName, constraintsToExclude, columnsToExclude);
       }
-
-      processSingleTable(baseTableName, partitionColumnName, constraintsToExclude, columnsToExclude);
+    } catch (Exception e) {
+      logger.error("Error processing data from ETARC_Table_Config.", e);
+      throw new OBException(e);
     }
-
-    baseTablesResult.close();
-    baseTablesStmt.close();
   }
 
   private void processSingleTable(String baseTableName, String partitionColumnName,
@@ -234,7 +230,7 @@ public class CreateExcludeFilter extends BuildValidation {
     List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
     String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
 
-    if (!isBlank(primaryKeyName)) {
+    if (!StringUtils.isBlank(primaryKeyName)) {
       String primaryKeyUpper = primaryKeyName.toUpperCase();
       constraintsToExclude.add(primaryKeyUpper);
       logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
@@ -261,7 +257,7 @@ public class CreateExcludeFilter extends BuildValidation {
       Set<String> columnsToExclude) {
 
     logger.info("Partition column for table: {}", partitionColumnName);
-    if (isBlank(partitionColumnName)) {
+    if (StringUtils.isBlank(partitionColumnName)) {
       return;
     }
 
@@ -279,7 +275,7 @@ public class CreateExcludeFilter extends BuildValidation {
         constraintsToExclude.size(), columnsToExclude.size(), triggersToExclude.size(), functionsToExclude.size());
 
     String sourcePath = getSourcePath();
-    Path outputFile = Paths.get(sourcePath, MODULES_BASE, "com.etendoerp.db.extended",
+    Path outputFile = Paths.get(sourcePath, MODULES_BASE, "com.etendoerp.db.extended.exclude.filter",
         "src-db", "database", "model", "excludeFilter.xml");
     Files.createDirectories(outputFile.getParent());
 
@@ -319,7 +315,7 @@ public class CreateExcludeFilter extends BuildValidation {
       Set<String> partitionedTables = new HashSet<>();
       while (baseTablesResult.next()) {
         String baseTableName = baseTablesResult.getString("tablename");
-        if (!isBlank(baseTableName)) {
+        if (!StringUtils.isBlank(baseTableName)) {
           partitionedTables.add(baseTableName.toUpperCase());
         }
       }
@@ -339,7 +335,7 @@ public class CreateExcludeFilter extends BuildValidation {
           // Find the child table that contains this FK
           String childTable = findChildTableForForeignKey(fkName);
 
-          if (!isBlank(childTable)) {
+          if (!StringUtils.isBlank(childTable)) {
             String childTableUpper = childTable.toUpperCase();
 
             // Skip if we already processed this child table
@@ -391,7 +387,7 @@ public class CreateExcludeFilter extends BuildValidation {
             Element foreignKeyElement = (Element) foreignKeyList.item(i);
             String currentFkName = foreignKeyElement.getAttribute("name");
 
-            if (fkName.equalsIgnoreCase(currentFkName)) {
+            if (StringUtils.equalsIgnoreCase(fkName, currentFkName)) {
               return tableName;
             }
           }
@@ -437,9 +433,9 @@ public class CreateExcludeFilter extends BuildValidation {
         for (int i = 0; i < foreignKeyList.getLength(); i++) {
           Element foreignKeyElement = (Element) foreignKeyList.item(i);
           String fkTarget = foreignKeyElement.getAttribute("foreignTable");
-          if (fkTarget != null && fkTarget.equalsIgnoreCase(targetTable)) {
+          if (StringUtils.equalsIgnoreCase(fkTarget, targetTable)) {
             String fkName = foreignKeyElement.getAttribute("name");
-            if (fkName != null && !fkName.trim().isEmpty()) {
+            if (!StringUtils.isBlank(fkName.trim())) {
               fkNames.add(fkName.toUpperCase());
             }
           }

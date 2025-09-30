@@ -45,12 +45,12 @@ import org.xml.sax.SAXException;
 
 /**
  * Processes XML table definition files used by the Etendo framework.
- * 
+ *
  * <p>This class handles the parsing, validation, and analysis of XML files that define
  * database table structures in the Etendo system. It provides functionality to locate
  * table definitions, extract foreign key relationships, and detect changes that might
  * affect partitioned table constraints.
- * 
+ *
  * <h3>Key Responsibilities:</h3>
  * <ul>
  *   <li><strong>XML File Discovery:</strong> Locates table definition files across module directories</li>
@@ -59,7 +59,7 @@ import org.xml.sax.SAXException;
  *   <li><strong>Primary Key Extraction:</strong> Retrieves primary key definitions from XML</li>
  *   <li><strong>Change Detection:</strong> Works with {@link TableDefinitionComparator} for change tracking</li>
  * </ul>
- * 
+ *
  * <h3>XML File Structure:</h3>
  * <p>The processor searches for XML files in the following locations:
  * <ul>
@@ -69,7 +69,7 @@ import org.xml.sax.SAXException;
  *   <li>{@code modules/} - Module source definitions</li>
  *   <li>{@code modules_core/} - Core module definitions</li>
  * </ul>
- * 
+ *
  * <h3>Security Features:</h3>
  * <p>XML parsing includes protection against common XML-based attacks:
  * <ul>
@@ -78,12 +78,12 @@ import org.xml.sax.SAXException;
  *   <li>Enables secure processing features</li>
  *   <li>Prevents XML inclusion and entity expansion</li>
  * </ul>
- * 
+ *
  * <h3>Foreign Key Analysis:</h3>
  * <p>The processor can detect when external tables reference a given table through
  * foreign keys, which is crucial for determining when constraint recreation is needed
  * even if the target table itself hasn't changed.
- * 
+ *
  * <h3>Usage Example:</h3>
  * <pre>{@code
  * XmlTableProcessor processor = new XmlTableProcessor(backupManager, sourcePath);
@@ -91,11 +91,11 @@ import org.xml.sax.SAXException;
  * boolean hasExternalRefs = processor.hasForeignReferencesInXml("C_Order", connectionProvider);
  * String primaryKey = XmlTableProcessor.findPrimaryKey(xmlFiles);
  * }</pre>
- * 
+ *
  * @author Futit Services S.L.
- * @since ETP-2450
  * @see TableDefinitionComparator
  * @see BackupManager
+ * @since ETP-2450
  */
 public class XmlTableProcessor {
   public static final String MODULES_JAR = "build/etendo/modules";
@@ -113,9 +113,11 @@ public class XmlTableProcessor {
 
   /**
    * Constructs a new XmlTableProcessor with the specified backup manager and source path.
-   * 
-   * @param backupManager the BackupManager instance for handling database backups
-   * @param sourcePath the base path for locating XML table definition files
+   *
+   * @param backupManager
+   *     the BackupManager instance for handling database backups
+   * @param sourcePath
+   *     the base path for locating XML table definition files
    */
   public XmlTableProcessor(BackupManager backupManager, String sourcePath) {
     this.backupManager = backupManager;
@@ -124,12 +126,16 @@ public class XmlTableProcessor {
 
   /**
    * Parses an XML file into a normalized DOM {@link Document} with XXE protections enabled.
-   * 
-   * @param xml the XML file to parse
+   *
+   * @param xml
+   *     the XML file to parse
    * @return a normalized DOM Document representation of the XML file
-   * @throws ParserConfigurationException if a DocumentBuilder cannot be created
-   * @throws SAXException if any parse errors occur
-   * @throws IOException if any I/O errors occur during parsing
+   * @throws ParserConfigurationException
+   *     if a DocumentBuilder cannot be created
+   * @throws SAXException
+   *     if any parse errors occur
+   * @throws IOException
+   *     if any I/O errors occur during parsing
    */
   public static Document getDocument(File xml)
       throws ParserConfigurationException, SAXException, IOException {
@@ -150,8 +156,9 @@ public class XmlTableProcessor {
   /**
    * Scans a list of XML files to locate and return the primary key attribute
    * defined in a <table> element.
-   * 
-   * @param xmlFiles the list of XML files to scan for primary key definitions
+   *
+   * @param xmlFiles
+   *     the list of XML files to scan for primary key definitions
    * @return the primary key attribute name, or null if not found
    */
   public static String findPrimaryKey(List<File> xmlFiles) {
@@ -196,9 +203,11 @@ public class XmlTableProcessor {
 
   /**
    * Scans table XMLs for any {@code <foreign-key foreignTable="...">} referencing {@code tableName}.
-   * 
-   * @param tableName the table name to search for foreign key references
-   * @param cp the ConnectionProvider for database operations
+   *
+   * @param tableName
+   *     the table name to search for foreign key references
+   * @param cp
+   *     the ConnectionProvider for database operations
    * @return true if any XML files contain foreign key references to the specified table
    */
   public boolean hasForeignReferencesInXml(String tableName, ConnectionProvider cp) {
@@ -216,8 +225,9 @@ public class XmlTableProcessor {
   /**
    * Finds XML files that define {@code tableName} either by filename (fast path)
    * or by containing a {@code <table name="...">} with the same name.
-   * 
-   * @param tableName the table name to search for in XML definitions
+   *
+   * @param tableName
+   *     the table name to search for in XML definitions
    * @return a list of XML files that define the specified table
    */
   public List<File> findTableXmlFiles(String tableName) {
@@ -233,7 +243,7 @@ public class XmlTableProcessor {
 
   /**
    * Returns a flattened list of all {@code .xml} files under the collected directories.
-   * 
+   *
    * @return a list of all XML files found in the configured source directories
    */
   public List<File> collectAllXmlFiles() {
@@ -246,7 +256,7 @@ public class XmlTableProcessor {
 
   /**
    * Collects directories that may contain table XMLs.
-   * 
+   *
    * @return a list of directories that potentially contain table XML definitions
    */
   public List<File> collectTableDirs() {
@@ -275,7 +285,7 @@ public class XmlTableProcessor {
 
   /**
    * Collects table directories; returns empty list (not null) on failure and logs a warning.
-   * 
+   *
    * @return a list of table directories, or an empty list if collection fails
    */
   public List<File> collectTableDirsSafe() {
@@ -289,8 +299,9 @@ public class XmlTableProcessor {
 
   /**
    * Lists {@code .xml} files inside {@code dir}. Returns an empty array if none/inaccessible.
-   * 
-   * @param dir the directory to scan for XML files
+   *
+   * @param dir
+   *     the directory to scan for XML files
    * @return an array of XML files, or an empty array if none found or directory inaccessible
    */
   public File[] listXmlFiles(File dir) {
@@ -300,8 +311,9 @@ public class XmlTableProcessor {
 
   /**
    * Returns the single {@code <table>} element if exactly one exists; otherwise {@code null}.
-   * 
-   * @param doc the DOM document to search for table elements
+   *
+   * @param doc
+   *     the DOM document to search for table elements
    * @return the single table element if found, or null if none or multiple found
    */
   public Element singleTableElementOrNull(Document doc) {
@@ -312,9 +324,11 @@ public class XmlTableProcessor {
 
   /**
    * True if the element represents a view or is the same as the target.
-   * 
-   * @param tableEl the table element to check
-   * @param targetTable the target table name for comparison
+   *
+   * @param tableEl
+   *     the table element to check
+   * @param targetTable
+   *     the target table name for comparison
    * @return true if the table element should be skipped during processing
    */
   public boolean shouldSkipTableElement(Element tableEl, String targetTable) {
@@ -324,9 +338,11 @@ public class XmlTableProcessor {
 
   /**
    * True if the {@code <foreign-key>} points to {@code targetTable}.
-   * 
-   * @param fkEl the foreign key element to check
-   * @param targetTable the target table name to compare against
+   *
+   * @param fkEl
+   *     the foreign key element to check
+   * @param targetTable
+   *     the target table name to compare against
    * @return true if the foreign key references the target table
    */
   public boolean referencesTarget(Element fkEl, String targetTable) {
@@ -335,8 +351,9 @@ public class XmlTableProcessor {
 
   /**
    * Returns the first {@code local} attribute of a {@code <reference>} child (single-column FK).
-   * 
-   * @param fkEl the foreign key element to extract the local column from
+   *
+   * @param fkEl
+   *     the foreign key element to extract the local column from
    * @return the first local column name, or null if no reference elements found
    */
   public String firstLocalColumn(Element fkEl) {

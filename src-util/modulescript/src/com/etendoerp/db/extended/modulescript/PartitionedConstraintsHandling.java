@@ -41,11 +41,11 @@ import com.etendoerp.db.extended.utils.XmlTableProcessor;
 
 /**
  * Main module script for handling partitioned table constraints in PostgreSQL.
- * 
- * <p>This class coordinates the management of database constraints (primary keys and foreign keys) 
- * for partitioned tables. It ensures that constraints are properly recreated when table definitions 
+ *
+ * <p>This class coordinates the management of database constraints (primary keys and foreign keys)
+ * for partitioned tables. It ensures that constraints are properly recreated when table definitions
  * change and handles the complex scenarios that arise when working with PostgreSQL table partitioning.
- * 
+ *
  * <h3>Key Responsibilities:</h3>
  * <ul>
  *   <li>Load table configurations from {@code ETARC_TABLE_CONFIG}</li>
@@ -54,7 +54,7 @@ import com.etendoerp.db.extended.utils.XmlTableProcessor;
  *   <li>Coordinate constraint recreation through specialized utility classes</li>
  *   <li>Handle both partitioned and non-partitioned table scenarios</li>
  * </ul>
- * 
+ *
  * <h3>Architecture:</h3>
  * <p>This class has been refactored to follow the Single Responsibility Principle,
  * delegating specific tasks to specialized utility classes in the {@code utils} package:
@@ -65,7 +65,7 @@ import com.etendoerp.db.extended.utils.XmlTableProcessor;
  *   <li>{@link SqlBuilder} - SQL statement construction</li>
  *   <li>{@link TriggerManager} - Database trigger management</li>
  * </ul>
- * 
+ *
  * <h3>Processing Flow:</h3>
  * <ol>
  *   <li>Initialize component instances</li>
@@ -81,15 +81,14 @@ import com.etendoerp.db.extended.utils.XmlTableProcessor;
  *   </li>
  *   <li>Report processing summary</li>
  * </ol>
- * 
- * 
+ *
  * @author Futit Services S.L.
- * @since ETP-2450
  * @see BackupManager
  * @see XmlTableProcessor
  * @see ConstraintProcessor
  * @see SqlBuilder
  * @see TriggerManager
+ * @since ETP-2450
  */
 public class PartitionedConstraintsHandling extends ModuleScript {
 
@@ -105,22 +104,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private ConstraintProcessor constraintProcessor;
 
   /**
-   * Utility method to check if a string is null or blank.
-   * 
-   * <p>This method provides a convenient way to check for empty strings throughout
-   * the class, improving code readability. It delegates to Apache Commons Lang's
-   * StringUtils for consistent behavior.
-   * 
-   * @param str the string to check
-   * @return {@code true} if the string is null, empty, or contains only whitespace
-   */
-  public static boolean isBlank(String str) {
-    return StringUtils.isBlank(str);
-  }
-
-  /**
    * Logs a visual separator line to help organize log output.
-   * 
+   *
    * <p>This method outputs a standardized separator line that makes it easier
    * to visually distinguish different sections of processing in the logs.
    */
@@ -130,19 +115,20 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Initializes all component instances required for constraint processing.
-   * 
+   *
    * <p>This method creates and configures the specialized utility classes that handle
    * different aspects of the partition constraint management process. The components
    * are initialized with proper dependencies and configuration.
-   * 
+   *
    * <h4>Component Dependencies:</h4>
    * <ul>
    *   <li>{@code XmlTableProcessor} depends on {@code BackupManager} and source path</li>
    *   <li>{@code TriggerManager} depends on {@code XmlTableProcessor}</li>
    *   <li>{@code ConstraintProcessor} depends on all other components</li>
    * </ul>
-   * 
-   * @throws NoSuchFileException if the source path for XML files cannot be found
+   *
+   * @throws NoSuchFileException
+   *     if the source path for XML files cannot be found
    */
   private void initializeComponents() throws NoSuchFileException {
     TriggerManager triggerManager;
@@ -198,13 +184,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Performs a quick check to determine if any configured table is already partitioned.
-   * 
+   *
    * <p>This method provides an optimization by checking if any tables in the configuration
    * are already partitioned in PostgreSQL. This information is used later to determine
    * whether to show processing summaries and perform certain optimizations.
-   * 
-   * @param cp the database connection provider
-   * @param tableConfigs list of table configurations to check
+   *
+   * @param cp
+   *     the database connection provider
+   * @param tableConfigs
+   *     list of table configurations to check
    * @return {@code true} if at least one configured table is partitioned, {@code false} otherwise
    */
   private boolean quickCheckPartitioned(ConnectionProvider cp, List<Map<String, String>> tableConfigs) {
@@ -223,13 +211,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Safe wrapper for checking if a specific table is partitioned.
-   * 
+   *
    * <p>This method provides exception-safe checking of table partitioning status.
    * If any error occurs during the check (e.g., table doesn't exist, connection issues),
    * it returns {@code false} rather than propagating the exception.
-   * 
-   * @param cp the database connection provider
-   * @param tableName the name of the table to check
+   *
+   * @param cp
+   *     the database connection provider
+   * @param tableName
+   *     the name of the table to check
    * @return {@code true} if the table is partitioned, {@code false} if not partitioned or on error
    */
   private boolean safeIsTablePartitioned(ConnectionProvider cp, String tableName) {
@@ -242,13 +232,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Safely processes a single table configuration with timing measurement.
-   * 
+   *
    * <p>This method wraps the main table processing logic with exception handling and
    * performance timing. It ensures that processing failures for one table don't affect
    * the processing of other tables.
-   * 
-   * @param cp the database connection provider
-   * @param cfg the table configuration map containing table name, partition column, and PK column
+   *
+   * @param cp
+   *     the database connection provider
+   * @param cfg
+   *     the table configuration map containing table name, partition column, and PK column
    * @return the elapsed processing time in milliseconds, or -1 if processing failed or was skipped
    */
   private long processTableSafely(ConnectionProvider cp, Map<String, String> cfg) {
@@ -263,7 +255,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Loads table configurations from the {@code ETARC_TABLE_CONFIG} table.
-   * 
+   *
    * <p>This method queries the database to retrieve all configured tables that should
    * be processed for partition constraint management. Each configuration includes:
    * <ul>
@@ -271,13 +263,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *   <li>Partition column name (from AD_COLUMN)</li>
    *   <li>Primary key column name (from AD_COLUMN where ISKEY='Y')</li>
    * </ul>
-   * 
+   *
    * <p>The query joins several Etendo metadata tables to resolve the actual database
    * names from the configuration IDs stored in ETARC_TABLE_CONFIG.
-   * 
-   * @param cp the database connection provider
+   *
+   * @param cp
+   *     the database connection provider
    * @return a list of configuration maps, each containing "tableName", "columnName", and "pkColumnName"
-   * @throws Exception if the database query fails or connection issues occur
+   * @throws Exception
+   *     if the database query fails or connection issues occur
    */
   private List<Map<String, String>> loadTableConfigs(ConnectionProvider cp) throws Exception {
     String configSql = "SELECT UPPER(TBL.TABLENAME) TABLENAME, "
@@ -304,10 +298,10 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Processes a single table configuration to determine and execute necessary constraint changes.
-   * 
+   *
    * <p>This is the core processing method that handles the complex logic of determining
    * whether constraints need to be recreated for a specific table. The decision process considers:
-   * 
+   *
    * <h4>Decision Factors:</h4>
    * <ul>
    *   <li><strong>Configuration completeness:</strong> All required fields (table, partition column, PK) must be present</li>
@@ -316,7 +310,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *   <li><strong>Partitioning status:</strong> Whether the table is currently partitioned in PostgreSQL</li>
    *   <li><strong>First partition run:</strong> Special handling for newly partitioned tables</li>
    * </ul>
-   * 
+   *
    * <h4>Processing Steps:</h4>
    * <ol>
    *   <li>Validate configuration completeness</li>
@@ -328,11 +322,14 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *   <li>Generate and execute SQL for constraint recreation</li>
    *   <li>Create backups before making changes</li>
    * </ol>
-   * 
-   * @param cp the database connection provider
-   * @param cfg the table configuration containing "tableName", "columnName", and "pkColumnName"
+   *
+   * @param cp
+   *     the database connection provider
+   * @param cfg
+   *     the table configuration containing "tableName", "columnName", and "pkColumnName"
    * @return {@code true} if the table was processed successfully, {@code false} if skipped or failed
-   * @throws Exception if database operations fail or XML processing encounters errors
+   * @throws Exception
+   *     if database operations fail or XML processing encounters errors
    */
   private boolean processTableConfig(ConnectionProvider cp, Map<String, String> cfg) throws Exception {
     String tableName = cfg.get(TABLE_NAME);
@@ -342,7 +339,8 @@ public class PartitionedConstraintsHandling extends ModuleScript {
     log4j.info("DATA FROM ETARC_TABLE_CONFIG: tableName: {} - partitionCol: {} - pkCol: {}",
         tableName, partitionCol, pkCol);
 
-    boolean isIncomplete = isBlank(tableName) || isBlank(partitionCol) || isBlank(pkCol);
+    boolean isIncomplete = StringUtils.isBlank(tableName) || StringUtils.isBlank(partitionCol) ||
+        StringUtils.isBlank(pkCol);
     List<java.io.File> xmlFiles = isIncomplete ? java.util.Collections.emptyList() : xmlProcessor.findTableXmlFiles(
         tableName);
 
@@ -386,7 +384,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
       if (alterSql.length() > 0) {
         backupManager.executeSqlWithBackup(cp, tableName, isPartitioned, alterSql.toString());
       }
-      if (!isBlank(tableSql)) {
+      if (!StringUtils.isBlank(tableSql)) {
         backupManager.executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
       }
       return true;
@@ -404,20 +402,23 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Determines whether table processing should be skipped based on various conditions.
-   * 
+   *
    * <p>This method encapsulates the logic for deciding when to skip constraint processing
    * for a table. A table is skipped if:
    * <ul>
    *   <li>The configuration is incomplete (missing table name, partition column, or PK column)</li>
    *   <li>The table definition hasn't changed AND it's not a first partition run</li>
    * </ul>
-   * 
+   *
    * <p><strong>Note:</strong> First partition runs are always processed regardless of XML changes
    * because newly partitioned tables need their constraints recreated.
-   * 
-   * @param isIncomplete whether the table configuration is missing required information
-   * @param firstPartitionRun whether this is the first run after the table was partitioned
-   * @param isUnchanged whether the table definition hasn't changed in XML files
+   *
+   * @param isIncomplete
+   *     whether the table configuration is missing required information
+   * @param firstPartitionRun
+   *     whether this is the first run after the table was partitioned
+   * @param isUnchanged
+   *     whether the table definition hasn't changed in XML files
    * @return {@code true} if processing should be skipped, {@code false} if processing should continue
    */
   private boolean shouldSkipTable(boolean isIncomplete, boolean firstPartitionRun, boolean isUnchanged) {
@@ -426,7 +427,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
 
   /**
    * Logs an informative message explaining why a table was skipped during processing.
-   * 
+   *
    * <p>This method provides clear feedback in the logs about why specific tables
    * were not processed, helping with debugging and monitoring. Different log levels
    * are used based on the severity of the skip reason:
@@ -434,11 +435,15 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *   <li><strong>WARN:</strong> Used for incomplete configurations (potential data issues)</li>
    *   <li><strong>INFO:</strong> Used for tables that don't need processing (normal operation)</li>
    * </ul>
-   * 
-   * @param isIncomplete whether the skip was due to incomplete configuration
-   * @param tableName the name of the table that was skipped
-   * @param pkCol the primary key column name (may be null if incomplete)
-   * @param partitionCol the partition column name (may be null if incomplete)
+   *
+   * @param isIncomplete
+   *     whether the skip was due to incomplete configuration
+   * @param tableName
+   *     the name of the table that was skipped
+   * @param pkCol
+   *     the primary key column name (maybe null if incomplete)
+   * @param partitionCol
+   *     the partition column name (maybe null if incomplete)
    */
   private void logSkipReason(boolean isIncomplete, String tableName, String pkCol, String partitionCol) {
     if (isIncomplete) {
