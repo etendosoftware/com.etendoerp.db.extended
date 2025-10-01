@@ -338,12 +338,8 @@ public class TableDefinitionComparator {
       return length;
     }
 
-    public Boolean isNullable() {
+    public boolean isNullable() {
       return isNullable;
-    }
-
-    public Boolean isPrimaryKey() {
-      return isPrimaryKey;
     }
 
     @Override
@@ -353,7 +349,7 @@ public class TableDefinitionComparator {
       ColumnDefinition that = (ColumnDefinition) o;
       return Objects.equals(name, that.name);
     }
-    
+
     @Override
     public int hashCode() {
       return Objects.hash(name);
