@@ -31,7 +31,9 @@ import org.w3c.dom.Document;
 import org.w3c.dom.Element;
 import org.w3c.dom.NodeList;
 
-import org.openbravo.base.exception.OBException;
+import com.etendoerp.db.extended.utils.ConstraintProcessingException.DatabaseConstraintException;
+import com.etendoerp.db.extended.utils.ConstraintProcessingException.PrimaryKeyNotFoundException;
+import com.etendoerp.db.extended.utils.ConstraintProcessingException.TableXmlNotFoundException;
 
 /**
  * Orchestrates the complex processing of database constraints for partitioned tables.
@@ -145,7 +147,7 @@ public class ConstraintProcessor {
    * @return the complete SQL string for constraint creation
    */
   public String buildConstraintSql(String tableName, ConnectionProvider cp, String pkField,
-      String partitionField) {
+      String partitionField) throws ConstraintProcessingException {
 
     boolean isPartitioned = isPartitioned(cp, tableName);
     String pkName = resolvePrimaryKeyName(tableName); // throws if not found
@@ -173,16 +175,18 @@ public class ConstraintProcessor {
    * @param tableName
    *     the table name to check for partitioning
    * @return true if the table is partitioned, false otherwise
-   * @throws Exception
+   * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws Exception {
+  public boolean isTablePartitioned(ConnectionProvider cp, String tableName) throws ConstraintProcessingException {
     try (PreparedStatement ps = cp.getPreparedStatement(
         "SELECT 1 FROM pg_partitioned_table WHERE partrelid = to_regclass(?)")) {
       ps.setString(1, tableName);
       try (ResultSet rs = ps.executeQuery()) {
         return rs.next();
       }
+    } catch (Exception e) {
+      throw new DatabaseConstraintException("Failed to check if table is partitioned: " + tableName, e);
     }
   }
 
@@ -194,10 +198,10 @@ public class ConstraintProcessor {
    * @param tableName
    *     the table name to get primary key columns for
    * @return a list of primary key column names
-   * @throws Exception
+   * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws Exception {
+  public List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws ConstraintProcessingException {
     List<String> pkCols = new ArrayList<>();
     String sql = "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
         + "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
@@ -209,6 +213,8 @@ public class ConstraintProcessor {
           pkCols.add(rs.getString(1));
         }
       }
+    } catch (Exception e) {
+      throw new DatabaseConstraintException("Failed to get primary key columns for table: " + tableName, e);
     }
     return pkCols;
   }
@@ -223,10 +229,10 @@ public class ConstraintProcessor {
    * @param columnName
    *     the column name to check for existence
    * @return true if the column exists, false otherwise
-   * @throws Exception
+   * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public boolean columnExists(ConnectionProvider cp, String tableName, String columnName) throws Exception {
+  public boolean columnExists(ConnectionProvider cp, String tableName, String columnName) throws ConstraintProcessingException {
     String sql = "SELECT 1 FROM information_schema.columns " +
         "WHERE lower(table_name) = lower(?) AND lower(column_name) = lower(?)";
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
@@ -235,6 +241,8 @@ public class ConstraintProcessor {
       try (ResultSet rs = ps.executeQuery()) {
         return rs.next();
       }
+    } catch (Exception e) {
+      throw new DatabaseConstraintException("Failed to check column existence: " + columnName + " in table: " + tableName, e);
     }
   }
 
@@ -248,10 +256,10 @@ public class ConstraintProcessor {
    * @param constraintName
    *     the constraint name to check for existence
    * @return true if the constraint exists, false otherwise
-   * @throws Exception
+   * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public boolean constraintExists(ConnectionProvider cp, String tableName, String constraintName) throws Exception {
+  public boolean constraintExists(ConnectionProvider cp, String tableName, String constraintName) throws ConstraintProcessingException {
     String sql = "SELECT 1 FROM information_schema.table_constraints " +
         "WHERE lower(table_name) = lower(?) AND lower(constraint_name) = lower(?)";
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
@@ -260,6 +268,8 @@ public class ConstraintProcessor {
       try (ResultSet rs = ps.executeQuery()) {
         return rs.next();
       }
+    } catch (Exception e) {
+      throw new DatabaseConstraintException("Failed to check constraint existence: " + constraintName + " in table: " + tableName, e);
     }
   }
 
@@ -276,14 +286,14 @@ public class ConstraintProcessor {
     }
   }
 
-  private String resolvePrimaryKeyName(String tableName) {
+  private String resolvePrimaryKeyName(String tableName) throws ConstraintProcessingException {
     List<File> xmls = xmlProcessor.findTableXmlFiles(tableName);
     if (xmls.isEmpty()) {
-      throw new OBException("Entity XML file for " + tableName + " not found.");
+      throw new TableXmlNotFoundException(tableName);
     }
     String pkName = XmlTableProcessor.findPrimaryKey(xmls);
     if (pkName == null) {
-      throw new OBException("Primary Key for entity " + tableName + " not found in XML.");
+      throw new PrimaryKeyNotFoundException(tableName);
     }
     return pkName;
   }
@@ -325,7 +335,7 @@ public class ConstraintProcessor {
 
   @FunctionalInterface
   private interface Check {
-    boolean get() throws OBException;
+    boolean get() throws ConstraintProcessingException;
   }
 
   /**
@@ -374,7 +384,7 @@ public class ConstraintProcessor {
               return ConstraintProcessor.this.columnExists(cp, tableName,
                   columnName);
             } catch (Exception e) {
-              throw new OBException(e);
+              throw new DatabaseConstraintException(e);
             }
           },
           "columnExists", columnName, tableName);
@@ -386,7 +396,7 @@ public class ConstraintProcessor {
             try {
               return ConstraintProcessor.this.constraintExists(cp, tableName, constraintName);
             } catch (Exception e) {
-              throw new OBException(e);
+              throw new DatabaseConstraintException(e);
             }
           },
           "constraintExists", constraintName, tableName);
@@ -398,7 +408,7 @@ public class ConstraintProcessor {
     private boolean existsSafe(Check op, String label, String name, String onTable) {
       try {
         return op.get();
-      } catch (Exception e) {
+      } catch (ConstraintProcessingException e) {
         log4j.warn("Could not run {} for {} on {}: {}", label, name, onTable, e.getMessage());
         return false;
       }
