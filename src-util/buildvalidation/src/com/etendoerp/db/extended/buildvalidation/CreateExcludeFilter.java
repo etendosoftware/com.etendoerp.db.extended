@@ -43,7 +43,6 @@ import javax.xml.parsers.ParserConfigurationException;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.openbravo.base.exception.OBException;
 import org.openbravo.buildvalidation.BuildValidation;
 import org.openbravo.database.ConnectionProvider;
 import org.w3c.dom.Document;
@@ -213,12 +212,12 @@ public class CreateExcludeFilter extends BuildValidation {
       }
     } catch (Exception e) {
       logger.error("Error processing data from ETARC_Table_Config.", e);
-      throw new OBException(e);
+      throw new BuildValidationException("Failed to process partitioned tables configuration", e);
     }
   }
 
   private void processSingleTable(String baseTableName, String partitionColumnName,
-      Set<String> constraintsToExclude, Set<String> columnsToExclude) throws Exception {
+      Set<String> constraintsToExclude, Set<String> columnsToExclude) throws BuildValidationException {
 
     logger.info("Processing base table: {}", baseTableName);
 
@@ -226,16 +225,21 @@ public class CreateExcludeFilter extends BuildValidation {
     processForeignKeys(baseTableName, partitionColumnName, constraintsToExclude, columnsToExclude);
   }
 
-  private void processPrimaryKey(String baseTableName, Set<String> constraintsToExclude) throws Exception {
-    List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
-    String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
+  private void processPrimaryKey(String baseTableName,
+      Set<String> constraintsToExclude) throws BuildValidationException {
+    try {
+      List<File> baseTableXmlFiles = findTableXmlFiles(baseTableName);
+      String primaryKeyName = findPrimaryKey(baseTableXmlFiles);
 
-    if (!StringUtils.isBlank(primaryKeyName)) {
-      String primaryKeyUpper = primaryKeyName.toUpperCase();
-      constraintsToExclude.add(primaryKeyUpper);
-      logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
-    } else {
-      logger.warn("No PRIMARY KEY found in the XMLs of '{}'", baseTableName);
+      if (!StringUtils.isBlank(primaryKeyName)) {
+        String primaryKeyUpper = primaryKeyName.toUpperCase();
+        constraintsToExclude.add(primaryKeyUpper);
+        logger.info("Found PK for '{}': {}", baseTableName, primaryKeyUpper);
+      } else {
+        logger.warn("No PRIMARY KEY found in the XMLs of '{}'", baseTableName);
+      }
+    } catch (NoSuchFileException e) {
+      throw new BuildValidationException("Failed to find XML files for table: " + baseTableName, e);
     }
   }
 
