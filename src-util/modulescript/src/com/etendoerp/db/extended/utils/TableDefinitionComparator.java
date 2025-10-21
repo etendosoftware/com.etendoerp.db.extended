@@ -58,7 +58,7 @@ public class TableDefinitionComparator {
    * @param tableName
    *     the name of the table to compare
    * @param cp
-   *     a valid Openbravo ConnectionProvider
+   *     a valid Etendo ConnectionProvider
    * @param xmlFiles
    *     list of XML files defining the table structure
    * @return {@code true} if the definitions differ, {@code false} if they match
@@ -209,7 +209,7 @@ public class TableDefinitionComparator {
    * @param tableName
    *     the table to inspect
    * @param cp
-   *     a valid Openbravo ConnectionProvider
+   *     a valid Etendo ConnectionProvider
    * @return a map of column names to their definitions
    * @throws Exception
    *     if a database error occurs
