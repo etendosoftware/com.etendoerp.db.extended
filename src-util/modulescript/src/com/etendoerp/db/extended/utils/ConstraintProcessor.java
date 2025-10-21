@@ -325,7 +325,8 @@ public class ConstraintProcessor {
         boolean validData = StringUtils.isNotBlank(fkName) && StringUtils.isNotBlank(localCol);
 
         if (validReference && validData) {
-          sqlBuilder.appendFkSqlForChild(sql, ctx, new SqlBuilder.ChildRef(childTable, fkName, localCol));
+          String onDelete = fkEl.getAttribute("onDelete"); // may be blank
+          sqlBuilder.appendFkSqlForChild(sql, ctx, new SqlBuilder.ChildRef(childTable, fkName, localCol, onDelete));
         }
       }
     } catch (Exception e) {

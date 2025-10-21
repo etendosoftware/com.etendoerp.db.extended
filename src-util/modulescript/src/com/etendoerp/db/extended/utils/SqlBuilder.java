@@ -88,12 +88,13 @@ public class SqlBuilder {
       "ALTER TABLE %s\nADD COLUMN IF NOT EXISTS %s TIMESTAMP WITHOUT TIME ZONE;\n";
   private static final String UPDATE_HELPER_COL =
       "UPDATE %s SET %s = F.%s FROM %s F WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
+  // ON DELETE action is now dynamic (last %s). ON UPDATE remains CASCADE (partitioned) or NO ACTION (simple) per existing behavior.
   private static final String ADD_FK_PARTITIONED =
       "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s, %s) " +
-          "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ON UPDATE CASCADE ON DELETE NO ACTION;\n";
+          "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ON UPDATE CASCADE ON DELETE %s;\n";
   private static final String ADD_FK_SIMPLE =
       "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) " +
-          "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE NO ACTION;\n";
+          "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE %s;\n";
 
   /**
    * Appends DROP/ADD PK for the target table.
@@ -150,12 +151,12 @@ public class SqlBuilder {
       if (!fkExists) {
         sql.append(String.format(DROP_FK, child.childTable, child.fkName));
         sql.append(String.format(ADD_FK_PARTITIONED, child.childTable, child.fkName, child.localCol,
-            helperCol, ctx.getParentTable(), ctx.getPkField(), ctx.getPartitionField()));
+            helperCol, ctx.getParentTable(), ctx.getPkField(), ctx.getPartitionField(), child.onDeleteAction));
       }
     } else {
       sql.append(String.format(DROP_FK, child.childTable, child.fkName));
       sql.append(String.format(ADD_FK_SIMPLE, child.childTable, child.fkName,
-          child.localCol, ctx.getParentTable(), ctx.getPkField()));
+          child.localCol, ctx.getParentTable(), ctx.getPkField(), child.onDeleteAction));
     }
   }
 
@@ -286,6 +287,7 @@ public class SqlBuilder {
    * Immutable holder for a single child-table FK reference.
    */
   public static final class ChildRef {
+    private static final String NO_ACTION = "NO ACTION";
     /**
      * The child table name that contains the foreign key.
      */
@@ -298,6 +300,10 @@ public class SqlBuilder {
      * The local column name in the child table.
      */
     public final String localCol;
+    /**
+     * The normalized ON DELETE action (CASCADE, SET NULL, RESTRICT, NO ACTION).
+     */
+    public final String onDeleteAction;
 
     /**
      * Constructs a new ChildRef with the specified child table, foreign key name, and local column.
@@ -308,11 +314,37 @@ public class SqlBuilder {
      *     the foreign key constraint name
      * @param localCol
      *     the local column name
+     * @param onDeleteAction
+     *     The normalized ON DELETE action (CASCADE, SET NULL, RESTRICT, NO ACTION).
      */
-    public ChildRef(String childTable, String fkName, String localCol) {
+    public ChildRef(String childTable, String fkName, String localCol, String onDeleteAction) {
       this.childTable = childTable;
       this.fkName = fkName;
       this.localCol = localCol;
+      this.onDeleteAction = normalizeOnDelete(onDeleteAction);
+    }
+
+    /**
+     * Normalizes the onDelete raw attribute from XML to a valid PostgreSQL action.
+     * Falls back to NO ACTION when blank or unrecognized.
+     */
+    private String normalizeOnDelete(String raw) {
+      if (raw == null || raw.trim().isEmpty()) return NO_ACTION;
+      String r = raw.trim().toLowerCase();
+      switch (r) {
+        case "cascade":
+          return "CASCADE";
+        case "set null":
+        case "setnull":
+          return "SET NULL";
+        case "restrict":
+          return "RESTRICT";
+        case "no action":
+        case "noaction":
+          return NO_ACTION;
+        default:
+          return NO_ACTION; // unspecified or unsupported -> NO ACTION
+      }
     }
   }
 }
