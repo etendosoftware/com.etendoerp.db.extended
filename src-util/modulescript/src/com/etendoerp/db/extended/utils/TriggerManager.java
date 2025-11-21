@@ -202,7 +202,7 @@ public class TriggerManager {
   }
 
   private boolean shouldSkipTableForTrigger(Element tableEl, String parentTable) {
-    return tableEl == null || xmlProcessor.shouldSkipTableElement(tableEl, parentTable);
+    return tableEl == null || xmlProcessor.shouldSkipTableElement(tableEl);
   }
 
   private ForeignKeyInfo findFirstValidForeignKey(Element tableEl, String parentTable) {

@@ -327,13 +327,10 @@ public class XmlTableProcessor {
    *
    * @param tableEl
    *     the table element to check
-   * @param targetTable
-   *     the target table name for comparison
    * @return true if the table element should be skipped during processing
    */
-  public boolean shouldSkipTableElement(Element tableEl, String targetTable) {
-    if (Boolean.parseBoolean(tableEl.getAttribute("isView"))) return true;
-    return targetTable.equalsIgnoreCase(tableEl.getAttribute("name"));
+  public boolean shouldSkipTableElement(Element tableEl) {
+    return Boolean.parseBoolean(tableEl.getAttribute("isView"));
   }
 
   /**
