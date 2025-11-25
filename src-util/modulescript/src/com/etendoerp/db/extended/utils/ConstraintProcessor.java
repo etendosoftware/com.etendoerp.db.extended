@@ -201,7 +201,8 @@ public class ConstraintProcessor {
    * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public List<String> getPrimaryKeyColumns(ConnectionProvider cp, String tableName) throws ConstraintProcessingException {
+  public List<String> getPrimaryKeyColumns(ConnectionProvider cp,
+      String tableName) throws ConstraintProcessingException {
     List<String> pkCols = new ArrayList<>();
     String sql = "SELECT a.attname FROM pg_index i JOIN pg_attribute a "
         + "ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
@@ -232,7 +233,8 @@ public class ConstraintProcessor {
    * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public boolean columnExists(ConnectionProvider cp, String tableName, String columnName) throws ConstraintProcessingException {
+  public boolean columnExists(ConnectionProvider cp, String tableName,
+      String columnName) throws ConstraintProcessingException {
     String sql = "SELECT 1 FROM information_schema.columns " +
         "WHERE lower(table_name) = lower(?) AND lower(column_name) = lower(?)";
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
@@ -242,7 +244,8 @@ public class ConstraintProcessor {
         return rs.next();
       }
     } catch (Exception e) {
-      throw new DatabaseConstraintException("Failed to check column existence: " + columnName + " in table: " + tableName, e);
+      throw new DatabaseConstraintException(
+          "Failed to check column existence: " + columnName + " in table: " + tableName, e);
     }
   }
 
@@ -259,7 +262,8 @@ public class ConstraintProcessor {
    * @throws ConstraintProcessingException
    *     if database query fails
    */
-  public boolean constraintExists(ConnectionProvider cp, String tableName, String constraintName) throws ConstraintProcessingException {
+  public boolean constraintExists(ConnectionProvider cp, String tableName,
+      String constraintName) throws ConstraintProcessingException {
     String sql = "SELECT 1 FROM information_schema.table_constraints " +
         "WHERE lower(table_name) = lower(?) AND lower(constraint_name) = lower(?)";
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
@@ -269,7 +273,8 @@ public class ConstraintProcessor {
         return rs.next();
       }
     } catch (Exception e) {
-      throw new DatabaseConstraintException("Failed to check constraint existence: " + constraintName + " in table: " + tableName, e);
+      throw new DatabaseConstraintException(
+          "Failed to check constraint existence: " + constraintName + " in table: " + tableName, e);
     }
   }
 
@@ -310,7 +315,7 @@ public class ConstraintProcessor {
     try {
       Document doc = XmlTableProcessor.getDocument(xml);
       Element tableEl = xmlProcessor.singleTableElementOrNull(doc);
-      if (tableEl == null || xmlProcessor.shouldSkipTableElement(tableEl, ctx.getParentTable())) return;
+      if (tableEl == null || xmlProcessor.shouldSkipTableElement(tableEl)) return;
 
       String childTable = tableEl.getAttribute("name").toUpperCase();
       NodeList fkList = tableEl.getElementsByTagName(FOREIGN_KEY);
