@@ -41,7 +41,7 @@ import org.openbravo.database.ConnectionProvider;
  *   <li><strong>Smart Backup Creation:</strong> Only creates backups when actually needed</li>
  *   <li><strong>Retention Management:</strong> Automatically cleans up old backups based on policies</li>
  *   <li><strong>Metadata Tracking:</strong> Maintains detailed records of all backup operations</li>
- *   <li><strong>Error Resilience:</strong> Continues operation even if backup operations fail</li>
+ *   <li><strong>Manual Restore:</strong> Provides backup information for manual restoration when operations fail</li>
  * </ul>
  *
  * <h3>Backup Strategy:</h3>
@@ -60,13 +60,18 @@ import org.openbravo.database.ConnectionProvider;
  *   <li>{@code processing_metadata} table - Tracks processing timestamps for tables</li>
  * </ul>
  *
+ * <h3>Error Handling:</h3>
+ * <p>When SQL execution fails after a backup has been created, the system does NOT automatically
+ * restore the backup. Instead, it throws an exception with detailed instructions for manual
+ * restoration.
+ *
  * <h3>Usage Pattern:</h3>
  * <pre>{@code
  * BackupManager backupManager = new BackupManager();
  * backupManager.ensureBackupInfrastructure(connectionProvider);
  * backupManager.cleanupExcessBackups(connectionProvider);
  *
- * // Execute SQL with automatic backup
+ * // Execute SQL with automatic backup (manual restore on failure)
  * backupManager.executeSqlWithBackup(cp, "my_table", true, "ALTER TABLE ...");
  * }</pre>
  *
@@ -82,6 +87,7 @@ public class BackupManager {
   private static final String BACKUP_METADATA_TABLE = "backup_metadata"; // in BACKUP_SCHEMA
   private static final int MAX_BACKUPS_PER_TABLE = 5;
   private static final int BACKUP_RETENTION_DAYS = 7;
+  public static final String SEPARATOR = "========================================================";
 
   /**
    * Creates backup schema/tables if missing. Best-effort, non-throwing.
@@ -196,29 +202,11 @@ public class BackupManager {
     return backupName;
   }
 
-  /**
-   * Best-effort restore: truncates target table and inserts from the backup.
-   *
-   * @param cp
-   *     the ConnectionProvider for database access
-   * @param tableName
-   *     the target table name to restore to
-   * @param backupName
-   *     the backup table name to restore from
-   * @throws Exception
-   *     if restore operation fails
-   */
-  public void restoreBackup(ConnectionProvider cp, String tableName, String backupName) throws Exception {
-    String truncate = "TRUNCATE TABLE public." + tableName + " RESTART IDENTITY CASCADE;";
-    String insert = "INSERT INTO public." + tableName + " SELECT * FROM " + BACKUP_SCHEMA + "." + backupName + ";";
-    try (PreparedStatement ps = cp.getPreparedStatement(truncate + " " + insert)) {
-      ps.executeUpdate();
-    }
-  }
+
 
   /**
    * Executes the given SQL against the table. If the table is partitioned, creates a backup
-   * beforehand and restores it on failure.
+   * beforehand. On failure, throws an exception with backup restoration instructions.
    *
    * @param cp
    *     the ConnectionProvider for database access
@@ -228,11 +216,11 @@ public class BackupManager {
    *     whether the table is partitioned (determines if backup is needed)
    * @param sql
    *     the SQL statement to execute
-   * @throws Exception
-   *     if SQL execution fails and restore is unsuccessful
+   * @throws BackupOperationException
+   *     if SQL execution fails, with information about available backup
    */
   public void executeSqlWithBackup(ConnectionProvider cp, String tableName, boolean isPartitioned, String sql)
-      throws Exception {
+      throws BackupOperationException {
     String backupName = null;
     try {
       if (isPartitioned) {
@@ -247,16 +235,30 @@ public class BackupManager {
         ps.executeUpdate();
       }
     } catch (Exception e) {
-      log4j.error("Error executing SQL for table {}: {}", tableName, e.getMessage(), e);
+      String errorMsg = String.format(
+          "Error executing SQL for table %s: %s",
+          tableName, e.getMessage());
+      log4j.error(errorMsg, e);
+
       if (backupName != null) {
-        try {
-          restoreBackup(cp, tableName, backupName);
-          log4j.info("Restored backup {} to table {} after failure", backupName, tableName);
-        } catch (Exception re) {
-          log4j.error("Failed to restore backup {} for table {}: {}", backupName, tableName, re.getMessage(), re);
-        }
+        log4j.error(SEPARATOR);
+        log4j.error("BACKUP AVAILABLE FOR RESTORATION");
+        log4j.error(SEPARATOR);
+        log4j.error("Table: {}", tableName);
+        log4j.error("Backup: {}.{}", BACKUP_SCHEMA, backupName);
+        log4j.error(SEPARATOR);
+        
+        String backupInfo = String.format(
+            "\n========================================================\n" +
+            "BACKUP AVAILABLE FOR RESTORATION\n" +
+            "========================================================\n" +
+            "Table: %s\n" +
+            "Backup: %s.%s\n" +
+                SEPARATOR,
+            tableName, BACKUP_SCHEMA, backupName);
+        throw new BackupOperationException(errorMsg + backupInfo, e);
       }
-      throw e;
+      throw new BackupOperationException(errorMsg, e);
     }
   }
 

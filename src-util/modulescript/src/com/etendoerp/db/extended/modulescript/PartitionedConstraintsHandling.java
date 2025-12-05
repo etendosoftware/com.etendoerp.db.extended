@@ -243,13 +243,13 @@ public class PartitionedConstraintsHandling extends ModuleScript {
    *     the table configuration map containing table name, partition column, and PK column
    * @return the elapsed processing time in milliseconds, or -1 if processing failed or was skipped
    */
-  private long processTableSafely(ConnectionProvider cp, Map<String, String> cfg) {
+  private long processTableSafely(ConnectionProvider cp, Map<String, String> cfg) throws TableProcessingException {
     long start = System.currentTimeMillis();
     try {
       boolean processed = processTableConfig(cp, cfg);
       return processed ? (System.currentTimeMillis() - start) : -1L;
     } catch (Exception e) {
-      return -1L;
+      throw new TableProcessingException(e);
     }
   }
 
@@ -395,6 +395,7 @@ public class PartitionedConstraintsHandling extends ModuleScript {
         backupManager.executeSqlWithBackup(cp, tableName, isPartitioned, tableSql);
       } catch (Exception e2) {
         log4j.error("Failed executing fallback constraint SQL for {}: {}", tableName, e2.getMessage(), e2);
+        throw new TableProcessingException(e2);
       }
       return false;
     }
