@@ -7,7 +7,7 @@
 */
 
 group          = "com.etendoerp"
-version        = "1.3.2"
+version        = "1.3.3"
 description    = "Etendo DB Extended"
 ext.artifact   = "db.extended"
 ext.repository = "https://maven.pkg.github.com/etendosoftware/com.etendoerp.platform.extensions"
