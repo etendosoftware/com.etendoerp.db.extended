@@ -133,7 +133,30 @@ public class PartitionedConstraintsHandling extends ModuleScript {
   private void initializeComponents() throws NoSuchFileException {
     TriggerManager triggerManager;
     this.backupManager = new BackupManager();
-    this.xmlProcessor = new XmlTableProcessor(backupManager, getSourcePath());
+    
+    // Try to get source path, fallback to current directory if config/ is not found
+    String sourcePath;
+    try {
+      sourcePath = getSourcePath();
+    } catch (NoSuchFileException e) {
+      // In CI/CD environments (like Jenkins), the working directory might be different
+      // from the project root. Use current directory as fallback.
+      log4j.warn("Could not find source path using default method (config/ not found). " +
+          "Using current directory as fallback. This is expected in CI/CD environments.");
+      
+      // Use normalized absolute path from user.dir with fallback to current directory
+      // This is robust across different CI/CD JVM setups
+      sourcePath = new java.io.File(System.getProperty("user.dir", ".")).getAbsolutePath();
+      
+      // Validate that the fallback path exists and is accessible
+      java.io.File sourceDir = new java.io.File(sourcePath);
+      if (!sourceDir.exists() || !sourceDir.isDirectory()) {
+        log4j.error("Fallback source path does not exist or is not a directory: {}", sourcePath);
+        throw e;
+      }
+    }
+    
+    this.xmlProcessor = new XmlTableProcessor(backupManager, sourcePath);
     this.sqlBuilder = new SqlBuilder();
     triggerManager = new TriggerManager(xmlProcessor);
     this.constraintProcessor = new ConstraintProcessor(xmlProcessor, sqlBuilder, triggerManager);
