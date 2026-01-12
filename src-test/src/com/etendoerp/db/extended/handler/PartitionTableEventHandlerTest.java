@@ -165,7 +165,7 @@ class PartitionTableEventHandlerTest {
         .thenReturn("Table has unique constraint");
 
     OBException ex = assertThrows(OBException.class, () -> handler.onNew(newEvent));
-    assertEquals("Table has unique constraint", ex.getMessage());
+    assertEquals("org.openbravo.base.exception.OBException: Table has unique constraint", ex.getMessage());
   }
 
   /**

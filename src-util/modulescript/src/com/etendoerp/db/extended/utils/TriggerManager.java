@@ -136,7 +136,7 @@ public class TriggerManager {
           "$$ LANGUAGE plpgsql;\n";
   private static final String CREATE_TRIGGER =
       "CREATE TRIGGER %s\n" +
-          "    BEFORE INSERT ON %s\n" +
+          "    BEFORE INSERT OR UPDATE ON %s\n" +
           "    FOR EACH ROW\n" +
           "    EXECUTE FUNCTION %s();\n";
 
