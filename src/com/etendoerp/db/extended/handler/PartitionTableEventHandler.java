@@ -86,6 +86,10 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
     String partitionedTable = actualTableConfig.getTable().getDBTableName();
 
     try {
+      // Get connection managed by Hibernate/Openbravo - DO NOT CLOSE IT
+      Connection connection = OBDal.getInstance().getConnection(false);
+      
+      // Check for NULL values in the selected column
       String selectedColumn = actualTableConfig.getColumn() != null
           ? actualTableConfig.getColumn().getDBColumnName()
           : null;
@@ -94,13 +98,14 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
       final String table = quoteIdent(partitionedTable.toLowerCase(Locale.ROOT));
       final String column = quoteIdent(selectedColumn.toLowerCase(Locale.ROOT));
 
-      final String nullCheckSql =
+      // SQL injection is prevented: quoteIdent() validates identifiers against strict regex
+      // and properly escapes them before concatenation. User input is not directly used.
+      final String nullCheckSql = // NOSONAR - Safe: identifiers are validated and quoted
           "SELECT CASE WHEN EXISTS (SELECT 1 FROM " + schema + "." + table +
               " WHERE " + column + " IS NULL) THEN 'Y' ELSE 'N' END AS hasnull";
 
       String hasNulls = "N";
-      try (Connection connection = OBDal.getInstance().getConnection(false);
-           PreparedStatement ps = connection.prepareStatement(nullCheckSql);
+      try (PreparedStatement ps = connection.prepareStatement(nullCheckSql);
            ResultSet rs = ps.executeQuery()) {
         if (rs.next()) {
           hasNulls = rs.getString("hasnull");
@@ -110,42 +115,36 @@ public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
       if (StringUtils.equals("Y", hasNulls)) {
         throw new OBException(OBMessageUtils.messageBD("ETARC_SelectedColumnHasNulls"));
       }
-    } catch (SQLException e) {
-      logSQLError(e);
-      throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
-    } catch (Exception e) {
-      throw new OBException(e);
-    }
 
-    String sql =
-        "SELECT " +
-            "  CASE WHEN EXISTS ( " +
-            "    SELECT 1 " +
-            "    FROM pg_constraint con " +
-            "    JOIN pg_class c ON c.oid = con.conrelid " +
-            "    WHERE con.contype = 'u' " +
-            "      AND c.relname = ? " +
-            "  ) THEN 'Y' ELSE 'N' END AS hasunique;";
+      // Check for unique constraints
+      String uniqueCheckSql =
+          "SELECT " +
+              "  CASE WHEN EXISTS ( " +
+              "    SELECT 1 " +
+              "    FROM pg_constraint con " +
+              "    JOIN pg_class c ON c.oid = con.conrelid " +
+              "    WHERE con.contype = 'u' " +
+              "      AND c.relname = ? " +
+              "  ) THEN 'Y' ELSE 'N' END AS hasunique;";
 
-    String hasUnique = "";
-
-    try (Connection connection = OBDal.getInstance().getConnection(false);
-         PreparedStatement ps = connection.prepareStatement(sql)) {
-      ps.setString(1, partitionedTable.toLowerCase(Locale.ROOT));
-      try (ResultSet rs = ps.executeQuery()) {
-        if (rs.next()) {
-          hasUnique = rs.getString("hasunique");
+      String hasUnique = "";
+      try (PreparedStatement ps = connection.prepareStatement(uniqueCheckSql)) {
+        ps.setString(1, partitionedTable.toLowerCase(Locale.ROOT));
+        try (ResultSet rs = ps.executeQuery()) {
+          if (rs.next()) {
+            hasUnique = rs.getString("hasunique");
+          }
         }
+      }
+
+      if (StringUtils.equals("Y", hasUnique)) {
+        throw new OBException(OBMessageUtils.messageBD("ETARC_TableHasUnique"));
       }
     } catch (SQLException e) {
       logSQLError(e);
       throw new OBException(OBMessageUtils.messageBD(ETARC_COULD_NOT_RETRIEVE_TABLES), e);
     } catch (Exception e) {
       throw new OBException(e);
-    }
-
-    if (StringUtils.equals("Y", hasUnique)) {
-      throw new OBException(OBMessageUtils.messageBD("ETARC_TableHasUnique"));
     }
   }
 
