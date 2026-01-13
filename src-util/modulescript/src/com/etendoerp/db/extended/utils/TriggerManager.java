@@ -155,6 +155,10 @@ public class TriggerManager {
   /**
    * Creates trigger SQL for child tables to automatically populate partition columns.
    *
+   * <p>This method generates triggers for ALL foreign keys that reference the partitioned
+   * parent table, not just the first one. This ensures proper synchronization of partition
+   * columns for primary FKs, secondary FKs, and self-referencing FKs.
+   *
    * @param sql
    *     the StringBuilder to append trigger SQL statements to
    * @param ctx
@@ -165,20 +169,21 @@ public class TriggerManager {
       return; // Only create triggers for partitioned parent tables
     }
 
-    Set<String> processedChildTables = new HashSet<>();
-    processTablesForTriggers(sql, ctx, processedChildTables);
+    // Track processed FK combinations to avoid duplicates (table + FK name)
+    Set<String> processedForeignKeys = new HashSet<>();
+    processTablesForTriggers(sql, ctx, processedForeignKeys);
   }
 
-  private void processTablesForTriggers(StringBuilder sql, SqlBuilder.FkContext ctx, Set<String> processedChildTables) {
+  private void processTablesForTriggers(StringBuilder sql, SqlBuilder.FkContext ctx, Set<String> processedForeignKeys) {
     for (File dir : xmlProcessor.collectTableDirsSafe()) {
       for (File xml : xmlProcessor.listXmlFiles(dir)) {
-        processXmlForTriggers(sql, ctx, xml, processedChildTables);
+        processXmlForTriggers(sql, ctx, xml, processedForeignKeys);
       }
     }
   }
 
   private void processXmlForTriggers(StringBuilder sql, SqlBuilder.FkContext ctx, File xml,
-      Set<String> processedChildTables) {
+      Set<String> processedForeignKeys) {
     try {
       Document doc = XmlTableProcessor.getDocument(xml);
       Element tableEl = xmlProcessor.singleTableElementOrNull(doc);
@@ -187,14 +192,18 @@ public class TriggerManager {
       }
 
       String childTable = tableEl.getAttribute("name").toUpperCase();
-      if (processedChildTables.contains(childTable)) {
-        return;
-      }
-
-      ForeignKeyInfo fkInfo = findFirstValidForeignKey(tableEl, ctx.getParentTable());
-      if (fkInfo.isValid()) {
+      
+      // Find ALL valid foreign keys pointing to the parent table, not just the first one
+      java.util.List<ForeignKeyInfo> allForeignKeys = findAllValidForeignKeys(tableEl, ctx.getParentTable());
+      
+      for (ForeignKeyInfo fkInfo : allForeignKeys) {
+        String fkKey = childTable + "." + fkInfo.getName();
+        if (processedForeignKeys.contains(fkKey)) {
+          continue; // Skip if this specific FK was already processed
+        }
+        
         appendTriggerForChild(sql, ctx, childTable, fkInfo.getName(), fkInfo.getLocalColumn());
-        processedChildTables.add(childTable);
+        processedForeignKeys.add(fkKey);
       }
     } catch (Exception e) {
       log4j.error("Error processing XML file for triggers: {}", xml.getAbsolutePath(), e);
@@ -205,7 +214,20 @@ public class TriggerManager {
     return tableEl == null || xmlProcessor.shouldSkipTableElement(tableEl);
   }
 
-  private ForeignKeyInfo findFirstValidForeignKey(Element tableEl, String parentTable) {
+  /**
+   * Finds ALL valid foreign keys in a table element that reference the specified parent table.
+   *
+   * <p>This method replaces the previous findFirstValidForeignKey to ensure that ALL foreign
+   * key relationships to partitioned parent tables get their synchronization triggers.
+   *
+   * @param tableEl
+   *     the XML table element to search
+   * @param parentTable
+   *     the name of the parent table to find references to
+   * @return a list of all valid foreign key information objects (may be empty but never null)
+   */
+  private java.util.List<ForeignKeyInfo> findAllValidForeignKeys(Element tableEl, String parentTable) {
+    java.util.List<ForeignKeyInfo> foreignKeys = new java.util.ArrayList<>();
     NodeList fkList = tableEl.getElementsByTagName(FOREIGN_KEY);
 
     for (int i = 0; i < fkList.getLength(); i++) {
@@ -217,21 +239,42 @@ public class TriggerManager {
       String fkName = fkEl.getAttribute("name");
       String localCol = xmlProcessor.firstLocalColumn(fkEl);
       if (!StringUtils.isBlank(fkName) && !StringUtils.isBlank(localCol)) {
-        return new ForeignKeyInfo(fkName, localCol);
+        foreignKeys.add(new ForeignKeyInfo(fkName, localCol));
       }
     }
 
-    return new ForeignKeyInfo(null, null);
+    return foreignKeys;
   }
 
   /**
-   * Appends trigger creation SQL for a specific child table.
+   * Appends trigger creation SQL for a specific foreign key relationship.
+   *
+   * <p>Each foreign key gets its own unique trigger and function, following the naming convention:
+   * <ul>
+   *   <li>Trigger: etarc_partition_trigger_[child_table]_[fk_name]</li>
+   *   <li>Function: etarc_auto_partition_[child_table]_[fk_name]</li>
+   * </ul>
+   *
+   * @param sql
+   *     the StringBuilder to append SQL to
+   * @param ctx
+   *     the foreign key context with partition information
+   * @param childTable
+   *     the name of the child table
+   * @param fkName
+   *     the name of the foreign key constraint
+   * @param localCol
+   *     the local column in the child table that references the parent
    */
   private void appendTriggerForChild(StringBuilder sql, SqlBuilder.FkContext ctx, String childTable,
       String fkName, String localCol) {
     String helperCol = "etarc_" + ctx.getPartitionField() + "__" + fkName;
-    String triggerName = "etarc_partition_trigger_" + childTable.toLowerCase();
-    String functionName = "etarc_auto_partition_" + childTable.toLowerCase();
+    
+    // Make trigger and function names unique per FK to support multiple FKs per table
+    String triggerName = "etarc_partition_trigger_" + childTable.toLowerCase() + "_" + 
+                         sanitizeName(fkName);
+    String functionName = "etarc_auto_partition_" + childTable.toLowerCase() + "_" + 
+                          sanitizeName(fkName);
 
     // Always drop and recreate to ensure trigger is current
     sql.append(String.format(DROP_TRIGGER, triggerName, childTable));
@@ -255,8 +298,26 @@ public class TriggerManager {
         functionName          // function name
     ));
 
-    log4j.info("Added trigger SQL for child table {} -> {} (partition column: {})",
-        childTable, ctx.getParentTable(), helperCol);
+    log4j.info("Added trigger SQL for FK {} in child table {} -> {} (partition column: {})",
+        fkName, childTable, ctx.getParentTable(), helperCol);
+  }
+
+  /**
+   * Sanitizes a foreign key name for use in database object identifiers.
+   *
+   * <p>Converts the FK name to lowercase and ensures it's safe for use in PostgreSQL
+   * object names by removing any problematic characters.
+   *
+   * @param fkName
+   *     the foreign key name to sanitize
+   * @return sanitized name safe for database object identifiers
+   */
+  private String sanitizeName(String fkName) {
+    if (fkName == null) {
+      return "unknown";
+    }
+    // Convert to lowercase and replace any non-alphanumeric characters with underscores
+    return fkName.toLowerCase().replaceAll("[^a-z0-9_]", "_");
   }
 
   /**
