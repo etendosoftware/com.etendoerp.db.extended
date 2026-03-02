@@ -137,22 +137,17 @@ public class SqlBuilder {
       String helperCol = "etarc_" + ctx.getPartitionField() + "__" + child.fkName;
 
       boolean colExists = ctx.columnExists(child.childTable, helperCol);
-      boolean fkExists = ctx.constraintExists(child.childTable, child.fkName);
-
-      if (colExists && fkExists) {
-        return; // Skip if both already exist
-      }
       if (!colExists) {
         sql.append(String.format(ADD_COL_IF_NOT_EXISTS, child.childTable, helperCol));
-        sql.append(String.format(UPDATE_HELPER_COL, child.childTable, helperCol,
-            ctx.getPartitionField(), ctx.getParentTable(), ctx.getPkField(),
-            child.childTable, child.localCol, child.childTable, helperCol));
       }
-      if (!fkExists) {
-        sql.append(String.format(DROP_FK, child.childTable, child.fkName));
-        sql.append(String.format(ADD_FK_PARTITIONED, child.childTable, child.fkName, child.localCol,
-            helperCol, ctx.getParentTable(), ctx.getPkField(), ctx.getPartitionField(), child.onDeleteAction));
-      }
+      // PK recreation uses DROP CONSTRAINT ... CASCADE, which may drop referencing FKs.
+      // Always rebuild the child FK in the same SQL batch.
+      sql.append(String.format(UPDATE_HELPER_COL, child.childTable, helperCol,
+          ctx.getPartitionField(), ctx.getParentTable(), ctx.getPkField(),
+          child.childTable, child.localCol, child.childTable, helperCol));
+      sql.append(String.format(DROP_FK, child.childTable, child.fkName));
+      sql.append(String.format(ADD_FK_PARTITIONED, child.childTable, child.fkName, child.localCol,
+          helperCol, ctx.getParentTable(), ctx.getPkField(), ctx.getPartitionField(), child.onDeleteAction));
     } else {
       sql.append(String.format(DROP_FK, child.childTable, child.fkName));
       sql.append(String.format(ADD_FK_SIMPLE, child.childTable, child.fkName,
