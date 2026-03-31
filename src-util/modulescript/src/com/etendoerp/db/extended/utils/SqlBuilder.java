@@ -89,9 +89,12 @@ public class SqlBuilder {
   private static final String UPDATE_HELPER_COL =
       "UPDATE %s SET %s = F.%s FROM %s F WHERE F.%s = %s.%s AND %s.%s IS NULL;\n";
   // ON DELETE action is now dynamic (last %s). ON UPDATE remains CASCADE (partitioned) or NO ACTION (simple) per existing behavior.
+  // DEFERRABLE INITIALLY IMMEDIATE allows callers to SET CONSTRAINTS ALL DEFERRED when performing
+  // partition key updates (which PostgreSQL implements as DELETE + INSERT internally). ETP-3621.
   private static final String ADD_FK_PARTITIONED =
       "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s, %s) " +
-          "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ON UPDATE CASCADE ON DELETE %s;\n";
+          "REFERENCES PUBLIC.%s (%s, %s) MATCH SIMPLE ON UPDATE CASCADE ON DELETE %s " +
+          "DEFERRABLE INITIALLY IMMEDIATE;\n";
   private static final String ADD_FK_SIMPLE =
       "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) " +
           "REFERENCES PUBLIC.%s (%s) MATCH SIMPLE ON UPDATE NO ACTION ON DELETE %s;\n";
