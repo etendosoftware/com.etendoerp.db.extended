@@ -31,7 +31,7 @@ pipeline {
     COMMIT_AUTHOR_NAME  = sh(returnStdout: true, script: "git log -1 --pretty=format:'%an'").trim()
     COMMIT_AUTHOR_EMAIL = sh(returnStdout: true, script: "git log -1 --pretty=format:'%ae'").trim()
 
-    JAVA_HOME           = '/usr/lib/jvm/java-11-openjdk-amd64'
+    JAVA_HOME           = '/usr/lib/jvm/java-17-openjdk-amd64'
     BUILD_CLASSIC       = true
 
     CONTEXT_BUILD       = 'Module Tests'
@@ -180,7 +180,7 @@ spec:
                     githubUser=${GITHUB_USER}\n
                     githubToken=${GITHUB_TOKEN}\n
                     allow.root=true\n
-                    java.version=11\n
+                    java.version=17\n
                     org.gradle.daemon=false\n
                     org.gradle.jvmargs=-Dfile.encoding=UTF-8" > gradle.properties
                     """
