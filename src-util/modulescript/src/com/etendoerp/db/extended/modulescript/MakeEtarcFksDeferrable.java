@@ -97,24 +97,25 @@ public class MakeEtarcFksDeferrable extends ModuleScript {
       log4j.info("ETP-3621: Found {} non-deferrable ETARC compound FK(s) to make DEFERRABLE INITIALLY IMMEDIATE.",
           fks.size());
 
-      StringBuilder migrationSql = new StringBuilder();
       for (FkInfo fk : fks) {
         log4j.info("ETP-3621: Migrating FK {} on table {}.", fk.fkName, fk.childTable);
-        migrationSql
-            .append("ALTER TABLE ").append(fk.childTable)
-            .append(" DROP CONSTRAINT IF EXISTS ").append(fk.fkName).append(";\n")
-            .append("ALTER TABLE ").append(fk.childTable)
-            .append(" ADD CONSTRAINT ").append(fk.fkName)
-            .append(" FOREIGN KEY (").append(fk.childCols).append(")")
-            .append(" REFERENCES PUBLIC.").append(fk.parentTable)
-            .append(" (").append(fk.parentCols).append(")")
-            .append(" MATCH SIMPLE ON UPDATE CASCADE ON DELETE ").append(fk.onDeleteAction)
-            .append(" DEFERRABLE INITIALLY IMMEDIATE;\n");
-      }
 
-      String sql = migrationSql.toString();
-      try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
-        ps.executeUpdate();
+        String dropSql = "ALTER TABLE " + fk.childTable
+            + " DROP CONSTRAINT IF EXISTS " + fk.fkName;
+        try (PreparedStatement ps = cp.getPreparedStatement(dropSql)) {
+          ps.executeUpdate();
+        }
+
+        String addSql = "ALTER TABLE " + fk.childTable
+            + " ADD CONSTRAINT " + fk.fkName
+            + " FOREIGN KEY (" + fk.childCols + ")"
+            + " REFERENCES PUBLIC." + fk.parentTable
+            + " (" + fk.parentCols + ")"
+            + " MATCH SIMPLE ON UPDATE CASCADE ON DELETE " + fk.onDeleteAction
+            + " DEFERRABLE INITIALLY IMMEDIATE";
+        try (PreparedStatement ps = cp.getPreparedStatement(addSql)) {
+          ps.executeUpdate();
+        }
       }
 
       log4j.info("ETP-3621: Successfully migrated {} ETARC compound FK(s) to DEFERRABLE INITIALLY IMMEDIATE.",
@@ -158,6 +159,7 @@ public class MakeEtarcFksDeferrable extends ModuleScript {
       case "c": return "CASCADE";
       case "n": return "SET NULL";
       case "r": return "RESTRICT";
+      case "d": return "SET DEFAULT";
       case "a":
       default:  return "NO ACTION";
     }
