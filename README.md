@@ -12,6 +12,22 @@ structures such as partitioned tables with intelligent constraint management.
 - **Trigger Automation**: Automatic partition column population in child tables
 - **Python Tools**: Command-line utilities to **partition** and **unpartition** database tables
 
+## Optional pgvector capability (ETP-5077)
+
+pgvector is optional and disabled by default. Installing this module, compiling Etendo, running
+`smartbuild`, `update.database`, or starting the application must never install the PostgreSQL extension or
+create vector objects. A caller must explicitly invoke `VectorActivationService.activate()` after confirming
+that the server offers pgvector and that the caller has extension-creation permission.
+
+Before activation, or when pgvector is unavailable, every vector operation returns the controlled
+`PGVECTOR_NOT_ENABLED` error. The API is entity-agnostic: consumers provide a namespace, external key, numeric
+vector, JSON object metadata, and optional client/organization scope. It does not create embeddings, invoke AI
+providers, expose UI/NEO endpoints, or implement RAG.
+
+The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
+`src-db/database/model`. Exact search supports cosine, L2, and inner-product distance. HNSW creation is an
+explicit operation; exact search remains available without an index.
+
 ## 🏗️ Architecture Overview
 
 The module follows a modular architecture with specialized components:

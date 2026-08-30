@@ -62,6 +62,12 @@ public class CreateExcludeFilter extends BuildValidation {
   private static final Logger logger = LogManager.getLogger();
   private static final String SRC_DB_DATABASE_MODEL_TABLES = "src-db/database/model/tables";
   private static final String SRC_DB_DATABASE_MODEL_MODIFIED_TABLES = "src-db/database/model/modifiedTables";
+  private static final String PGVECTOR_FUNCTIONS_QUERY =
+      "SELECT DISTINCT UPPER(p.proname) AS function_name "
+          + "FROM pg_extension e "
+          + "JOIN pg_depend d ON d.refobjid = e.oid AND d.deptype = 'e' "
+          + "JOIN pg_proc p ON p.oid = d.objid "
+          + "WHERE e.extname = 'vector'";
   private static String[] moduleDirs = new String[]{ MODULES_BASE, MODULES_CORE, MODULES_JAR };
 
   /**
@@ -177,6 +183,8 @@ public class CreateExcludeFilter extends BuildValidation {
       processPartitionedTables(connectionProvider, baseTablesQuery, constraintsToExclude, columnsToExclude);
       generateTriggersAndFunctionsForChildTables(connectionProvider, baseTablesQuery,
           triggersToExclude, functionsToExclude);
+      collectPgVectorFunctions(connectionProvider, functionsToExclude);
+      collectVectorSourceObjects(connectionProvider, triggersToExclude, functionsToExclude);
       writeExcludeFilterXml(constraintsToExclude, columnsToExclude, triggersToExclude, functionsToExclude);
 
     } catch (Exception e) {
@@ -184,6 +192,68 @@ public class CreateExcludeFilter extends BuildValidation {
     }
 
     return List.of();
+  }
+
+  /**
+   * Excludes PostgreSQL functions owned by the optional pgvector extension from the DBSM model.
+   *
+   * <p>DBSM does not need to manage extension-owned objects. More importantly, some pgvector
+   * functions have unnamed parameters that the PostgreSQL metadata reader cannot standardize.
+   * The query returns no rows when pgvector is not installed, preserving the normal installation
+   * path for databases without the optional extension.</p>
+   */
+  private void collectPgVectorFunctions(ConnectionProvider connectionProvider,
+      Set<String> functionsToExclude) throws Exception {
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(PGVECTOR_FUNCTIONS_QUERY);
+        ResultSet result = statement.executeQuery()) {
+      while (result.next()) {
+        functionsToExclude.add(result.getString("function_name"));
+      }
+    }
+  }
+
+  /**
+   * Excludes raw trigger objects generated from the vector source dictionary configuration.
+   *
+   * <p>The configuration tables are not present before this module is first installed, so this
+   * method deliberately treats their absence as an empty configuration. The post-update module
+   * script owns these PostgreSQL objects; DBSM must not model or remove them.</p>
+   */
+  private void collectVectorSourceObjects(ConnectionProvider connectionProvider,
+      Set<String> triggersToExclude, Set<String> functionsToExclude) {
+    String sourcesSql = "SELECT etarc_vector_source_id, isinsertenabled, isupdateenabled, "
+        + "isdeleteenabled FROM etarc_vector_source WHERE isactive = 'Y' AND isenabled = 'Y'";
+    String watchedColumnsSql = "SELECT c.ad_column_id FROM etarc_vector_source_column sc "
+        + "JOIN ad_column c ON c.ad_column_id = sc.ad_column_id "
+        + "WHERE sc.etarc_vector_source_id = ? AND sc.isactive = 'Y' "
+        + "AND sc.isreindexonchange = 'Y' AND c.isactive = 'Y'";
+    try (PreparedStatement sources = connectionProvider.getPreparedStatement(sourcesSql);
+        ResultSet sourceRows = sources.executeQuery()) {
+      while (sourceRows.next()) {
+        String sourceId = sourceRows.getString("etarc_vector_source_id").toLowerCase();
+        String prefix = "ETARC_VSRC_" + sourceId.toUpperCase();
+        functionsToExclude.add(prefix + "_FN");
+        if ("Y".equals(sourceRows.getString("isinsertenabled"))) {
+          triggersToExclude.add(prefix + "_AI");
+        }
+        if ("Y".equals(sourceRows.getString("isdeleteenabled"))) {
+          triggersToExclude.add(prefix + "_AD");
+        }
+        if ("Y".equals(sourceRows.getString("isupdateenabled"))) {
+          try (PreparedStatement watched = connectionProvider.getPreparedStatement(watchedColumnsSql)) {
+            watched.setString(1, sourceRows.getString("etarc_vector_source_id"));
+            try (ResultSet watchedRows = watched.executeQuery()) {
+              while (watchedRows.next()) {
+                triggersToExclude.add(prefix + "_U_"
+                    + watchedRows.getString("ad_column_id").substring(0, 8).toUpperCase());
+              }
+            }
+          }
+        }
+      }
+    } catch (Exception e) {
+      logger.debug("Vector source configuration is not available yet; no vector trigger objects excluded.");
+    }
   }
 
   private String getBaseTablesQuery() {
