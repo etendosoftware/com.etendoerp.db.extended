@@ -42,8 +42,12 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
   private static final Logger log = LogManager.getLogger();
 
   private static final String SOURCES_SQL =
-      "SELECT s.etarc_vector_source_id, s.ad_client_id, s.ad_org_id, t.tablename, "
-          + "k.columnname AS key_column, s.isinsertenabled, s.isupdateenabled, "
+      "SELECT s.etarc_vector_source_id, t.tablename, k.columnname AS key_column, "
+          + "(SELECT c.columnname FROM ad_column c WHERE c.ad_table_id = t.ad_table_id "
+          + " AND lower(c.columnname) = 'ad_client_id' AND c.isactive = 'Y') AS client_column, "
+          + "(SELECT c.columnname FROM ad_column c WHERE c.ad_table_id = t.ad_table_id "
+          + " AND lower(c.columnname) = 'ad_org_id' AND c.isactive = 'Y') AS organization_column, "
+          + "s.isinsertenabled, s.isupdateenabled, "
           + "s.isdeleteenabled "
           + "FROM etarc_vector_source s "
           + "JOIN ad_table t ON t.ad_table_id = s.ad_table_id "
@@ -94,10 +98,10 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
       while (result.next()) {
         Source source = new Source();
         source.id = result.getString("etarc_vector_source_id");
-        source.clientId = result.getString("ad_client_id");
-        source.organizationId = result.getString("ad_org_id");
         source.tableName = result.getString("tablename");
         source.keyColumn = result.getString("key_column");
+        source.clientColumn = result.getString("client_column");
+        source.organizationColumn = result.getString("organization_column");
         source.insertEnabled = "Y".equals(result.getString("isinsertenabled"));
         source.updateEnabled = "Y".equals(result.getString("isupdateenabled"));
         source.deleteEnabled = "Y".equals(result.getString("isdeleteenabled"));
@@ -127,7 +131,7 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
     }
     if (source.updateEnabled) {
       for (WatchedColumn column : loadWatchedColumns(connectionProvider, source.id)) {
-        String trigger = triggerName(source.id, "u_" + column.id.substring(0, 8).toLowerCase());
+        String trigger = triggerName(source.id, "u_" + shortId(column.id).toLowerCase());
         activeTriggers.add(trigger);
         String quotedColumn = quoteIdentifier(column.name);
         recreateTrigger(connectionProvider, trigger, source.tableName,
@@ -160,7 +164,8 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
         + "INSERT INTO etarc_vector_outbox (etarc_vector_outbox_id, ad_client_id, ad_org_id, "
         + "isactive, created, createdby, updated, updatedby, etarc_vector_source_id, record_id, "
         + "event_type, ad_column_id, status, attempt_count) VALUES (get_uuid(), "
-        + quoteLiteral(source.clientId) + ", " + quoteLiteral(source.organizationId)
+        + sourceScopeExpression(source.clientColumn) + ", "
+        + sourceScopeExpression(source.organizationColumn)
         + ", 'Y', now(), '0', now(), '0', " + quoteLiteral(source.id) + ", "
         + "CASE WHEN TG_OP = 'DELETE' THEN OLD." + keyColumn + " ELSE NEW." + keyColumn + " END, "
         + "TG_OP, NULLIF(TG_ARGV[0], ''), 'PENDING', 0); "
@@ -226,16 +231,29 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
     return "\"" + value.toLowerCase().replace("\"", "\"\"") + "\"";
   }
 
+  private static String shortId(String id) {
+    return id.substring(0, Math.min(8, id.length()));
+  }
+
   private static String quoteLiteral(String value) {
     return "'" + value.replace("'", "''") + "'";
   }
 
+  private static String sourceScopeExpression(String column) {
+    if (column == null) {
+      return "'0'";
+    }
+    String quotedColumn = quoteIdentifier(column);
+    return "CASE WHEN TG_OP = 'DELETE' THEN OLD." + quotedColumn + " ELSE NEW."
+        + quotedColumn + " END";
+  }
+
   private static class Source {
     private String id;
-    private String clientId;
-    private String organizationId;
     private String tableName;
     private String keyColumn;
+    private String clientColumn;
+    private String organizationColumn;
     private boolean insertEnabled;
     private boolean updateEnabled;
     private boolean deleteEnabled;

@@ -245,7 +245,7 @@ public class CreateExcludeFilter extends BuildValidation {
             try (ResultSet watchedRows = watched.executeQuery()) {
               while (watchedRows.next()) {
                 triggersToExclude.add(prefix + "_U_"
-                    + watchedRows.getString("ad_column_id").substring(0, 8).toUpperCase());
+                    + shortId(watchedRows.getString("ad_column_id")).toUpperCase());
               }
             }
           }
@@ -254,6 +254,10 @@ public class CreateExcludeFilter extends BuildValidation {
     } catch (Exception e) {
       logger.debug("Vector source configuration is not available yet; no vector trigger objects excluded.");
     }
+  }
+
+  private static String shortId(String id) {
+    return id.substring(0, Math.min(8, id.length()));
   }
 
   private String getBaseTablesQuery() {
