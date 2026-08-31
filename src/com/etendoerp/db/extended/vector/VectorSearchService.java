@@ -1,0 +1,130 @@
+package com.etendoerp.db.extended.vector;
+
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.Comparator;
+import java.util.List;
+
+import org.codehaus.jettison.json.JSONArray;
+import org.codehaus.jettison.json.JSONObject;
+import org.openbravo.database.ConnectionProvider;
+
+/**
+ * Generic semantic-search facade. It resolves the source provider from the Application Dictionary
+ * configuration and exposes indexed fields as JSON without depending on an Etendo entity.
+ */
+public final class VectorSearchService {
+  private final ConnectionProvider connectionProvider;
+  private final VectorStore vectorStore;
+  private final VectorEmbeddingProviderFactory providers;
+  private final VectorSearchSourceResolver sources;
+
+  public VectorSearchService(ConnectionProvider connectionProvider) {
+    this(connectionProvider, new VectorStoreService(connectionProvider));
+  }
+
+  VectorSearchService(ConnectionProvider connectionProvider, VectorStore vectorStore) {
+    this.connectionProvider = connectionProvider;
+    this.vectorStore = vectorStore;
+    this.providers = new VectorEmbeddingProviderFactory(connectionProvider);
+    this.sources = new VectorSearchSourceResolver(connectionProvider);
+  }
+
+  /**
+   * Embeds {@code text}, finds the nearest records and returns a portable JSON response.
+   */
+  public String searchAsJson(String namespace, String text, int topK, String metadataFilter) {
+    return searchAsJson(Collections.singletonList(namespace), text, topK, metadataFilter);
+  }
+
+  /**
+   * Searches the configured namespaces selected by the caller. All sources must use the same
+   * provider type, model, dimensions, and distance metric so a global result order is meaningful.
+   * Tenant scope always comes from the active Etendo context.
+   */
+  public String searchAsJson(Collection<String> namespaces, String text, int topK,
+      String metadataFilter) {
+    try {
+      VectorSearchContext context = VectorSearchContext.current();
+      List<VectorSearchSource> configuredSources = resolveSources(namespaces);
+      VectorSearchSource first = configuredSources.get(0);
+      ensureCompatibleProfiles(first, configuredSources);
+      VectorEmbeddingProvider provider = providers.forSource(first.getId());
+      double[] embedding = provider.embed(text);
+      List<NamespacedMatch> matches = new ArrayList<>();
+      for (VectorSearchSource source : configuredSources) {
+        for (VectorMatch match : vectorStore.search(new VectorQuery(source.getNamespace(), embedding,
+            topK, source.getMetric(), metadataFilter, context.getClientId(),
+            context.getOrganizationId()))) {
+          matches.add(new NamespacedMatch(source.getNamespace(), match));
+        }
+      }
+      matches.sort(Comparator.comparingDouble(NamespacedMatch::getDistance));
+      JSONObject response = new JSONObject();
+      JSONArray searchedNamespaces = new JSONArray();
+      for (VectorSearchSource source : configuredSources) searchedNamespaces.put(source.getNamespace());
+      response.put("namespaces", searchedNamespaces);
+      if (configuredSources.size() == 1) {
+        response.put("namespace", first.getNamespace());
+      }
+      JSONArray results = new JSONArray();
+      for (NamespacedMatch match : matches.subList(0, Math.min(topK, matches.size()))) {
+        VectorMatch vectorMatch = match.getMatch();
+        JSONObject metadata = new JSONObject(vectorMatch.getMetadata());
+        JSONObject result = new JSONObject();
+        result.put("namespace", match.getNamespace());
+        result.put("id", vectorMatch.getKey());
+        result.put("distance", vectorMatch.getDistance());
+        result.put("fields", metadata.optJSONObject("fields"));
+        result.put("metadata", metadata);
+        results.put(result);
+      }
+      response.put("matches", results);
+      return response.toString();
+    } catch (VectorException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.VECTOR_SEARCH_OPERATION_FAILED,
+          "Could not execute semantic vector search.", e);
+    }
+  }
+
+  private List<VectorSearchSource> resolveSources(Collection<String> namespaces) {
+    if (namespaces == null || namespaces.isEmpty()) {
+      throw new IllegalArgumentException("At least one vector namespace is required.");
+    }
+    List<VectorSearchSource> result = new ArrayList<>();
+    for (String namespace : namespaces) {
+      if (namespace == null || namespace.trim().isEmpty()) {
+        throw new IllegalArgumentException("Vector namespace is required.");
+      }
+      result.add(sources.resolve(namespace));
+    }
+    return result;
+  }
+
+  private static void ensureCompatibleProfiles(VectorSearchSource first,
+      List<VectorSearchSource> configuredSources) {
+    for (VectorSearchSource source : configuredSources) {
+      if (!first.hasCompatibleEmbeddingProfile(source)) {
+        throw new VectorException(VectorErrorCode.VECTOR_SEARCH_OPERATION_FAILED,
+            "Global semantic search requires compatible source embedding profiles.");
+      }
+    }
+  }
+
+  private static final class NamespacedMatch {
+    private final String namespace;
+    private final VectorMatch match;
+
+    private NamespacedMatch(String namespace, VectorMatch match) {
+      this.namespace = namespace;
+      this.match = match;
+    }
+
+    private String getNamespace() { return namespace; }
+    private VectorMatch getMatch() { return match; }
+    private double getDistance() { return match.getDistance(); }
+  }
+}

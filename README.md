@@ -24,11 +24,14 @@ Before activation, or when pgvector is unavailable, every vector operation retur
 vector, JSON object metadata, and optional client/organization scope. It exposes no UI/NEO endpoint and does not
 implement RAG.
 
-Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. A caller runs `VectorOutboxService` with
-namespace-owned `VectorOutboxConsumer` implementations to consume them. The consumer fetches its source data and
-generates embeddings; it should use an idempotent upsert keyed by `VectorOutboxEvent.getRecordId()`. The dispatcher
-delivers events at least once, records `DONE` or `FAILED`, and leaves an event `PENDING` while no consumer is
-registered for its namespace. Failed or stale processing events are requeued only through explicit service calls.
+Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. The system-only background process **Process
+Vector Outbox** drains up to 100 pending events per execution, so it can be scheduled through Classic Process
+Request without any entity-specific configuration. It first requeues events left in `PROCESSING` for at least 15
+minutes, then runs `VectorOutboxService` with namespace-owned `VectorOutboxConsumer` implementations. The consumer
+fetches its source data and generates embeddings; it should use an idempotent upsert keyed by
+`VectorOutboxEvent.getRecordId()`. The dispatcher delivers events at least once and records `DONE` or `FAILED`.
+Failed events require an explicit requeue after the provider or source configuration is corrected; they are not
+retried automatically by the scheduled process.
 
 The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
 `src-db/database/model`. Exact search supports cosine, L2, and inner-product distance. HNSW creation is an
@@ -36,10 +39,16 @@ explicit operation; exact search remains available without an index.
 
 `DictionaryVectorOutboxConsumer` is the generic configured-source consumer. It resolves the source's provider,
 currently OpenAI embeddings, from the system configuration and reads the API-key reference through
-`Openbravo.properties`. `VectorSearchService.searchAsJson(namespace, text, topK, metadataFilter, clientId,
-organizationId)` is the matching generic query facade: it embeds the query text with the configured provider,
-uses the collection metric, and returns JSON matches with the external `id`, distance, indexed `fields`, and full
-metadata. No entity class is required for either operation.
+`Openbravo.properties`. `VectorSearchService.searchAsJson(namespace, text, topK, metadataFilter)` is the matching
+generic query facade: it embeds the query text with the configured provider, uses the collection metric, and returns
+JSON matches with the external `id`, distance, indexed `fields`, and full metadata. Its client and organization
+filters are mandatory and are derived exclusively from the active `OBContext`; callers cannot supply tenant scope.
+No entity class is required for either operation.
+
+For a module-level global search, use the overload that accepts a collection of namespaces. The consuming module
+chooses those namespaces (for example, according to its own access configuration), while DB Extended resolves their
+sources and returns matches with their namespace. It rejects a mixed set of provider type, embedding model,
+dimension, or distance metric, because distances from incompatible embedding profiles cannot be ranked together.
 
 ## 🏗️ Architecture Overview
 
