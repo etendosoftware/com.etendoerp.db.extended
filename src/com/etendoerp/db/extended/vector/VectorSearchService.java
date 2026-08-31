@@ -45,7 +45,17 @@ public final class VectorSearchService {
    */
   public String searchAsJson(Collection<String> namespaces, String text, int topK,
       String metadataFilter) {
+    return searchAsJson(namespaces, text, topK, metadataFilter, 0d, 1d);
+  }
+
+  /**
+   * Searches configured namespaces and retains only normalized similarity scores in the requested
+   * inclusive range. Scores are always normalized to the [0, 1] interval.
+   */
+  public String searchAsJson(Collection<String> namespaces, String text, int topK,
+      String metadataFilter, double minScore, double maxScore) {
     try {
+      validateScoreRange(minScore, maxScore);
       VectorSearchContext context = VectorSearchContext.current();
       List<VectorSearchSource> configuredSources = resolveSources(namespaces);
       VectorSearchSource first = configuredSources.get(0);
@@ -54,10 +64,14 @@ public final class VectorSearchService {
       double[] embedding = provider.embed(text);
       List<NamespacedMatch> matches = new ArrayList<>();
       for (VectorSearchSource source : configuredSources) {
-        for (VectorMatch match : vectorStore.search(new VectorQuery(source.getNamespace(), embedding,
-            topK, source.getMetric(), metadataFilter, context.getClientId(),
-            context.getOrganizationId()))) {
-          matches.add(new NamespacedMatch(source.getNamespace(), match));
+        for (String organizationId : context.getOrganizationIds()) {
+          for (VectorMatch match : vectorStore.search(new VectorQuery(source.getNamespace(), embedding,
+              topK, source.getMetric(), metadataFilter, context.getClientId(), organizationId))) {
+            double score = scoreFor(match.getDistance(), source.getMetric());
+            if (score >= minScore && score <= maxScore) {
+              matches.add(new NamespacedMatch(source.getNamespace(), match, score));
+            }
+          }
         }
       }
       matches.sort(Comparator.comparingDouble(NamespacedMatch::getDistance));
@@ -76,6 +90,7 @@ public final class VectorSearchService {
         result.put("namespace", match.getNamespace());
         result.put("id", vectorMatch.getKey());
         result.put("distance", vectorMatch.getDistance());
+        result.put("score", match.getScore());
         result.put("fields", metadata.optJSONObject("fields"));
         result.put("metadata", metadata);
         results.put(result);
@@ -114,17 +129,44 @@ public final class VectorSearchService {
     }
   }
 
+  private static void validateScoreRange(double minScore, double maxScore) {
+    if (!Double.isFinite(minScore) || !Double.isFinite(maxScore) || minScore < 0d || maxScore > 1d
+        || minScore > maxScore) {
+      throw new IllegalArgumentException("Score range must be within 0 and 1.");
+    }
+  }
+
+  private static double scoreFor(double distance, DistanceMetric metric) {
+    switch (metric) {
+      case COSINE:
+        return clamp((2d - distance) / 2d);
+      case L2:
+        return 1d / (1d + Math.max(0d, distance));
+      case INNER_PRODUCT:
+        return 1d / (1d + Math.exp(distance));
+      default:
+        throw new IllegalArgumentException("Unsupported vector distance metric.");
+    }
+  }
+
+  private static double clamp(double value) {
+    return Math.max(0d, Math.min(1d, value));
+  }
+
   private static final class NamespacedMatch {
     private final String namespace;
     private final VectorMatch match;
+    private final double score;
 
-    private NamespacedMatch(String namespace, VectorMatch match) {
+    private NamespacedMatch(String namespace, VectorMatch match, double score) {
       this.namespace = namespace;
       this.match = match;
+      this.score = score;
     }
 
     private String getNamespace() { return namespace; }
     private VectorMatch getMatch() { return match; }
     private double getDistance() { return match.getDistance(); }
+    private double getScore() { return score; }
   }
 }

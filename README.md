@@ -33,9 +33,14 @@ fetches its source data and generates embeddings; it should use an idempotent up
 Failed events require an explicit requeue after the provider or source configuration is corrected; they are not
 retried automatically by the scheduled process.
 
+Schedule **Process Vector Outbox** once at System level, not once per client. The process drains the shared outbox
+and each event preserves its own client and organization scope when the vector record is written. A run skipped
+because another instance is active is reported by the scheduler as `Skipped`, not as an error.
+
 The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
-`src-db/database/model`. Exact search supports cosine, L2, and inner-product distance. HNSW creation is an
-explicit operation; exact search remains available without an index.
+`src-db/database/model`. The versioned `excludeFilter.xml` excludes those runtime tables, generated source
+triggers/functions, and pgvector extension objects from DBSM exports. Exact search supports cosine, L2, and
+inner-product distance. HNSW creation is an explicit operation; exact search remains available without an index.
 
 `DictionaryVectorOutboxConsumer` is the generic configured-source consumer. It resolves the source's provider,
 currently OpenAI embeddings, from the system configuration and reads the API-key reference through
