@@ -21,8 +21,8 @@ that the server offers pgvector and that the caller has extension-creation permi
 
 Before activation, or when pgvector is unavailable, every vector operation returns the controlled
 `PGVECTOR_NOT_ENABLED` error. The API is entity-agnostic: consumers provide a namespace, external key, numeric
-vector, JSON object metadata, and optional client/organization scope. It does not create embeddings, invoke AI
-providers, expose UI/NEO endpoints, or implement RAG.
+vector, JSON object metadata, and optional client/organization scope. It exposes no UI/NEO endpoint and does not
+implement RAG.
 
 Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. A caller runs `VectorOutboxService` with
 namespace-owned `VectorOutboxConsumer` implementations to consume them. The consumer fetches its source data and
@@ -33,6 +33,13 @@ registered for its namespace. Failed or stale processing events are requeued onl
 The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
 `src-db/database/model`. Exact search supports cosine, L2, and inner-product distance. HNSW creation is an
 explicit operation; exact search remains available without an index.
+
+`DictionaryVectorOutboxConsumer` is the generic configured-source consumer. It resolves the source's provider,
+currently OpenAI embeddings, from the system configuration and reads the API-key reference through
+`Openbravo.properties`. `VectorSearchService.searchAsJson(namespace, text, topK, metadataFilter, clientId,
+organizationId)` is the matching generic query facade: it embeds the query text with the configured provider,
+uses the collection metric, and returns JSON matches with the external `id`, distance, indexed `fields`, and full
+metadata. No entity class is required for either operation.
 
 ## 🏗️ Architecture Overview
 

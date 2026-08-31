@@ -175,6 +175,8 @@ public class CreateExcludeFilter extends BuildValidation {
     Set<String> columnsToExclude = new HashSet<>();
     Set<String> triggersToExclude = new HashSet<>();
     Set<String> functionsToExclude = new HashSet<>();
+    Set<String> tablesToExclude = new HashSet<>();
+    Set<String> sequencesToExclude = new HashSet<>();
 
     try {
       ConnectionProvider connectionProvider = getConnectionProvider();
@@ -185,13 +187,23 @@ public class CreateExcludeFilter extends BuildValidation {
           triggersToExclude, functionsToExclude);
       collectPgVectorFunctions(connectionProvider, functionsToExclude);
       collectVectorSourceObjects(connectionProvider, triggersToExclude, functionsToExclude);
-      writeExcludeFilterXml(constraintsToExclude, columnsToExclude, triggersToExclude, functionsToExclude);
+      collectDynamicVectorTables(tablesToExclude, sequencesToExclude);
+      writeExcludeFilterXml(tablesToExclude, constraintsToExclude, columnsToExclude, triggersToExclude,
+          functionsToExclude, sequencesToExclude);
 
     } catch (Exception e) {
       logger.error("Error generating excludeFilter.xml: {}", e.getMessage(), e);
     }
 
     return List.of();
+  }
+
+  /** Keeps explicitly activated pgvector storage outside DBSM's declarative model. */
+  private void collectDynamicVectorTables(Set<String> tablesToExclude, Set<String> sequencesToExclude) {
+    tablesToExclude.add("ETARC_VECTOR_ACTIVATION");
+    tablesToExclude.add("ETARC_VECTOR_COLLECTION");
+    tablesToExclude.add("ETARC_VECTOR_RECORD");
+    sequencesToExclude.add("ETARC_VECTOR_COLLECTION_ID_SEQ");
   }
 
   /**
@@ -346,8 +358,10 @@ public class CreateExcludeFilter extends BuildValidation {
     });
   }
 
-  private void writeExcludeFilterXml(Set<String> constraintsToExclude, Set<String> columnsToExclude,
-      Set<String> triggersToExclude, Set<String> functionsToExclude) throws IOException {
+  private void writeExcludeFilterXml(Set<String> tablesToExclude, Set<String> constraintsToExclude,
+      Set<String> columnsToExclude, Set<String> triggersToExclude, Set<String> functionsToExclude,
+      Set<String> sequencesToExclude)
+      throws IOException {
 
     logger.info("Generating excludeFilter.xml for {} excluded constraints, {} columns, {} triggers, {} functions",
         constraintsToExclude.size(), columnsToExclude.size(), triggersToExclude.size(), functionsToExclude.size());
@@ -360,10 +374,12 @@ public class CreateExcludeFilter extends BuildValidation {
     StringBuilder xmlBuilder = new StringBuilder();
     xmlBuilder.append("<vector>\n");
 
+    appendXmlEntries(xmlBuilder, tablesToExclude, "excludedTable");
     appendXmlEntries(xmlBuilder, constraintsToExclude, "excludedConstraint");
     appendXmlEntries(xmlBuilder, columnsToExclude, "excludedColumn");
     appendXmlEntries(xmlBuilder, triggersToExclude, "excludedTrigger");
     appendXmlEntries(xmlBuilder, functionsToExclude, "excludedFunction");
+    appendXmlEntries(xmlBuilder, sequencesToExclude, "excludedSequence");
 
     xmlBuilder.append("</vector>\n");
 

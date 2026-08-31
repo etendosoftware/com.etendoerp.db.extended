@@ -162,11 +162,12 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
     return "CREATE OR REPLACE FUNCTION " + quoteIdentifier(functionName) + "() RETURNS trigger "
         + "LANGUAGE plpgsql AS $$ BEGIN "
         + "INSERT INTO etarc_vector_outbox (etarc_vector_outbox_id, ad_client_id, ad_org_id, "
-        + "isactive, created, createdby, updated, updatedby, etarc_vector_source_id, record_id, "
+        + "isactive, created, createdby, updated, updatedby, etarc_vector_source_id, config_version, record_id, "
         + "event_type, ad_column_id, status, attempt_count) VALUES (get_uuid(), "
         + sourceScopeExpression(source.clientColumn) + ", "
         + sourceScopeExpression(source.organizationColumn)
         + ", 'Y', now(), '0', now(), '0', " + quoteLiteral(source.id) + ", "
+        + "(SELECT config_version FROM etarc_vector_source WHERE etarc_vector_source_id = " + quoteLiteral(source.id) + "), "
         + "CASE WHEN TG_OP = 'DELETE' THEN OLD." + keyColumn + " ELSE NEW." + keyColumn + " END, "
         + "TG_OP, NULLIF(TG_ARGV[0], ''), 'PENDING', 0); "
         + "IF TG_OP = 'DELETE' THEN RETURN OLD; END IF; RETURN NEW; END; $$";
