@@ -65,6 +65,14 @@
         <default><![CDATA[Y]]></default>
         <onCreateDefault/>
       </column>
+      <column name="CONFIG_VERSION" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[1]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="ETARC_VECTOR_EMBED_PROVIDER_ID" primaryKey="false" required="false" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
       <foreign-key foreignTable="AD_CLIENT" name="ETARC_VSRC_AD_CLIENT">
         <reference local="AD_CLIENT_ID" foreign="AD_CLIENT_ID"/>
       </foreign-key>
@@ -73,6 +81,9 @@
       </foreign-key>
       <foreign-key foreignTable="AD_TABLE" name="ETARC_VSRC_AD_TABLE">
         <reference local="AD_TABLE_ID" foreign="AD_TABLE_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="ETARC_VECTOR_EMBED_PROVIDER" name="ETARC_VSRC_EMBEDDING_PROVIDER">
+        <reference local="ETARC_VECTOR_EMBED_PROVIDER_ID" foreign="ETARC_VECTOR_EMBED_PROVIDER_ID"/>
       </foreign-key>
       <check name="ETARC_VSRC_ACTIVE_CHK"><![CDATA[ISACTIVE IN ('Y', 'N')]]></check>
       <check name="ETARC_VSRC_DELETE_CHK"><![CDATA[ISDELETEENABLED IN ('Y', 'N')]]></check>

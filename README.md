@@ -24,6 +24,12 @@ Before activation, or when pgvector is unavailable, every vector operation retur
 vector, JSON object metadata, and optional client/organization scope. It does not create embeddings, invoke AI
 providers, expose UI/NEO endpoints, or implement RAG.
 
+Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. A caller runs `VectorOutboxService` with
+namespace-owned `VectorOutboxConsumer` implementations to consume them. The consumer fetches its source data and
+generates embeddings; it should use an idempotent upsert keyed by `VectorOutboxEvent.getRecordId()`. The dispatcher
+delivers events at least once, records `DONE` or `FAILED`, and leaves an event `PENDING` while no consumer is
+registered for its namespace. Failed or stale processing events are requeued only through explicit service calls.
+
 The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
 `src-db/database/model`. Exact search supports cosine, L2, and inner-product distance. HNSW creation is an
 explicit operation; exact search remains available without an index.
