@@ -49,6 +49,14 @@
         <default/>
         <onCreateDefault/>
       </column>
+      <column name="AD_FILTER_COLUMN_ID" primaryKey="false" required="false" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="FILTER_VALUE" primaryKey="false" required="false" type="VARCHAR" size="255" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
       <column name="ISENABLED" primaryKey="false" required="true" type="CHAR" size="1" autoIncrement="false">
         <default><![CDATA[N]]></default>
         <onCreateDefault/>
@@ -88,6 +96,9 @@
       </foreign-key>
       <foreign-key foreignTable="AD_TABLE" name="ETARC_VSRC_AD_TABLE">
         <reference local="AD_TABLE_ID" foreign="AD_TABLE_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_COLUMN" name="ETARC_VSRC_FILTER_COLUMN">
+        <reference local="AD_FILTER_COLUMN_ID" foreign="AD_COLUMN_ID"/>
       </foreign-key>
       <foreign-key foreignTable="ETARC_VECTOR_EMBED_PROVIDER" name="ETARC_VSRC_EMBEDDING_PROVIDER">
         <reference local="ETARC_VECTOR_EMBED_PROVIDER_ID" foreign="ETARC_VECTOR_EMBED_PROVIDER_ID"/>

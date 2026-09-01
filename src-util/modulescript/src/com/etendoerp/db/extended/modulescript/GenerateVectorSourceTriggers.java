@@ -47,10 +47,13 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
           + " AND lower(c.columnname) = 'ad_client_id' AND c.isactive = 'Y') AS client_column, "
           + "(SELECT c.columnname FROM ad_column c WHERE c.ad_table_id = t.ad_table_id "
           + " AND lower(c.columnname) = 'ad_org_id' AND c.isactive = 'Y') AS organization_column, "
+          + "f.columnname AS filter_column, s.filter_value, "
           + "s.isinsertenabled, s.isupdateenabled, "
           + "s.isdeleteenabled "
           + "FROM etarc_vector_source s "
           + "JOIN ad_table t ON t.ad_table_id = s.ad_table_id "
+          + "LEFT JOIN ad_column f ON f.ad_column_id = s.ad_filter_column_id "
+          + "  AND f.ad_table_id = s.ad_table_id AND f.isactive = 'Y' "
           + "LEFT JOIN ad_column k ON k.ad_table_id = t.ad_table_id "
           + "  AND k.iskey = 'Y' AND k.isactive = 'Y' "
           + "WHERE s.isactive = 'Y' AND s.isenabled = 'Y' "
@@ -102,6 +105,8 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
         source.keyColumn = result.getString("key_column");
         source.clientColumn = result.getString("client_column");
         source.organizationColumn = result.getString("organization_column");
+        source.filterColumn = result.getString("filter_column");
+        source.filterValue = result.getString("filter_value");
         source.insertEnabled = "Y".equals(result.getString("isinsertenabled"));
         source.updateEnabled = "Y".equals(result.getString("isupdateenabled"));
         source.deleteEnabled = "Y".equals(result.getString("isdeleteenabled"));
@@ -159,8 +164,9 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
 
   private String createFunctionSql(String functionName, Source source) {
     String keyColumn = quoteIdentifier(source.keyColumn);
+    String filterGuard = filterGuard(source);
     return "CREATE OR REPLACE FUNCTION " + quoteIdentifier(functionName) + "() RETURNS trigger "
-        + "LANGUAGE plpgsql AS $$ BEGIN "
+        + "LANGUAGE plpgsql AS $$ BEGIN " + filterGuard
         + "INSERT INTO etarc_vector_outbox (etarc_vector_outbox_id, ad_client_id, ad_org_id, "
         + "isactive, created, createdby, updated, updatedby, etarc_vector_source_id, config_version, record_id, "
         + "event_type, ad_column_id, status, attempt_count) VALUES (get_uuid(), "
@@ -171,6 +177,20 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
         + "CASE WHEN TG_OP = 'DELETE' THEN OLD." + keyColumn + " ELSE NEW." + keyColumn + " END, "
         + "TG_OP, NULLIF(TG_ARGV[0], ''), 'PENDING', 0); "
         + "IF TG_OP = 'DELETE' THEN RETURN OLD; END IF; RETURN NEW; END; $$";
+  }
+
+  private static String filterGuard(Source source) {
+    if (source.filterColumn == null || source.filterValue == null) {
+      return "";
+    }
+    String column = quoteIdentifier(source.filterColumn);
+    String value = quoteLiteral(source.filterValue);
+    String newMatches = "(NEW." + column + " IS NOT DISTINCT FROM " + value + ")";
+    String oldMatches = "(OLD." + column + " IS NOT DISTINCT FROM " + value + ")";
+    return "IF TG_OP = 'INSERT' AND NOT " + newMatches + " THEN RETURN NEW; END IF; "
+        + "IF TG_OP = 'DELETE' AND NOT " + oldMatches + " THEN RETURN OLD; END IF; "
+        + "IF TG_OP = 'UPDATE' AND NOT (" + newMatches + " OR " + oldMatches
+        + ") THEN RETURN NEW; END IF; ";
   }
 
   private void recreateTrigger(ConnectionProvider connectionProvider, String triggerName, String tableName,
@@ -255,6 +275,8 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
     private String keyColumn;
     private String clientColumn;
     private String organizationColumn;
+    private String filterColumn;
+    private String filterValue;
     private boolean insertEnabled;
     private boolean updateEnabled;
     private boolean deleteEnabled;
