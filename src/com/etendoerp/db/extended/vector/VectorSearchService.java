@@ -19,6 +19,7 @@ public final class VectorSearchService {
   private final VectorStore vectorStore;
   private final VectorEmbeddingProviderFactory providers;
   private final VectorSearchSourceResolver sources;
+  private final VectorSearchTargetResolver targets;
 
   public VectorSearchService(ConnectionProvider connectionProvider) {
     this(connectionProvider, new VectorStoreService(connectionProvider));
@@ -29,6 +30,7 @@ public final class VectorSearchService {
     this.vectorStore = vectorStore;
     this.providers = new VectorEmbeddingProviderFactory(connectionProvider);
     this.sources = new VectorSearchSourceResolver(connectionProvider);
+    this.targets = new VectorSearchTargetResolver(connectionProvider);
   }
 
   /**
@@ -46,6 +48,56 @@ public final class VectorSearchService {
   public String searchAsJson(Collection<String> namespaces, String text, int topK,
       String metadataFilter) {
     return searchAsJson(namespaces, text, topK, metadataFilter, 0d, 1d);
+  }
+
+  /** Searches configured target keys. Target Display Logic is always applied before results leave the service. */
+  public String searchTargetsAsJson(Collection<String> targetKeys, String text, int topK,
+      double minScore, double maxScore) {
+    try {
+      validateScoreRange(minScore, maxScore);
+      if (targetKeys == null || targetKeys.isEmpty()) throw new IllegalArgumentException("At least one vector target is required.");
+      VectorSearchContext context = VectorSearchContext.current();
+      List<VectorSearchTarget> configuredTargets = new ArrayList<>();
+      for (String key : targetKeys) configuredTargets.add(targets.resolve(key));
+      VectorSearchSource first = configuredTargets.get(0).getSource();
+      List<VectorSearchSource> configuredSources = new ArrayList<>();
+      for (VectorSearchTarget target : configuredTargets) configuredSources.add(target.getSource());
+      ensureCompatibleProfiles(first, configuredSources);
+      double[] embedding = providers.forSource(first.getId()).embed(text);
+      List<TargetMatch> matches = new ArrayList<>();
+      for (VectorSearchTarget target : configuredTargets) {
+        VectorSearchSource source = target.getSource();
+        for (String organizationId : context.getOrganizationIds()) {
+          VectorQuery query = new VectorQuery(source.getNamespace(), embedding, topK, source.getMetric(), "{}", target.getFilter(), context.getClientId(), organizationId);
+          for (VectorMatch match : vectorStore.search(query)) {
+            double score = scoreFor(match.getDistance(), source.getMetric());
+            if (score >= minScore && score <= maxScore) matches.add(new TargetMatch(target, match, score));
+          }
+        }
+      }
+      matches.sort(Comparator.comparingDouble(TargetMatch::getDistance));
+      JSONObject response = new JSONObject();
+      JSONArray searchedTargets = new JSONArray();
+      for (VectorSearchTarget target : configuredTargets) searchedTargets.put(target.getKey());
+      response.put("targets", searchedTargets);
+      JSONArray results = new JSONArray();
+      for (TargetMatch match : matches.subList(0, Math.min(topK, matches.size()))) {
+        VectorMatch vectorMatch = match.getMatch();
+        JSONObject metadata = new JSONObject(vectorMatch.getMetadata());
+        JSONObject result = new JSONObject();
+        result.put("target", match.getTarget().getKey());
+        result.put("namespace", match.getTarget().getSource().getNamespace());
+        result.put("id", vectorMatch.getKey());
+        result.put("distance", vectorMatch.getDistance());
+        result.put("score", match.getScore());
+        result.put("fields", metadata.optJSONObject("fields"));
+        result.put("metadata", metadata);
+        results.put(result);
+      }
+      response.put("matches", results);
+      return response.toString();
+    } catch (VectorException e) { throw e;
+    } catch (Exception e) { throw new VectorException(VectorErrorCode.VECTOR_SEARCH_OPERATION_FAILED, "Could not execute target vector search.", e); }
   }
 
   /**
@@ -168,5 +220,12 @@ public final class VectorSearchService {
     private VectorMatch getMatch() { return match; }
     private double getDistance() { return match.getDistance(); }
     private double getScore() { return score; }
+  }
+
+  private static final class TargetMatch {
+    private final VectorSearchTarget target; private final VectorMatch match; private final double score;
+    private TargetMatch(VectorSearchTarget target, VectorMatch match, double score) { this.target = target; this.match = match; this.score = score; }
+    private VectorSearchTarget getTarget() { return target; } private VectorMatch getMatch() { return match; }
+    private double getDistance() { return match.getDistance(); } private double getScore() { return score; }
   }
 }
