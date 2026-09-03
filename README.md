@@ -12,6 +12,49 @@ structures such as partitioned tables with intelligent constraint management.
 - **Trigger Automation**: Automatic partition column population in child tables
 - **Python Tools**: Command-line utilities to **partition** and **unpartition** database tables
 
+## Optional pgvector capability (ETP-5077)
+
+pgvector is optional and disabled by default. Installing this module, compiling Etendo, running
+`smartbuild`, `update.database`, or starting the application must never install the PostgreSQL extension or
+create vector objects. A caller must explicitly invoke `VectorActivationService.activate()` after confirming
+that the server offers pgvector and that the caller has extension-creation permission.
+
+Before activation, or when pgvector is unavailable, every vector operation returns the controlled
+`PGVECTOR_NOT_ENABLED` error. The API is entity-agnostic: consumers provide a namespace, external key, numeric
+vector, JSON object metadata, and optional client/organization scope. It exposes no UI/NEO endpoint and does not
+implement RAG.
+
+Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. The system-only background process **Process
+Vector Outbox** drains up to 100 pending events per execution, so it can be scheduled through Classic Process
+Request without any entity-specific configuration. It first requeues events left in `PROCESSING` for at least 15
+minutes, then runs `VectorOutboxService` with namespace-owned `VectorOutboxConsumer` implementations. The consumer
+fetches its source data and generates embeddings; it should use an idempotent upsert keyed by
+`VectorOutboxEvent.getRecordId()`. The dispatcher delivers events at least once and records `DONE` or `FAILED`.
+Failed events require an explicit requeue after the provider or source configuration is corrected; they are not
+retried automatically by the scheduled process.
+
+Schedule **Process Vector Outbox** once at System level, not once per client. The process drains the shared outbox
+and each event preserves its own client and organization scope when the vector record is written. A run skipped
+because another instance is active is reported by the scheduler as `Skipped`, not as an error.
+
+The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
+`src-db/database/model`. The versioned `excludeFilter.xml` excludes those runtime tables, generated source
+triggers/functions, and pgvector extension objects from DBSM exports. Exact search supports cosine, L2, and
+inner-product distance. HNSW creation is an explicit operation; exact search remains available without an index.
+
+`DictionaryVectorOutboxConsumer` is the generic configured-source consumer. It resolves the source's provider,
+currently OpenAI embeddings, from the system configuration and reads the API-key reference through
+`Openbravo.properties`. `VectorSearchService.searchAsJson(namespace, text, topK, metadataFilter)` is the matching
+generic query facade: it embeds the query text with the configured provider, uses the collection metric, and returns
+JSON matches with the external `id`, distance, indexed `fields`, and full metadata. Its client and organization
+filters are mandatory and are derived exclusively from the active `OBContext`; callers cannot supply tenant scope.
+No entity class is required for either operation.
+
+For a module-level global search, use the overload that accepts a collection of namespaces. The consuming module
+chooses those namespaces (for example, according to its own access configuration), while DB Extended resolves their
+sources and returns matches with their namespace. It rejects a mixed set of provider type, embedding model,
+dimension, or distance metric, because distances from incompatible embedding profiles cannot be ranked together.
+
 ## 🏗️ Architecture Overview
 
 The module follows a modular architecture with specialized components:

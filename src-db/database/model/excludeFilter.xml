@@ -1,0 +1,34 @@
+<?xml version="1.0"?>
+<vector>
+  <!-- Runtime pgvector storage is explicitly activated and must not be DBSM-exported. -->
+  <excludedTable name="ETARC_VECTOR_ACTIVATION"/>
+  <excludedTable name="ETARC_VECTOR_COLLECTION"/>
+  <excludedTable name="ETARC_VECTOR_RECORD"/>
+  <excludedSequence name="ETARC_VECTOR_COLLECTION_ID_SEQ"/>
+
+  <!-- Source-specific outbox objects are generated from live AD configuration. -->
+  <excludedTrigger name="ETARC_VSRC\_%"/>
+  <excludedFunction name="ETARC_VSRC\_%"/>
+
+  <!-- pgvector extension objects are owned by PostgreSQL, not this module's model. -->
+  <excludedFunction name="VECTOR%"/>
+  <excludedFunction name="HALFVEC%"/>
+  <excludedFunction name="SPARSEVEC%"/>
+  <excludedFunction name="ARRAY_TO_VECTOR"/>
+  <excludedFunction name="ARRAY_TO_HALFVEC"/>
+  <excludedFunction name="ARRAY_TO_SPARSEVEC"/>
+  <excludedFunction name="BINARY_QUANTIZE"/>
+  <excludedFunction name="COSINE_DISTANCE"/>
+  <excludedFunction name="HAMMING_DISTANCE"/>
+  <excludedFunction name="INNER_PRODUCT"/>
+  <excludedFunction name="JACCARD_DISTANCE"/>
+  <excludedFunction name="L1_DISTANCE"/>
+  <excludedFunction name="L2_DISTANCE"/>
+  <excludedFunction name="L2_NORMALIZE"/>
+  <excludedFunction name="L2_NORM"/>
+  <excludedFunction name="SUBVECTOR"/>
+  <excludedFunction name="HNSW%"/>
+  <excludedFunction name="IVFFLAT%"/>
+  <excludedFunction name="AVG"/>
+  <excludedFunction name="SUM"/>
+</vector>

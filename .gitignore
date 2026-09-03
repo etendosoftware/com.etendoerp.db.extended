@@ -4,11 +4,10 @@ etendo.artifact.properties
 # Ignorar entorno virtual de Python
 .venv
 
-# Mantener los compilados en build/classes
-!build/classes/
+# Build outputs
+build/
 
-# Nuevos ficheros/directorios a ignorar
+# Local-only files and directories
 docs/
 patch.diff
-src-db/database/model/excludeFilter.xml
 tool/__pycache__/

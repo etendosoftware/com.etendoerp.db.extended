@@ -1,0 +1,98 @@
+<?xml version="1.0"?>
+  <database name="TABLE ETARC_VECTOR_EMBED_PROVIDER">
+    <table name="ETARC_VECTOR_EMBED_PROVIDER" primaryKey="ETARC_VEC_EMBED_PROVIDER_PK">
+      <column name="ETARC_VECTOR_EMBED_PROVIDER_ID" primaryKey="true" required="true" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="AD_CLIENT_ID" primaryKey="false" required="true" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="AD_ORG_ID" primaryKey="false" required="true" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="ISACTIVE" primaryKey="false" required="true" type="CHAR" size="1" autoIncrement="false">
+        <default><![CDATA[Y]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="CREATED" primaryKey="false" required="true" type="TIMESTAMP" size="7" autoIncrement="false">
+        <default><![CDATA[SYSDATE]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="CREATEDBY" primaryKey="false" required="true" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="UPDATED" primaryKey="false" required="true" type="TIMESTAMP" size="7" autoIncrement="false">
+        <default><![CDATA[SYSDATE]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="UPDATEDBY" primaryKey="false" required="true" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="NAME" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="PROVIDER_TYPE" primaryKey="false" required="true" type="VARCHAR" size="30" autoIncrement="false">
+        <default><![CDATA[OPENAI]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="MODEL" primaryKey="false" required="true" type="VARCHAR" size="128" autoIncrement="false">
+        <default><![CDATA[text-embedding-3-small]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="DIMENSIONS" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[1536]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="API_KEY_REFERENCE" primaryKey="false" required="true" type="VARCHAR" size="128" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="TIMEOUT_SECONDS" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[30]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="BATCH_SIZE" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[25]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="MAX_INPUT_CHARACTERS" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[24000]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="RETRY_LIMIT" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[3]]></default>
+        <onCreateDefault/>
+      </column>
+      <column name="AD_MODULE_ID" primaryKey="false" required="false" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <foreign-key foreignTable="AD_MODULE" name="ETARC_VEP_AD_MODULE">
+        <reference local="AD_MODULE_ID" foreign="AD_MODULE_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_CLIENT" name="ETARC_VEP_CLIENT">
+        <reference local="AD_CLIENT_ID" foreign="AD_CLIENT_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VEP_CREATEDBY">
+        <reference local="CREATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_ORG" name="ETARC_VEP_ORG">
+        <reference local="AD_ORG_ID" foreign="AD_ORG_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VEP_UPDATEDBY">
+        <reference local="UPDATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
+      <unique name="ETARC_VEP_NAME_UQ">
+        <unique-column name="NAME"/>
+      </unique>
+      <check name="ETARC_VEP_ACTIVE_CHK"><![CDATA[ISACTIVE IN ('Y', 'N')]]></check>
+      <check name="ETARC_VEP_DIMENSIONS_CHK"><![CDATA[DIMENSIONS >= 1 AND DIMENSIONS <= 2000]]></check>
+      <check name="ETARC_VEP_OPENAI_CHK"><![CDATA[PROVIDER_TYPE = 'OPENAI']]></check>
+    </table>
+  </database>
