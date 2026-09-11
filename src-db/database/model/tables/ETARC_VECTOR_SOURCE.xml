@@ -101,11 +101,17 @@
       <foreign-key foreignTable="AD_TABLE" name="ETARC_VSRC_AD_TABLE">
         <reference local="AD_TABLE_ID" foreign="AD_TABLE_ID"/>
       </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VSRC_CREATEDBY">
+        <reference local="CREATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
       <foreign-key foreignTable="ETARC_VECTOR_EMBED_PROVIDER" name="ETARC_VSRC_EMBEDDING_PROVIDER">
         <reference local="ETARC_VECTOR_EMBED_PROVIDER_ID" foreign="ETARC_VECTOR_EMBED_PROVIDER_ID"/>
       </foreign-key>
       <foreign-key foreignTable="AD_COLUMN" name="ETARC_VSRC_FILTER_COLUMN">
         <reference local="AD_FILTER_COLUMN_ID" foreign="AD_COLUMN_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VSRC_UPDATEDBY">
+        <reference local="UPDATEDBY" foreign="AD_USER_ID"/>
       </foreign-key>
       <unique name="ETARC_VSRC_NAMESPACE_UQ">
         <unique-column name="NAMESPACE"/>

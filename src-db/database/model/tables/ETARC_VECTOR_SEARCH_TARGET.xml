@@ -65,6 +65,12 @@
       <foreign-key foreignTable="ETARC_VECTOR_SOURCE" name="ETARC_VTARGET_SOURCE">
         <reference local="ETARC_VECTOR_SOURCE_ID" foreign="ETARC_VECTOR_SOURCE_ID"/>
       </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VTARGET_CREATEDBY">
+        <reference local="CREATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VTARGET_UPDATEDBY">
+        <reference local="UPDATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
       <unique name="ETARC_VTARGET_KEY_UNQ">
         <unique-column name="SEARCH_KEY"/>
         <unique-column name="AD_CLIENT_ID"/>
