@@ -83,9 +83,25 @@ class VectorOutboxServiceTest {
     assertTrue(log.contains("rollback"));
   }
 
+  @Test
+  void retiresEventsQueuedUnderAnOlderConfiguration() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+
+    // The source moved to version 2 after these events were queued under version 1.
+    int processed = service(3, consumer, 2L).processPending(100);
+
+    assertEquals(0, processed);
+    assertTrue(consumer.consumed.isEmpty(), "content built under rules that no longer apply must not be indexed");
+    assertTrue(log.isEmpty(), "nothing is claimed, so no transaction is opened for them either");
+  }
+
   // ---------------------------------------------------------------- fixtures
 
   private VectorOutboxService service(int pendingEvents, VectorOutboxConsumer consumer) {
+    return service(pendingEvents, consumer, 1L);
+  }
+
+  private VectorOutboxService service(int pendingEvents, VectorOutboxConsumer consumer, long sourceVersion) {
     try {
       ConnectionProvider connectionProvider = mock(ConnectionProvider.class);
       PreparedStatement statement = mock(PreparedStatement.class);
@@ -105,6 +121,7 @@ class VectorOutboxServiceTest {
       when(pending.getString(1)).thenReturn(ids[0], java.util.Arrays.copyOfRange(ids, 1, ids.length));
       when(pending.getString(2)).thenReturn("source");
       when(pending.getLong(3)).thenReturn(1L);
+      when(pending.getLong(10)).thenReturn(sourceVersion);
       when(pending.getString(4)).thenReturn("namespace");
       when(pending.getString(5)).thenReturn("record");
       when(pending.getString(6)).thenReturn("UPDATE");

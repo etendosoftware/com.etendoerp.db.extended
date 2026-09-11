@@ -86,8 +86,8 @@ public final class DictionaryVectorOutboxConsumer implements VectorOutboxConsume
    *     version is stale or when the record no longer exists, in which case the vector is deleted
    */
   private Payload payload(VectorOutboxEvent event) throws Exception {
+    // The configuration version fence lives in the dispatcher: it is delivery policy, not content.
     Source source = source(event.getSourceId());
-    if (source.version != event.getConfigVersion()) return null;
     List<SourceColumn> columns = cachedColumns(event.getSourceId());
     if (columns.stream().noneMatch(SourceColumn::isContent)) throw new VectorException(VectorErrorCode.VECTOR_INVALID_METADATA, "The vector source has no content columns.");
     String sql = "SELECT " + quoted(columnNames(columns)) + " FROM " + quote(source.table) + " WHERE " + quote(source.key) + " = ?";

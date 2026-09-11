@@ -38,7 +38,7 @@ public class VectorOutboxService {
 
   private static final String PENDING_EVENTS_SQL =
       "SELECT o.etarc_vector_outbox_id, o.etarc_vector_source_id, o.config_version, s.namespace, o.record_id, "
-          + "o.event_type, o.ad_column_id, o.ad_client_id, o.ad_org_id "
+          + "o.event_type, o.ad_column_id, o.ad_client_id, o.ad_org_id, s.config_version "
           + "FROM etarc_vector_outbox o "
           + "JOIN etarc_vector_source s ON s.etarc_vector_source_id = o.etarc_vector_source_id "
           + "WHERE o.isactive = 'Y' AND o.status = 'PENDING' "
@@ -127,6 +127,13 @@ public class VectorOutboxService {
     // dispatcher holds, so the two stay aligned instead of being tuned independently.
     Map<String, List<VectorOutboxEvent>> bySource = new LinkedHashMap<>();
     for (VectorOutboxEvent event : loadPending(maxEvents)) {
+      if (event.getConfigVersion() != event.getSourceConfigVersion()) {
+        // The source was reconfigured after this event was queued. It used to be marked DONE, so a
+        // configuration change in the middle of a large backfill silently reported success while
+        // indexing nothing. SUPERSEDED is what actually happened, and it shows in the window.
+        markSuperseded(event.getId());
+        continue;
+      }
       bySource.computeIfAbsent(event.getSourceId(), key -> new ArrayList<>()).add(event);
     }
     int processed = 0;
@@ -268,7 +275,7 @@ public class VectorOutboxService {
         while (result.next()) {
           events.add(new VectorOutboxEvent(result.getString(1), result.getString(2), result.getLong(3),
               result.getString(4), result.getString(5), result.getString(6), result.getString(7),
-              result.getString(8), result.getString(9)));
+              result.getString(8), result.getString(9), result.getLong(10)));
         }
       }
       return events;
@@ -293,6 +300,12 @@ public class VectorOutboxService {
       statement.setString(3, event.getId()); statement.executeUpdate();
     } catch (Exception e) { throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,
         "Could not supersede obsolete vector outbox events.", e); }
+  }
+
+  private void markSuperseded(String eventId) {
+    update("UPDATE etarc_vector_outbox SET status = 'SUPERSEDED', processed_at = now(), "
+        + "last_error = 'Discarded: the source configuration changed after the event was queued', "
+        + "updated = now(), updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
   }
 
   private void markDone(String eventId) {

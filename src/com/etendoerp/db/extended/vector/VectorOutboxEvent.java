@@ -29,12 +29,14 @@ public final class VectorOutboxEvent {
   private final String changedColumnId;
   private final String clientId;
   private final String organizationId;
+  private final long sourceConfigVersion;
 
   VectorOutboxEvent(String id, String sourceId, long configVersion, String namespace, String recordId, String eventType,
-      String changedColumnId, String clientId, String organizationId) {
+      String changedColumnId, String clientId, String organizationId, long sourceConfigVersion) {
     this.id = Objects.requireNonNull(id, "id");
     this.sourceId = Objects.requireNonNull(sourceId, "sourceId");
     this.configVersion = configVersion;
+    this.sourceConfigVersion = sourceConfigVersion;
     this.namespace = Objects.requireNonNull(namespace, "namespace");
     this.recordId = Objects.requireNonNull(recordId, "recordId");
     this.eventType = Objects.requireNonNull(eventType, "eventType");
@@ -52,4 +54,12 @@ public final class VectorOutboxEvent {
   public String getChangedColumnId() { return changedColumnId; }
   public String getClientId() { return clientId; }
   public String getOrganizationId() { return organizationId; }
+
+  /**
+   * Configuration version the source has right now, as opposed to the one stamped on this event.
+   *
+   * <p>A mismatch means the source was reconfigured after the event was queued, so delivering it
+   * would index content built under rules that no longer apply.</p>
+   */
+  long getSourceConfigVersion() { return sourceConfigVersion; }
 }
