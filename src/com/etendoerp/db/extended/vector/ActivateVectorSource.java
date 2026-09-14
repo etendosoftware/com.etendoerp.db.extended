@@ -104,13 +104,26 @@ public class ActivateVectorSource extends Action {
         candidates.add(candidate(connectionProvider, source));
       }
 
+      VectorStore store = new VectorStoreService(connectionProvider);
+      VectorTriggerService triggers = new VectorTriggerService(connectionProvider);
+
+      // Everything activation creates -- the runtime tables, the sequence, the trigger functions
+      // and the triggers -- is declared out of the module's model by excludeFilter.xml, so
+      // export.database has nothing to write for any of it; but ad_db_modified does not read that
+      // file and counts them all, so a later update.database would report local changes nobody can
+      // export away. Re-stamping settles that, and it is only ours to settle when the structure
+      // was already accepted: if something else had been changed and not yet reviewed, stamping
+      // would quietly accept that too, and catching it is the whole point of the check.
+      //
+      // This has to be read before the first statement that can alter the schema, which is
+      // activate() and its CREATE TABLE IF NOT EXISTS, not the triggers further down.
+      boolean structureWasAccepted = !triggers.isDatabaseModified();
+
       VectorCapability capability = new VectorActivationService(connectionProvider).activate();
       OBDal.getInstance().commitAndClose();
       outcomes.add(OBMessageUtils.messageBD("ETARC_VectorActivationState") + " "
           + capability.getState() + ". " + capability.getDiagnostic());
 
-      VectorStore store = new VectorStoreService(connectionProvider);
-      VectorTriggerService triggers = new VectorTriggerService(connectionProvider);
       boolean allReady = true;
       for (Candidate candidate : candidates) {
         Outcome outcome = activate(connectionProvider, store, candidate);
@@ -124,6 +137,14 @@ public class ActivateVectorSource extends Action {
         outcomes.add(candidate.name + ": " + outcome.message + " " + describe(deployment));
       }
       OBDal.getInstance().commitAndClose();
+
+      // No attempt to decide whether anything actually changed: a run that changed nothing stamps
+      // the same checksum again, which is a harmless write, while getting that judgement wrong in
+      // the other direction leaves the database reporting changes forever.
+      if (structureWasAccepted) {
+        triggers.acceptDatabaseStructure();
+        OBDal.getInstance().commitAndClose();
+      }
 
       // A run that left a source unusable is not a success, however well the bootstrap went.
       result.setType(allReady ? Result.Type.SUCCESS : Result.Type.WARNING);

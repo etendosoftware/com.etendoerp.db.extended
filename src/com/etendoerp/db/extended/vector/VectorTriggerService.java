@@ -18,6 +18,7 @@ package com.etendoerp.db.extended.vector;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -344,6 +345,66 @@ public class VectorTriggerService {
       execute("DROP FUNCTION IF EXISTS " + quoteIdentifier(function) + "()");
     }
     return removed;
+  }
+
+  /**
+   * Whether the database structure no longer matches the checksum stamped by the last update.
+   *
+   * <p>Triggers count towards that checksum: {@code ad_db_modified} hashes every trigger that is
+   * neither a referential-integrity nor an audit one, and it does not read excludeFilter.xml,
+   * which only keeps them out of the DBSM model comparison. So changing them dirties the
+   * checksum.</p>
+   */
+  public boolean isDatabaseModified() throws Exception {
+    try (PreparedStatement statement = cp.getPreparedStatement("SELECT ad_db_modified('N') FROM DUAL");
+        ResultSet result = statement.executeQuery()) {
+      return result.next() && "Y".equalsIgnoreCase(result.getString(1));
+    }
+  }
+
+  /**
+   * Accepts the current database structure as the reference for the next update.
+   *
+   * <p>The module script needs none of this: dbsm stamps the checksum at the end of its own phase
+   * and the core re-stamps again after the post-update scripts run, so anything they create is
+   * already blessed. A source activated from the window is the case nothing covers -- it changes
+   * triggers long after any update, and would leave every later update.database aborting with
+   * "Database has local changes" until somebody forced one.</p>
+   *
+   * <p>{@code ad_db_modified('Y')} writes two things, and only one of them is ours to write. Along
+   * with the structure checksum it moves {@code LAST_DBUPDATE}, and that column is the watermark
+   * the dataset check compares row timestamps against: every dictionary row edited since then is
+   * what makes update.database ask for an export. Letting it move would silence that question for
+   * every dataset table in the instance, which has nothing to do with a trigger being installed.
+   * So the watermark is read first and put back afterwards.</p>
+   *
+   * <p>Only call this when the structure was unmodified beforehand. Re-stamping unconditionally
+   * would quietly accept whatever else someone had changed in the database, and that is precisely
+   * the thing the check exists to catch.</p>
+   */
+  public void acceptDatabaseStructure() throws Exception {
+    Timestamp watermark = null;
+    try (PreparedStatement statement = cp.getPreparedStatement(
+        "SELECT last_dbupdate FROM ad_system_info");
+        ResultSet result = statement.executeQuery()) {
+      if (result.next()) {
+        watermark = result.getTimestamp(1);
+      }
+    }
+
+    try (PreparedStatement statement = cp.getPreparedStatement("SELECT ad_db_modified('Y') FROM DUAL");
+        ResultSet result = statement.executeQuery()) {
+      result.next();
+    }
+
+    if (watermark != null) {
+      try (PreparedStatement statement = cp.getPreparedStatement(
+          "UPDATE ad_system_info SET last_dbupdate = ?")) {
+        statement.setTimestamp(1, watermark);
+        statement.executeUpdate();
+      }
+    }
+    log.info("Database checksum re-stamped after changing vector source triggers.");
   }
 
   private void execute(String sql) throws Exception {
