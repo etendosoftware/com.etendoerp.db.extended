@@ -1,0 +1,23 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<data>
+<!--11B50A53D196460399DD648E47EB77AE--><OBUIAPP_PROCESS>
+<!--11B50A53D196460399DD648E47EB77AE-->  <OBUIAPP_PROCESS_ID><![CDATA[11B50A53D196460399DD648E47EB77AE]]></OBUIAPP_PROCESS_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--11B50A53D196460399DD648E47EB77AE-->  <VALUE><![CDATA[ETARC_ActivateVectorSource]]></VALUE>
+<!--11B50A53D196460399DD648E47EB77AE-->  <NAME><![CDATA[Activate Vector Indexing]]></NAME>
+<!--11B50A53D196460399DD648E47EB77AE-->  <DESCRIPTION><![CDATA[Installs pgvector in this database and creates the collection of the selected sources]]></DESCRIPTION>
+<!--11B50A53D196460399DD648E47EB77AE-->  <HELP><![CDATA[Nothing installs pgvector on its own: compiling the module, running update.database or starting the application never create an extension or a vector object. Select the sources to turn on and press this button. It installs the extension and the runtime storage once per database, and then creates the collection of each selected source using the vector size of its provider and its own distance metric. Running it again is harmless, and it is also how a source added later finishes being set up. A source that is not enabled, has no embedding provider, or already has its collection is reported and left alone, so selecting every row is a sensible way to use it.]]></HELP>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ACCESSLEVEL><![CDATA[4]]></ACCESSLEVEL>
+<!--11B50A53D196460399DD648E47EB77AE-->  <CLASSNAME><![CDATA[com.etendoerp.db.extended.vector.ActivateVectorSource]]></CLASSNAME>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISBACKGROUND><![CDATA[N]]></ISBACKGROUND>
+<!--11B50A53D196460399DD648E47EB77AE-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <UIPATTERN><![CDATA[A]]></UIPATTERN>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISMULTIRECORD><![CDATA[Y]]></ISMULTIRECORD>
+<!--11B50A53D196460399DD648E47EB77AE-->  <IS_EXPLICIT_ACCESS><![CDATA[N]]></IS_EXPLICIT_ACCESS>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISGRIDLEGACY><![CDATA[N]]></ISGRIDLEGACY>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISCANADDRECORDSTOSELECTOR><![CDATA[N]]></ISCANADDRECORDSTOSELECTOR>
+<!--11B50A53D196460399DD648E47EB77AE--></OBUIAPP_PROCESS>
+
+</data>
