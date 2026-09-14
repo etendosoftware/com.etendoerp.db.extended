@@ -62,11 +62,11 @@
       <foreign-key foreignTable="AD_ORG" name="ETARC_VSRCCOL_AD_ORG">
         <reference local="AD_ORG_ID" foreign="AD_ORG_ID"/>
       </foreign-key>
-      <foreign-key foreignTable="ETARC_VECTOR_SOURCE" name="ETARC_VSRCCOL_SOURCE">
-        <reference local="ETARC_VECTOR_SOURCE_ID" foreign="ETARC_VECTOR_SOURCE_ID"/>
-      </foreign-key>
       <foreign-key foreignTable="AD_USER" name="ETARC_VSRCCOL_CREATEDBY">
         <reference local="CREATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="ETARC_VECTOR_SOURCE" name="ETARC_VSRCCOL_SOURCE">
+        <reference local="ETARC_VECTOR_SOURCE_ID" foreign="ETARC_VECTOR_SOURCE_ID"/>
       </foreign-key>
       <foreign-key foreignTable="AD_USER" name="ETARC_VSRCCOL_UPDATEDBY">
         <reference local="UPDATEDBY" foreign="AD_USER_ID"/>
