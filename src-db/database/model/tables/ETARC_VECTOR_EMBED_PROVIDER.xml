@@ -37,7 +37,7 @@
         <default/>
         <onCreateDefault/>
       </column>
-      <column name="PROVIDER_TYPE" primaryKey="false" required="true" type="VARCHAR" size="30" autoIncrement="false">
+      <column name="PROVIDER_TYPE" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
         <default><![CDATA[OPENAI]]></default>
         <onCreateDefault/>
       </column>

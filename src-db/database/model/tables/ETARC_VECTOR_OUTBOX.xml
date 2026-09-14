@@ -25,7 +25,7 @@
         <default/>
         <onCreateDefault/>
       </column>
-      <column name="EVENT_TYPE" primaryKey="false" required="true" type="VARCHAR" size="10" autoIncrement="false">
+      <column name="EVENT_TYPE" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
         <default/>
         <onCreateDefault/>
       </column>
@@ -33,7 +33,7 @@
         <default/>
         <onCreateDefault/>
       </column>
-      <column name="STATUS" primaryKey="false" required="true" type="VARCHAR" size="16" autoIncrement="false">
+      <column name="STATUS" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
         <default><![CDATA[PENDING]]></default>
         <onCreateDefault/>
       </column>

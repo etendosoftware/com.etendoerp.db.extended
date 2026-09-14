@@ -85,7 +85,7 @@
         <default/>
         <onCreateDefault/>
       </column>
-      <column name="DISTANCE_METRIC" primaryKey="false" required="true" type="VARCHAR" size="32" autoIncrement="false">
+      <column name="DISTANCE_METRIC" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
         <default><![CDATA[COSINE]]></default>
         <onCreateDefault><![CDATA['COSINE']]></onCreateDefault>
       </column>

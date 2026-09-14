@@ -41,7 +41,7 @@
         <default><![CDATA[1]]></default>
         <onCreateDefault/>
       </column>
-      <column name="STATUS" primaryKey="false" required="true" type="VARCHAR" size="16" autoIncrement="false">
+      <column name="STATUS" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
         <default><![CDATA[PENDING]]></default>
         <onCreateDefault/>
       </column>
