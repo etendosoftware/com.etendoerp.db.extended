@@ -172,7 +172,7 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
         + "event_type, ad_column_id, status, attempt_count) VALUES (get_uuid(), "
         + sourceScopeExpression(source.clientColumn) + ", "
         + sourceScopeExpression(source.organizationColumn)
-        + ", 'Y', now(), '0', now(), '0', " + quoteLiteral(source.id) + ", "
+        + ", 'Y', now() AT TIME ZONE 'UTC', '0', now() AT TIME ZONE 'UTC', '0', " + quoteLiteral(source.id) + ", "
         + "(SELECT config_version FROM etarc_vector_source WHERE etarc_vector_source_id = " + quoteLiteral(source.id) + "), "
         + "CASE WHEN TG_OP = 'DELETE' THEN OLD." + keyColumn + " ELSE NEW." + keyColumn + " END, "
         + "TG_OP, NULLIF(TG_ARGV[0], ''), 'PENDING', 0); "

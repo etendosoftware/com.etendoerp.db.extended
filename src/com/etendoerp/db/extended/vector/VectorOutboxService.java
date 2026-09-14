@@ -249,10 +249,10 @@ public class VectorOutboxService {
     if (maxEvents < 1) {
       throw new IllegalArgumentException("maxEvents must be positive");
     }
-    String sql = "UPDATE etarc_vector_outbox SET status = 'FAILED', updated = now(), updatedby = '0', "
+    String sql = "UPDATE etarc_vector_outbox SET status = 'FAILED', updated = now() AT TIME ZONE 'UTC', updatedby = '0', "
         + "last_error = 'Delivery abandoned after exhausting the provider retry limit.' "
         + "WHERE etarc_vector_outbox_id IN (SELECT etarc_vector_outbox_id FROM etarc_vector_outbox "
-        + "WHERE status = 'PROCESSING' AND updated < now() - (? * interval '1 second') "
+        + "WHERE status = 'PROCESSING' AND updated < now() AT TIME ZONE 'UTC' - (? * interval '1 second') "
         + "AND attempt_count >= "
         + RETRY_LIMIT_SQL
         + " ORDER BY updated, etarc_vector_outbox_id LIMIT ?)";
@@ -287,13 +287,13 @@ public class VectorOutboxService {
 
   private boolean claim(String eventId) {
     return update("UPDATE etarc_vector_outbox SET status = 'PROCESSING', attempt_count = attempt_count + 1, "
-        + "updated = now(), updatedby = '0' WHERE etarc_vector_outbox_id = ? AND status = 'PENDING'",
+        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ? AND status = 'PENDING'",
         eventId) == 1;
   }
 
   private void supersedeOlderPending(VectorOutboxEvent event) {
     String sql = "UPDATE etarc_vector_outbox SET status = 'SUPERSEDED', last_error = 'Superseded by a newer event', "
-        + "processed_at = now(), updated = now(), updatedby = '0' WHERE etarc_vector_source_id = ? "
+        + "processed_at = now() AT TIME ZONE 'UTC', updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_source_id = ? "
         + "AND record_id = ? AND status = 'PENDING' AND etarc_vector_outbox_id <> ?";
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(sql)) {
       statement.setString(1, event.getSourceId()); statement.setString(2, event.getRecordId());
@@ -303,19 +303,19 @@ public class VectorOutboxService {
   }
 
   private void markSuperseded(String eventId) {
-    update("UPDATE etarc_vector_outbox SET status = 'SUPERSEDED', processed_at = now(), "
+    update("UPDATE etarc_vector_outbox SET status = 'SUPERSEDED', processed_at = now() AT TIME ZONE 'UTC', "
         + "last_error = 'Discarded: the source configuration changed after the event was queued', "
-        + "updated = now(), updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
+        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
   }
 
   private void markDone(String eventId) {
-    update("UPDATE etarc_vector_outbox SET status = 'DONE', processed_at = now(), last_error = NULL, "
-        + "updated = now(), updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
+    update("UPDATE etarc_vector_outbox SET status = 'DONE', processed_at = now() AT TIME ZONE 'UTC', last_error = NULL, "
+        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
   }
 
   private void markFailed(String eventId, Exception error) {
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(
-        "UPDATE etarc_vector_outbox SET status = 'FAILED', last_error = ?, updated = now(), "
+        "UPDATE etarc_vector_outbox SET status = 'FAILED', last_error = ?, updated = now() AT TIME ZONE 'UTC', "
             + "updatedby = '0' WHERE etarc_vector_outbox_id = ?")) {
       statement.setString(1, errorMessage(error));
       statement.setString(2, eventId);
@@ -355,7 +355,7 @@ public class VectorOutboxService {
     }
     String sql = "DELETE FROM etarc_vector_outbox WHERE etarc_vector_outbox_id IN ("
         + "SELECT etarc_vector_outbox_id FROM etarc_vector_outbox "
-        + "WHERE status IN ('DONE', 'SUPERSEDED') AND created < now() - (? * interval '1 second') "
+        + "WHERE status IN ('DONE', 'SUPERSEDED') AND created < now() AT TIME ZONE 'UTC' - (? * interval '1 second') "
         + "ORDER BY created, etarc_vector_outbox_id LIMIT ?)";
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(sql)) {
       statement.setLong(1, retention.getSeconds());
@@ -372,10 +372,10 @@ public class VectorOutboxService {
     if (maxEvents < 1) {
       throw new IllegalArgumentException("maxEvents must be positive");
     }
-    String ageCondition = minimumAge == null ? "" : " AND updated < now() - (? * interval '1 second')";
+    String ageCondition = minimumAge == null ? "" : " AND updated < now() AT TIME ZONE 'UTC' - (? * interval '1 second')";
     String attemptReset = resetAttempts ? ", attempt_count = 0" : "";
     String attemptCondition = withinAttemptLimit ? " AND attempt_count < " + RETRY_LIMIT_SQL : "";
-    String sql = "UPDATE etarc_vector_outbox SET status = 'PENDING', last_error = NULL, updated = now(), "
+    String sql = "UPDATE etarc_vector_outbox SET status = 'PENDING', last_error = NULL, updated = now() AT TIME ZONE 'UTC', "
         + "updatedby = '0'" + attemptReset + " WHERE etarc_vector_outbox_id IN (SELECT etarc_vector_outbox_id "
         + "FROM etarc_vector_outbox WHERE status = ?" + ageCondition + attemptCondition
         + " ORDER BY updated, etarc_vector_outbox_id LIMIT ?)";
