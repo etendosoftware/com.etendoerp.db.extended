@@ -8,6 +8,7 @@
 <!--02587B3D12BE419099A95D15D087C34D-->  <COLUMNNAME><![CDATA[Processed_At]]></COLUMNNAME>
 <!--02587B3D12BE419099A95D15D087C34D-->  <NAME><![CDATA[Processed At]]></NAME>
 <!--02587B3D12BE419099A95D15D087C34D-->  <PRINTNAME><![CDATA[Processed]]></PRINTNAME>
+<!--02587B3D12BE419099A95D15D087C34D-->  <HELP><![CDATA[When delivery finished with this event, in UTC. Every timestamp the module writes is UTC rather than the session time zone, so comparing one against another is meaningful wherever the server and the client happen to be.]]></HELP>
 <!--02587B3D12BE419099A95D15D087C34D-->  <DESCRIPTION><![CDATA[Moment the event reached a terminal state]]></DESCRIPTION>
 <!--02587B3D12BE419099A95D15D087C34D-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--02587B3D12BE419099A95D15D087C34D-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -36,7 +37,7 @@
 <!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <NAME><![CDATA[Embedding Model]]></NAME>
 <!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <PRINTNAME><![CDATA[Model]]></PRINTNAME>
 <!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <DESCRIPTION><![CDATA[Provider model identifier, for example text-embedding-3-small]]></DESCRIPTION>
-<!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <HELP><![CDATA[The model determines the vector dimensions. Changing it invalidates comparisons against already stored vectors.]]></HELP>
+<!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <HELP><![CDATA[Model that produces the embeddings, as the endpoint names it, for instance text-embedding-3-small. A provider-agnostic gateway such as the Etendo LLM proxy serves more than one provider and has to be told which one to use: there the format is "provider/model", for instance openai/text-embedding-3-small. Changing this on a source that already has a collection does not re-embed anything, and if the new model has a different vector size the collection no longer matches -- activation reports that rather than repairing it, because repairing means dropping every vector it holds.]]></HELP>
 <!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--0B9C7DD97E394802AE7DD75B1C06C0D8-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
 <!--0B9C7DD97E394802AE7DD75B1C06C0D8--></AD_ELEMENT>
@@ -76,6 +77,7 @@
 <!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <COLUMNNAME><![CDATA[Search_Key]]></COLUMNNAME>
 <!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <NAME><![CDATA[Search Target Key]]></NAME>
 <!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <PRINTNAME><![CDATA[Key]]></PRINTNAME>
+<!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <HELP><![CDATA[The name a caller uses to search this target through the API. It is part of the contract with whoever integrates: changing it breaks every caller already asking for the old one.]]></HELP>
 <!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <DESCRIPTION><![CDATA[Stable identifier API clients use to select this search target]]></DESCRIPTION>
 <!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--23AF543C32BF4DF5AB1768E4A02EEDA1-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -158,6 +160,7 @@
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <COLUMNNAME><![CDATA[Retry_Limit]]></COLUMNNAME>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <NAME><![CDATA[Retry Limit]]></NAME>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <PRINTNAME><![CDATA[Retries]]></PRINTNAME>
+<!--691E029B96BE4E99A53A5DFA29EA4427-->  <HELP><![CDATA[How many times a failed event is handed back to delivery before it is left alone. It stops a permanent failure -- a model that no longer exists, a revoked key -- from being retried forever at the provider's expense. An event that reached the limit stays failed and visible in the Outbox Monitor, where it can be sent back to the queue once the cause is fixed.]]></HELP>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <DESCRIPTION><![CDATA[Delivery attempts before an event stops being recovered automatically]]></DESCRIPTION>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -186,7 +189,7 @@
 <!--90DDB111AA2B44D888B1F574DA55B88B-->  <NAME><![CDATA[API Endpoint]]></NAME>
 <!--90DDB111AA2B44D888B1F574DA55B88B-->  <PRINTNAME><![CDATA[Endpoint]]></PRINTNAME>
 <!--90DDB111AA2B44D888B1F574DA55B88B-->  <DESCRIPTION><![CDATA[Base URL of the embeddings API. Leave empty to use the provider default]]></DESCRIPTION>
-<!--90DDB111AA2B44D888B1F574DA55B88B-->  <HELP><![CDATA[Overrides the endpoint so the same configuration can target an Azure OpenAI deployment, a corporate gateway or a local stub.]]></HELP>
+<!--90DDB111AA2B44D888B1F574DA55B88B-->  <HELP><![CDATA[Optional. Base URL of an OpenAI-compatible embeddings API, up to and including /v1 and no further: the path of the call is added by the module and is never configured here. Leave it empty to call OpenAI itself. Point it at the Etendo LLM proxy (https://llm.etendo.software/v1), an Azure OpenAI deployment, a corporate gateway or a local stub to use the same configuration against any of them. When the endpoint is a provider-agnostic gateway, name the provider in the Embedding Model field as well.]]></HELP>
 <!--90DDB111AA2B44D888B1F574DA55B88B-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--90DDB111AA2B44D888B1F574DA55B88B-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
 <!--90DDB111AA2B44D888B1F574DA55B88B--></AD_ELEMENT>
@@ -199,6 +202,7 @@
 <!--92D166460563451F8867E4FB1B0C7458-->  <COLUMNNAME><![CDATA[Timeout_Seconds]]></COLUMNNAME>
 <!--92D166460563451F8867E4FB1B0C7458-->  <NAME><![CDATA[Request Timeout]]></NAME>
 <!--92D166460563451F8867E4FB1B0C7458-->  <PRINTNAME><![CDATA[Timeout (s)]]></PRINTNAME>
+<!--92D166460563451F8867E4FB1B0C7458-->  <HELP><![CDATA[How long a single embedding request may take before it is abandoned. It bounds one request, not the whole delivery run: the event it belonged to is marked as failed and retried later, up to the retry limit. Too low a value turns a slow provider into a stream of failures; too high a one holds a delivery thread while the queue grows.]]></HELP>
 <!--92D166460563451F8867E4FB1B0C7458-->  <DESCRIPTION><![CDATA[Seconds to wait for an embedding response before failing the event]]></DESCRIPTION>
 <!--92D166460563451F8867E4FB1B0C7458-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--92D166460563451F8867E4FB1B0C7458-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -239,6 +243,7 @@
 <!--A65A76C57121463DA65979E9BBBFA2DB-->  <COLUMNNAME><![CDATA[Event_Type]]></COLUMNNAME>
 <!--A65A76C57121463DA65979E9BBBFA2DB-->  <NAME><![CDATA[Event Type]]></NAME>
 <!--A65A76C57121463DA65979E9BBBFA2DB-->  <PRINTNAME><![CDATA[Event]]></PRINTNAME>
+<!--A65A76C57121463DA65979E9BBBFA2DB-->  <HELP><![CDATA[What happened to the record that produced this event: INSERT and UPDATE re-embed it, DELETE removes its vector. It is written by the database trigger, never by hand.]]></HELP>
 <!--A65A76C57121463DA65979E9BBBFA2DB-->  <DESCRIPTION><![CDATA[Operation that produced the event]]></DESCRIPTION>
 <!--A65A76C57121463DA65979E9BBBFA2DB-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--A65A76C57121463DA65979E9BBBFA2DB-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -252,6 +257,7 @@
 <!--AAEF6E5A74D1461BB733C159490F3BF7-->  <COLUMNNAME><![CDATA[Isdeleteenabled]]></COLUMNNAME>
 <!--AAEF6E5A74D1461BB733C159490F3BF7-->  <NAME><![CDATA[Index On Delete]]></NAME>
 <!--AAEF6E5A74D1461BB733C159490F3BF7-->  <PRINTNAME><![CDATA[On Delete]]></PRINTNAME>
+<!--AAEF6E5A74D1461BB733C159490F3BF7-->  <HELP><![CDATA[Whether deleting a record removes its vector. Turning it off leaves the vectors of deleted records in the collection, where a search will keep returning them.]]></HELP>
 <!--AAEF6E5A74D1461BB733C159490F3BF7-->  <DESCRIPTION><![CDATA[Remove the embedding when a record is deleted]]></DESCRIPTION>
 <!--AAEF6E5A74D1461BB733C159490F3BF7-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--AAEF6E5A74D1461BB733C159490F3BF7-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -265,6 +271,7 @@
 <!--B3FC90E786544144947C36C1274ECF70-->  <COLUMNNAME><![CDATA[Last_Error]]></COLUMNNAME>
 <!--B3FC90E786544144947C36C1274ECF70-->  <NAME><![CDATA[Last Error]]></NAME>
 <!--B3FC90E786544144947C36C1274ECF70-->  <PRINTNAME><![CDATA[Last Error]]></PRINTNAME>
+<!--B3FC90E786544144947C36C1274ECF70-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which.]]></HELP>
 <!--B3FC90E786544144947C36C1274ECF70-->  <DESCRIPTION><![CDATA[Message of the most recent failed attempt]]></DESCRIPTION>
 <!--B3FC90E786544144947C36C1274ECF70-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--B3FC90E786544144947C36C1274ECF70-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -292,6 +299,7 @@
 <!--BBC78359D8084C4AB3DDB0660073CD45-->  <COLUMNNAME><![CDATA[Enqueued_Count]]></COLUMNNAME>
 <!--BBC78359D8084C4AB3DDB0660073CD45-->  <NAME><![CDATA[Enqueued Records]]></NAME>
 <!--BBC78359D8084C4AB3DDB0660073CD45-->  <PRINTNAME><![CDATA[Enqueued]]></PRINTNAME>
+<!--BBC78359D8084C4AB3DDB0660073CD45-->  <HELP><![CDATA[How many records the backfill has enqueued so far. It counts events written to the outbox, not vectors stored: delivery happens afterwards, so this reaching the total only means the queue is complete, not that the index is.]]></HELP>
 <!--BBC78359D8084C4AB3DDB0660073CD45-->  <DESCRIPTION><![CDATA[How many records this reindex has enqueued so far]]></DESCRIPTION>
 <!--BBC78359D8084C4AB3DDB0660073CD45-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--BBC78359D8084C4AB3DDB0660073CD45-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -305,6 +313,7 @@
 <!--BF7C4E385A394D6AAC50168885B8F2A9-->  <COLUMNNAME><![CDATA[Isupdateenabled]]></COLUMNNAME>
 <!--BF7C4E385A394D6AAC50168885B8F2A9-->  <NAME><![CDATA[Index On Update]]></NAME>
 <!--BF7C4E385A394D6AAC50168885B8F2A9-->  <PRINTNAME><![CDATA[On Update]]></PRINTNAME>
+<!--BF7C4E385A394D6AAC50168885B8F2A9-->  <HELP><![CDATA[Whether changing a watched column enqueues an event. The trigger only fires for the columns marked Reindex On Change and only when the value really changed, so a save that touches nothing else costs nothing.]]></HELP>
 <!--BF7C4E385A394D6AAC50168885B8F2A9-->  <DESCRIPTION><![CDATA[Enqueue an indexing event when a watched column changes]]></DESCRIPTION>
 <!--BF7C4E385A394D6AAC50168885B8F2A9-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--BF7C4E385A394D6AAC50168885B8F2A9-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -318,6 +327,7 @@
 <!--C499D4DF097F4DE9A1E95505F6F0B879-->  <COLUMNNAME><![CDATA[Isinsertenabled]]></COLUMNNAME>
 <!--C499D4DF097F4DE9A1E95505F6F0B879-->  <NAME><![CDATA[Index On Insert]]></NAME>
 <!--C499D4DF097F4DE9A1E95505F6F0B879-->  <PRINTNAME><![CDATA[On Insert]]></PRINTNAME>
+<!--C499D4DF097F4DE9A1E95505F6F0B879-->  <HELP><![CDATA[Whether a new record enqueues an event. Turning it off leaves records created from now on out of the index until a backfill picks them up.]]></HELP>
 <!--C499D4DF097F4DE9A1E95505F6F0B879-->  <DESCRIPTION><![CDATA[Enqueue an indexing event when a record is created]]></DESCRIPTION>
 <!--C499D4DF097F4DE9A1E95505F6F0B879-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--C499D4DF097F4DE9A1E95505F6F0B879-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -371,6 +381,7 @@
 <!--DC6EF944328947E09FA36BE59C808BC2-->  <COLUMNNAME><![CDATA[Isreindexonchange]]></COLUMNNAME>
 <!--DC6EF944328947E09FA36BE59C808BC2-->  <NAME><![CDATA[Reindex On Change]]></NAME>
 <!--DC6EF944328947E09FA36BE59C808BC2-->  <PRINTNAME><![CDATA[Reindex On Change]]></PRINTNAME>
+<!--DC6EF944328947E09FA36BE59C808BC2-->  <HELP><![CDATA[Whether a change to this column enqueues a re-embedding. Leave it off for a column that is only metadata to filter by, so editing it does not pay for an embedding that would come out the same.]]></HELP>
 <!--DC6EF944328947E09FA36BE59C808BC2-->  <DESCRIPTION><![CDATA[A change in this column enqueues a re-embedding of the record]]></DESCRIPTION>
 <!--DC6EF944328947E09FA36BE59C808BC2-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--DC6EF944328947E09FA36BE59C808BC2-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -425,6 +436,7 @@
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <COLUMNNAME><![CDATA[Status]]></COLUMNNAME>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <NAME><![CDATA[Status]]></NAME>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <PRINTNAME><![CDATA[Status]]></PRINTNAME>
+<!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting, PROCESSING has been claimed by a run, DONE was embedded and stored, FAILED gave up after the provider retry limit, and SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <DESCRIPTION><![CDATA[Lifecycle state of the record]]></DESCRIPTION>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -452,6 +464,7 @@
 <!--EEF98B0A456B49A08502497E6F21A858-->  <COLUMNNAME><![CDATA[Provider_Type]]></COLUMNNAME>
 <!--EEF98B0A456B49A08502497E6F21A858-->  <NAME><![CDATA[Provider Type]]></NAME>
 <!--EEF98B0A456B49A08502497E6F21A858-->  <PRINTNAME><![CDATA[Type]]></PRINTNAME>
+<!--EEF98B0A456B49A08502497E6F21A858-->  <HELP><![CDATA[Which API dialect the endpoint speaks. OpenAI is the only one implemented, and it is also what every OpenAI-compatible gateway serves, so it is the right choice for the Etendo LLM proxy and for an Azure OpenAI deployment as well. It is not the name of the company behind the model: that goes in the Embedding Model field when the endpoint serves several.]]></HELP>
 <!--EEF98B0A456B49A08502497E6F21A858-->  <DESCRIPTION><![CDATA[Embedding backend implementation]]></DESCRIPTION>
 <!--EEF98B0A456B49A08502497E6F21A858-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--EEF98B0A456B49A08502497E6F21A858-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -479,6 +492,7 @@
 <!--F683A1BC6F834F88844CA6D69BD9F994-->  <COLUMNNAME><![CDATA[MAX_Input_Characters]]></COLUMNNAME>
 <!--F683A1BC6F834F88844CA6D69BD9F994-->  <NAME><![CDATA[Max Input Characters]]></NAME>
 <!--F683A1BC6F834F88844CA6D69BD9F994-->  <PRINTNAME><![CDATA[Max Chars]]></PRINTNAME>
+<!--F683A1BC6F834F88844CA6D69BD9F994-->  <HELP><![CDATA[Longest text sent for a single record; anything beyond this is cut off before the request leaves. It exists because a model rejects an input past its token limit and the whole batch fails with it, so one oversized record would stop the records batched alongside it. Characters are not tokens: leave room, as a token is roughly four characters for English text and fewer for other languages.]]></HELP>
 <!--F683A1BC6F834F88844CA6D69BD9F994-->  <DESCRIPTION><![CDATA[Content longer than this is truncated before embedding]]></DESCRIPTION>
 <!--F683A1BC6F834F88844CA6D69BD9F994-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--F683A1BC6F834F88844CA6D69BD9F994-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -492,6 +506,7 @@
 <!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <COLUMNNAME><![CDATA[AD_Filter_Column_ID]]></COLUMNNAME>
 <!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <NAME><![CDATA[Filter Column]]></NAME>
 <!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <PRINTNAME><![CDATA[Filter Column]]></PRINTNAME>
+<!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <HELP><![CDATA[Optional. Indexes only the records whose column matches Filter Value, instead of the whole table. The filter is compiled into the database trigger, so a record that does not match never reaches the queue at all -- which is also why changing it does not remove the vectors of records that matched before.]]></HELP>
 <!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <DESCRIPTION><![CDATA[Column of the source table compared against the filter value]]></DESCRIPTION>
 <!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--F98D3FA8A12E4390BA193E2C22D1FC02-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
