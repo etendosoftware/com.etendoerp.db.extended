@@ -57,6 +57,7 @@ class VectorReindexServiceTest {
   private String existingStatus = null;
   private boolean sourceExists = true;
   private long estimate = 85L;
+  private long alreadyEnqueued = 0L;
 
   @Test
   void refusesSizesThatWouldNeverMakeProgress() {
@@ -233,7 +234,7 @@ class VectorReindexServiceTest {
   void writesTheRequestAndLeavesTheWalkToTheScheduledProcess() throws Exception {
     existingStatus = null;
 
-    VectorReindexService.Outcome outcome = service().requestReindex("SRC1");
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1", true);
 
     assertEquals(VectorReindexService.Result.REQUESTED, outcome.getResult());
     assertTrue(log.stream().anyMatch(s -> s.startsWith("INSERT INTO etarc_vector_reindex_req")));
@@ -245,7 +246,7 @@ class VectorReindexServiceTest {
   void decidesBetweenCreatingAndRestartingWithTheUniqueConstraint() throws Exception {
     existingStatus = null;
 
-    service().requestReindex("SRC1");
+    service().requestReindex("SRC1", true);
 
     String request = first("INSERT INTO etarc_vector_reindex_req");
     assertTrue(request.contains("ON CONFLICT (etarc_vector_source_id) DO UPDATE"),
@@ -258,15 +259,40 @@ class VectorReindexServiceTest {
   void saysItRestartedWhenTheSourceHadBeenWalkedBefore() throws Exception {
     existingStatus = "DONE";
 
-    assertEquals(VectorReindexService.Result.RESTARTED, service().requestReindex("SRC1").getResult(),
+    assertEquals(VectorReindexService.Result.RESTARTED, service().requestReindex("SRC1", true).getResult(),
         "the administrator has to know the counters of the previous walk are gone");
+  }
+
+  @Test
+  void refusesToRestartAWalkUntilItHasSaidWhatThatCosts() throws Exception {
+    existingStatus = "DONE";
+    alreadyEnqueued = 85L;
+    estimate = 2_400_000L;
+
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1", false);
+
+    assertEquals(VectorReindexService.Result.NEEDS_CONFIRMATION, outcome.getResult());
+    assertEquals(0, count("INSERT INTO etarc_vector_reindex_req"),
+        "the destructive part of restarting has to be told before it happens, not reported after");
+    assertEquals(85L, outcome.getAlreadyEnqueued(), "what the walk being replaced had covered");
+    assertEquals(2_400_000L, outcome.getEstimate(), "and what this one would enqueue again");
+  }
+
+  @Test
+  void asksForNoConfirmationOnASourceThatWasNeverWalked() throws Exception {
+    existingStatus = null;
+
+    assertEquals(VectorReindexService.Result.REQUESTED,
+        service().requestReindex("SRC1", false).getResult(),
+        "there is nothing to lose, so there is nothing to warn about");
+    assertEquals(1, count("INSERT INTO etarc_vector_reindex_req"));
   }
 
   @Test
   void refusesToRestartAWalkThatIsStillRunning() throws Exception {
     existingStatus = "PROCESSING";
 
-    VectorReindexService.Outcome outcome = service().requestReindex("SRC1");
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1", true);
 
     assertEquals(VectorReindexService.Result.ALREADY_WALKING, outcome.getResult());
     assertFalse(outcome.getResult().isAccepted());
@@ -280,7 +306,7 @@ class VectorReindexServiceTest {
     sourceExists = false;
 
     assertEquals(VectorReindexService.Result.SOURCE_NOT_FOUND,
-        service().requestReindex("SRC1").getResult());
+        service().requestReindex("SRC1", true).getResult());
     assertEquals(0, count("INSERT INTO etarc_vector_reindex_req"));
   }
 
@@ -289,7 +315,7 @@ class VectorReindexServiceTest {
     existingStatus = null;
     estimate = 2_400_000L;
 
-    VectorReindexService.Outcome outcome = service().requestReindex("SRC1");
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1", true);
 
     assertEquals(2_400_000L, outcome.getEstimate(),
         "so the administrator learns the size of what they asked for before it starts");
@@ -378,6 +404,7 @@ class VectorReindexServiceTest {
       when(rs.next()).thenReturn(sourceExists);
       when(rs.getString(1)).thenReturn(existingStatus);
       when(rs.getString(2)).thenReturn("C_BPartner");
+      when(rs.getLong(3)).thenReturn(alreadyEnqueued);
     } else if (sql.startsWith("SELECT GREATEST")) {
       when(rs.next()).thenReturn(true);
       when(rs.getLong(1)).thenReturn(estimate);

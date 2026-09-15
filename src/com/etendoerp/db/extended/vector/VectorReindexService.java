@@ -173,22 +173,34 @@ public class VectorReindexService {
    * table twice and part of it never. Nothing is stuck by refusing: the claim takes PROCESSING
    * before PENDING, so a run in flight is always resumed and finished.</p>
    *
+   * <p>Restarting a source that was already walked is destructive twice over: it enqueues the
+   * whole table again, and the counters of the walk it did before are gone. That is worth knowing
+   * before it happens rather than afterwards, so it is refused unless the caller confirms, and the
+   * refusal carries both numbers -- what the previous walk covered, and what this one would.</p>
+   *
+   * @param confirmRestart
+   *     whether the caller has already been told what restarting would cost. It has no bearing on
+   *     a source that was never walked: there is nothing to lose and nothing to warn about.
    * @return what happened, and roughly how many records it will mean
    */
-  public Outcome requestReindex(String sourceId) throws Exception {
+  public Outcome requestReindex(String sourceId, boolean confirmRestart) throws Exception {
     Existing existing = existing(sourceId);
     if (existing == null) {
-      return new Outcome(Result.SOURCE_NOT_FOUND, 0L);
+      return new Outcome(Result.SOURCE_NOT_FOUND, 0L, 0L);
     }
     if ("PROCESSING".equals(existing.status)) {
-      return new Outcome(Result.ALREADY_WALKING, 0L);
+      return new Outcome(Result.ALREADY_WALKING, 0L, 0L);
+    }
+    long estimate = estimate(existing.table);
+    if (existing.status != null && !confirmRestart) {
+      return new Outcome(Result.NEEDS_CONFIRMATION, estimate, existing.enqueuedCount);
     }
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(REQUEST_REINDEX_SQL)) {
       statement.setString(1, sourceId);
       statement.executeUpdate();
     }
-    return new Outcome(existing.status == null ? Result.REQUESTED : Result.RESTARTED,
-        estimate(existing.table));
+    return new Outcome(existing.status == null ? Result.REQUESTED : Result.RESTARTED, estimate,
+        existing.enqueuedCount);
   }
 
   private Existing existing(String sourceId) throws Exception {
@@ -201,6 +213,7 @@ public class VectorReindexService {
         Existing existing = new Existing();
         existing.status = result.getString(1);
         existing.table = result.getString(2);
+        existing.enqueuedCount = result.getLong(3);
         return existing;
       }
     }
@@ -225,6 +238,7 @@ public class VectorReindexService {
   public enum Result {
     REQUESTED("ETARC_VectorReindexRequested"),
     RESTARTED("ETARC_VectorReindexRestarted"),
+    NEEDS_CONFIRMATION("ETARC_VectorReindexNeedsConfirmation"),
     ALREADY_WALKING("ETARC_VectorReindexAlreadyWalking"),
     SOURCE_NOT_FOUND("ETARC_VectorReindexSourceGone");
 
@@ -247,10 +261,17 @@ public class VectorReindexService {
   public static final class Outcome {
     private final Result result;
     private final long estimate;
+    private final long alreadyEnqueued;
 
-    private Outcome(Result result, long estimate) {
+    private Outcome(Result result, long estimate, long alreadyEnqueued) {
       this.result = result;
       this.estimate = estimate;
+      this.alreadyEnqueued = alreadyEnqueued;
+    }
+
+    /** What the walk this one would replace had covered, so the refusal can name it. */
+    public long getAlreadyEnqueued() {
+      return alreadyEnqueued;
     }
 
     public Result getResult() {
@@ -265,6 +286,7 @@ public class VectorReindexService {
   private static final class Existing {
     private String status;
     private String table;
+    private long enqueuedCount;
   }
 
   private int claim() {

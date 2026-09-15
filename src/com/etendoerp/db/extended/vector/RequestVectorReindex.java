@@ -97,7 +97,8 @@ public class RequestVectorReindex extends Action {
           outcomes.add(candidate.name + ": " + OBMessageUtils.messageBD(verdict.getMessageKey()));
           continue;
         }
-        VectorReindexService.Outcome outcome = reindex.requestReindex(candidate.id);
+        VectorReindexService.Outcome outcome =
+            reindex.requestReindex(candidate.id, confirmRestart(parameters));
         allAccepted &= outcome.getResult().isAccepted();
         outcomes.add(candidate.name + ": " + describe(outcome));
       }
@@ -114,11 +115,30 @@ public class RequestVectorReindex extends Action {
     return result;
   }
 
-  /** Says what happened, and for an accepted request how big a walk it is. */
+  /**
+   * Whether the administrator has already been told what restarting an existing walk would cost.
+   *
+   * <p>Absent means no. A source that was never walked is requested either way, so the parameter
+   * only ever gates the destructive case.</p>
+   */
+  private boolean confirmRestart(JSONObject parameters) {
+    return parameters != null && parameters.optBoolean("Confirm_Restart", false);
+  }
+
+  /** Says what happened, with the numbers each answer needs to be acted on. */
   private String describe(VectorReindexService.Outcome outcome) {
     String key = outcome.getResult().getMessageKey();
-    return outcome.getResult().isAccepted()
-        ? OBMessageUtils.getI18NMessage(key, new String[] { String.valueOf(outcome.getEstimate()) })
-        : OBMessageUtils.messageBD(key);
+    switch (outcome.getResult()) {
+      case REQUESTED:
+      case RESTARTED:
+        return OBMessageUtils.getI18NMessage(key,
+            new String[] { String.valueOf(outcome.getEstimate()) });
+      case NEEDS_CONFIRMATION:
+        return OBMessageUtils.getI18NMessage(key,
+            new String[] { String.valueOf(outcome.getAlreadyEnqueued()),
+                String.valueOf(outcome.getEstimate()) });
+      default:
+        return OBMessageUtils.messageBD(key);
+    }
   }
 }
