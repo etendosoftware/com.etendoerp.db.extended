@@ -11,49 +11,116 @@ structures such as partitioned tables with intelligent constraint management.
 - **XML-Based Configuration**: Integration with Etendo's table definition system
 - **Trigger Automation**: Automatic partition column population in child tables
 - **Python Tools**: Command-line utilities to **partition** and **unpartition** database tables
+- **Semantic search over any table**: an optional, off-by-default pgvector capability that indexes
+  the columns a dictionary configuration names, keeps them up to date through a transactional
+  outbox, and answers nearest-neighbour queries scoped to the session's tenant
 
-## Optional pgvector capability (ETP-5077)
+## Optional pgvector capability
 
-pgvector is optional and disabled by default. Installing this module, compiling Etendo, running
-`smartbuild`, `update.database`, or starting the application must never install the PostgreSQL extension or
-create vector objects. A caller must explicitly invoke `VectorActivationService.activate()` after confirming
-that the server offers pgvector and that the caller has extension-creation permission.
+pgvector is optional and off by default. Installing this module, compiling Etendo, running
+`smartbuild` or `update.database`, or starting the application never installs the PostgreSQL
+extension and never creates a vector object. Turning it on is a deliberate administrator action,
+and until it is taken every vector operation returns the controlled `PGVECTOR_NOT_ENABLED` error.
 
-Before activation, or when pgvector is unavailable, every vector operation returns the controlled
-`PGVECTOR_NOT_ENABLED` error. The API is entity-agnostic: consumers provide a namespace, external key, numeric
-vector, JSON object metadata, and optional client/organization scope. It exposes no UI/NEO endpoint and does not
-implement RAG.
+The API itself is entity-agnostic: a caller supplies a namespace, an external key, a numeric
+vector, JSON metadata and an optional client/organization scope. No entity class is involved, and
+this module implements no RAG and publishes no REST endpoint of its own — a consuming module such
+as `com.etendoerp.go` does that.
 
-Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. The system-only background process **Process
-Vector Outbox** drains up to 100 pending events per execution, so it can be scheduled through Classic Process
-Request without any entity-specific configuration. It first requeues events left in `PROCESSING` for at least 15
-minutes, then runs `VectorOutboxService` with namespace-owned `VectorOutboxConsumer` implementations. The consumer
-fetches its source data and generates embeddings; it should use an idempotent upsert keyed by
-`VectorOutboxEvent.getRecordId()`. The dispatcher delivers events at least once and records `DONE` or `FAILED`.
-Failed events require an explicit requeue after the provider or source configuration is corrected; they are not
-retried automatically by the scheduled process.
+### Turning it on
 
-Schedule **Process Vector Outbox** once at System level, not once per client. The process drains the shared outbox
-and each event preserves its own client and organization scope when the vector record is written. A run skipped
-because another instance is active is reported by the scheduler as `Skipped`, not as an error.
+**Search Source → Activate Vector Indexing** is the entry point. It takes several records at a
+time, so one source, a few or all of them can be turned on in a single step. Each run installs the
+extension and the runtime storage once per database, and then, for each selected source, either
+creates its collection or explains what is stopping it.
 
-The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
-`src-db/database/model`. The versioned `excludeFilter.xml` excludes those runtime tables, generated source
-triggers/functions, and pgvector extension objects from DBSM exports. Exact search supports cosine, L2, and
-inner-product distance. HNSW creation is an explicit operation; exact search remains available without an index.
+The check matters because a source can be broken in ways that only surface much later. One with no
+content column is accepted by the dictionary and fails on every delivery; a collection created
+before the provider changed holds vectors of a size the new model no longer produces. Activation
+reports both instead of queueing work that can only fail, and it never repairs a mismatched
+collection: making one match again means dropping it, and that deletes every vector it holds.
 
-`DictionaryVectorOutboxConsumer` is the generic configured-source consumer. It resolves the source's provider,
-currently OpenAI embeddings, from the system configuration and reads the API-key reference through
-`Openbravo.properties`. `VectorSearchService.searchAsJson(namespace, text, topK, metadataFilter)` is the matching
-generic query facade: it embeds the query text with the configured provider, uses the collection metric, and returns
-JSON matches with the external `id`, distance, indexed `fields`, and full metadata. Its client and organization
-filters are mandatory and are derived exclusively from the active `OBContext`; callers cannot supply tenant scope.
-No entity class is required for either operation.
+The action needs a database role allowed to `CREATE EXTENSION`. Running it again is harmless and
+is also how a source added later finishes being set up.
 
-For a module-level global search, use the overload that accepts a collection of namespaces. The consuming module
-chooses those namespaces (for example, according to its own access configuration), while DB Extended resolves their
-sources and returns matches with their namespace. It rejects a mixed set of provider type, embedding model,
-dimension, or distance metric, because distances from incompatible embedding profiles cannot be ranked together.
+### Indexing what a table already held
+
+Triggers only capture what changes from the moment they are installed, so a source configured over
+a table that already has rows indexes nothing until those rows are walked. **Search Source →
+Request Reindex** asks for that walk; the scheduled process performs it in bounded chunks, keyset
+by primary key, committing each one, so a table of millions of rows neither holds the session nor
+fills the queue faster than delivery drains it. A source keeps a single request for its whole
+life, so asking again restarts the one it has, and the button says what that costs before doing
+it.
+
+### Delivery
+
+An enabled source enqueues its changes in `ETARC_VECTOR_OUTBOX`. The system-level background
+process **Process Vector Outbox** drains it and needs no entity-specific configuration. One run
+does four things in order:
+
+1. retires events that have exhausted their provider retry limit and have been `PROCESSING` for at
+   least 15 minutes,
+2. requeues the remaining stale `PROCESSING` ones, which is how a run interrupted mid-flight is
+   recovered,
+3. delivers up to 100 pending events, grouped by source and embedded one chunk per provider
+   request,
+4. purges terminal events older than 30 days.
+
+Schedule it once at System level, not once per client: the outbox is shared and each event carries
+its own client and organization scope to the vector record. A run skipped because another instance
+is active is reported by the scheduler as `Skipped`, not as an error.
+
+An event ends in one of five states. `DONE` and `FAILED` are the obvious two; `SUPERSEDED` is an
+event discarded because the source configuration changed after it was enqueued, so re-embedding it
+would store a vector nobody asked for. `FAILED` is not retried by the scheduled process once the
+retry limit is spent — **Requeue Failed Vector Events** puts those back once the cause is fixed.
+
+### The embedding provider
+
+`DictionaryVectorOutboxConsumer` is the generic consumer for configured sources. It resolves the
+provider from the dictionary and reads the API key from the reference named in **API Key
+Reference**, looked up in this order:
+
+1. a JVM system property,
+2. an environment variable,
+3. `Openbravo.properties`.
+
+The first one found wins, so a `-D` flag or an exported variable overrides the file.
+
+**API Endpoint** is a base URL, up to and including `/v1` and no further; the path of the call is
+added by the module. Leaving it empty calls OpenAI. Pointing it at an OpenAI-compatible gateway —
+the Etendo LLM proxy, an Azure OpenAI deployment, a corporate gateway — makes the same
+configuration work against any of them. Such a gateway serves several providers and is told which
+one to use in the model name, so there **Embedding Model** takes the form `provider/model`.
+
+Text leaves the tenant on every embedding call. **Max Input Characters** truncates a record before
+it is sent, which bounds the request but also means a long record is embedded from its beginning
+only.
+
+### Searching
+
+`VectorSearchService` is the query facade. `searchAsJson` takes one namespace or a collection of
+them, embeds the query text with the configured provider, uses the collection's metric and returns
+JSON matches with the external `id`, the distance, a normalised `score` in `[0, 1]`, the indexed
+`fields` and the full metadata. An overload filters by score range. `searchTargetsAsJson` searches
+configured target keys instead, applying each target's Display Logic filter.
+
+Client and organization filters are mandatory and come exclusively from the active `OBContext`; a
+caller cannot supply tenant scope. Searching several namespaces at once is rejected when their
+provider type, model, dimension or metric differ, because distances from incompatible embedding
+profiles cannot be ranked against each other.
+
+Exact search supports cosine, L2 and inner product, and is available without any index. HNSW
+creation is a separate explicit operation.
+
+### What is not in the model
+
+Activation creates its storage at runtime, so no vector-typed column belongs in
+`src-db/database/model`. The versioned `excludeFilter.xml` keeps those runtime tables, the
+generated source triggers and functions, and the pgvector extension objects out of DBSM exports.
+Note that the database structure checksum does not read that file, which is why activation accepts
+the structure it changed — see `VectorTriggerService.acceptDatabaseStructure`.
 
 ## 🏗️ Architecture Overview
 
@@ -76,6 +143,15 @@ The module follows a modular architecture with specialized components:
 - PostgreSQL
 - Virtualenv (`python3 -m venv`)
 - DBSM Version 1.2.0 (Change this value in artifacts.list.COMPILATION.gradle file)
+
+For the optional vector capability:
+
+- **pgvector 0.5.0 or newer.** That is where HNSW arrived, and the module builds HNSW indexes with
+  `vector_cosine_ops`, `vector_l2_ops` and `vector_ip_ops`. Nothing here uses `halfvec`,
+  `sparsevec` or `binary_quantize`; `excludeFilter.xml` names them so that a server that does have
+  them keeps them out of DBSM exports, and on an older one those entries simply match nothing.
+- A database role allowed to run `CREATE EXTENSION`, for the activation action only.
+- Developed and tested against pgvector 0.8.6 on PostgreSQL 16.
 
 ---
 
@@ -407,29 +483,12 @@ When working with this system:
 3. **Backup Operations Failing**: Verify database permissions and disk space
 4. **Performance Issues**: Monitor connection pool and check for large table scans
 
-### Refactoring History
-
-This system was refactored from a monolithic 76-method class to a modular 6-component architecture:
-
-- **Before**: Single class with 76 methods (116% over SonarQube limit)
-- **After**: Main coordinator with 11 methods + 5 specialized utility classes
-- **Benefit**: 85% reduction in main class complexity, improved maintainability
-
-The refactoring maintains all original functionality while dramatically improving code organization, testability, and
-maintainability.
-
----
-
 ## 📖 Additional Resources
 
-- **[REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md)**: Detailed refactoring information and benefits
-- **[ARCHITECTURE_GUIDE.md](ARCHITECTURE_GUIDE.md)**: Complete architectural documentation for developers
-- **JavaDoc**: Comprehensive inline documentation for all classes and methods
-- **Source Code**: Well-commented code with examples and usage patterns
-
-For detailed implementation information, refer to the comprehensive JavaDoc documentation in each class.
-
----
+- [ARCHITECTURE_GUIDE.md](ARCHITECTURE_GUIDE.md) — the partitioning internals in more depth.
+- Administrator and consultant documentation lives at
+  [docs.etendo.software](https://docs.etendo.software), not in this repository.
+- The history of the module is its git history; this file describes what the module does now.
 
 ## 🏷️ Version Information
 
