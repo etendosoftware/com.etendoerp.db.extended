@@ -98,7 +98,7 @@ Writing to an instrumented table costs one outbox insert per row whose watched c
 changed, and nothing measurable otherwise — a column nobody watches is not even considered, because
 the trigger is declared `AFTER UPDATE OF` that column. A table with no ready source carries no
 trigger at all. The numbers and the method are in
-[docs/vector-write-path-performance.md](docs/vector-write-path-performance.md).
+[docs/vector-write-path-performance.md](doc/vector-write-path-performance.md).
 
 Text leaves the tenant on every embedding call. **Max Input Characters** truncates a record before
 it is sent, which bounds the request but also means a long record is embedded from its beginning
