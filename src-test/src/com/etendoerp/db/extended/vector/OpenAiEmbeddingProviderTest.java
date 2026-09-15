@@ -56,7 +56,9 @@ class OpenAiEmbeddingProviderTest {
       }
     });
     server.start();
-    endpoint = "http://localhost:" + server.getAddress().getPort() + "/v1/embeddings";
+    // What an administrator configures is the base, exactly as every OpenAI-compatible client
+    // expects it; the path below is the provider's business and never appears in the window.
+    endpoint = "http://localhost:" + server.getAddress().getPort() + "/v1";
   }
 
   @AfterEach
@@ -116,6 +118,38 @@ class OpenAiEmbeddingProviderTest {
         .embed(List.of("abcdefghij"));
 
     assertEquals("abcd", received.get(0).getJSONArray("input").getString(0));
+  }
+
+  @Test
+  void appendsTheEmbeddingsPathToTheConfiguredBase() throws Exception {
+    response.set(embeddings(0));
+
+    provider(5).embed(List.of("a"));
+
+    assertEquals(1, received.size(),
+        "the request has to reach /v1/embeddings even though only /v1 was configured");
+  }
+
+  @Test
+  void acceptsABaseWrittenWithOrWithoutATrailingSlash() throws Exception {
+    response.set(embeddings(0));
+
+    new OpenAiEmbeddingProvider(KEY_REFERENCE, "test-model", DIMENSIONS, 5, 1000, endpoint + "/", 5)
+        .embed(List.of("a"));
+
+    assertEquals(1, received.size(), "a trailing slash is a spelling, not a different endpoint");
+  }
+
+  @Test
+  void sendsTheModelExactlyAsConfiguredSoAProxyCanBeAddressedByPrefix() throws Exception {
+    response.set(embeddings(0));
+
+    new OpenAiEmbeddingProvider(KEY_REFERENCE, "openai/text-embedding-3-small", DIMENSIONS, 5, 1000,
+        endpoint, 5).embed(List.of("a"));
+
+    assertEquals("openai/text-embedding-3-small", received.get(0).getString("model"),
+        "a provider-agnostic gateway is told which provider to use in the model name, and the "
+            + "name has to arrive the way it was configured");
   }
 
   private OpenAiEmbeddingProvider provider(int batchSize) {

@@ -31,16 +31,21 @@ import org.openbravo.base.session.OBPropertiesProvider;
 
 /** Optional OpenAI implementation using the embeddings endpoint. */
 public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
-  private static final String ENDPOINT = "https://api.openai.com/v1/embeddings";
+  /** The base every OpenAI-compatible service is addressed by; the path is this class's business. */
+  private static final String BASE_URL = "https://api.openai.com/v1";
+  private static final String EMBEDDINGS_PATH = "/embeddings";
   private final String apiKeyReference, model, endpoint;
   private final int dimensions, timeoutSeconds, maximumInputCharacters, batchSize;
 
   /**
    * @param endpoint
-   *     base URL of the embeddings API, or {@code null} to call the standard OpenAI one. It makes
-   *     the same configuration usable against an Azure OpenAI deployment, a corporate gateway or a
-   *     local stub, which is also what allows the delivery path to be exercised without a real
-   *     provider account.
+   *     base URL of an OpenAI-compatible API, up to and including {@code /v1} and no further, or
+   *     {@code null} to call OpenAI itself. The path of the embeddings call is appended here and
+   *     is never configured, which is the convention every OpenAI-compatible client follows and
+   *     the only one that keeps a single base usable for more than one kind of call.
+   *     <p>It makes the same configuration usable against the Etendo LLM proxy, an Azure OpenAI
+   *     deployment, a corporate gateway or a local stub, which is also what allows the delivery
+   *     path to be exercised without a real provider account.</p>
    */
   public OpenAiEmbeddingProvider(String apiKeyReference, String model, int dimensions,
       int timeoutSeconds, int maximumInputCharacters, String endpoint, int batchSize) {
@@ -48,8 +53,24 @@ public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
     this.model = require(model, "model"); this.dimensions = positive(dimensions, "dimensions");
     this.timeoutSeconds = positive(timeoutSeconds, "timeoutSeconds");
     this.maximumInputCharacters = positive(maximumInputCharacters, "maximumInputCharacters");
-    this.endpoint = endpoint == null || endpoint.trim().isEmpty() ? ENDPOINT : endpoint.trim();
+    this.endpoint = embeddingsUrl(endpoint);
     this.batchSize = positive(batchSize, "batchSize");
+  }
+
+  /**
+   * Builds the embeddings URL from the configured base.
+   *
+   * <p>A trailing slash is dropped so a base written either way reaches the same place; nothing
+   * else is interpreted. A base that already carried the path would become {@code
+   * /embeddings/embeddings} and fail with a 404 naming the URL it called, which is a clearer
+   * answer than silently accepting two spellings of one field.</p>
+   */
+  private static String embeddingsUrl(String base) {
+    String trimmed = base == null || base.trim().isEmpty() ? BASE_URL : base.trim();
+    while (trimmed.endsWith("/")) {
+      trimmed = trimmed.substring(0, trimmed.length() - 1);
+    }
+    return trimmed + EMBEDDINGS_PATH;
   }
 
   @Override public int batchSize() { return batchSize; }
