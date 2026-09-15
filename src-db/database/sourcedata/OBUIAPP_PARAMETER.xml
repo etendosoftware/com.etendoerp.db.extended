@@ -21,4 +21,28 @@
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <HELP><![CDATA[A source that has never been walked needs none of this: its reindex is requested straight away. This only concerns a source that already has a request. Restarting one enqueues its whole table again and discards the counters of the walk it did before, so with this unticked the button reports how many records that would mean and changes nothing. Tick it once you have read that number.]]></HELP>
 <!--C034AD9D861D40AEB5BBDE9389E66370--></OBUIAPP_PARAMETER>
 
+<!--2D18289FCF7C445AA4E427CF1C70AA13--><OBUIAPP_PARAMETER>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <OBUIAPP_PARAMETER_ID><![CDATA[2D18289FCF7C445AA4E427CF1C70AA13]]></OBUIAPP_PARAMETER_ID>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <OBUIAPP_PROCESS_ID><![CDATA[725CA3F95FF24C41AD02DD6C218C3AAD]]></OBUIAPP_PROCESS_ID>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <NAME><![CDATA[What a reindex does]]></NAME>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <COLUMNNAME><![CDATA[reindex_warning]]></COLUMNNAME>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <AD_REFERENCE_ID><![CDATA[14]]></AD_REFERENCE_ID>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISMANDATORY><![CDATA[N]]></ISMANDATORY>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <FIELDLENGTH><![CDATA[1000]]></FIELDLENGTH>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <SEQNO><![CDATA[5]]></SEQNO>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISEVALUATESDISPLAYLOGIC><![CDATA[N]]></ISEVALUATESDISPLAYLOGIC>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISFIXED><![CDATA[N]]></ISFIXED>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISSHOWTITLE><![CDATA[Y]]></ISSHOWTITLE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DISPLAYEDROWS><![CDATA[9]]></DISPLAYEDROWS>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <NUMCOLUMN><![CDATA[2]]></NUMCOLUMN>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <STARTINNEWLINE><![CDATA[N]]></STARTINNEWLINE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DISPLAYTITLE><![CDATA[Y]]></DISPLAYTITLE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <READONLYLOGIC><![CDATA[true]]></READONLYLOGIC>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DEFAULTVALUE><![CDATA['A reindex walks the whole table of the source and enqueues every record it finds, so the scheduled process embeds them all again: on a large table that is a long run and, with a paid provider, a bill. Asking for one is therefore not free even the first time.\n\nRestarting one that already ran costs more than that. A source keeps a single request for its whole life, so this does not add a second walk: it puts the one it has back at the start. What the previous walk had already enqueued, where it had got to and what it estimated are gone, and the table is walked from the beginning.\n\nLeave the box below unticked and press Done to be told, for each source you selected, how many records its previous walk covered and roughly how many this one would enqueue. Nothing is changed until you tick it.']]></DEFAULTVALUE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13--></OBUIAPP_PARAMETER>
+
 </data>
