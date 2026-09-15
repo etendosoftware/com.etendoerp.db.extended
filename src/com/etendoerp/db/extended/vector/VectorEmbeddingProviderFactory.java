@@ -20,8 +20,13 @@ import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 import org.openbravo.database.ConnectionProvider;
 
-/** Resolves the configured provider for a source without exposing its secret. */
-final class VectorEmbeddingProviderFactory {
+/**
+ * Resolves the configured provider for a source without exposing its secret.
+ *
+ * <p>Not final so a test can stand in for the provider: every provider this builds reaches an
+ * external service on {@code embed}, which is not something a unit test can be asked to do.</p>
+ */
+class VectorEmbeddingProviderFactory {
   private final ConnectionProvider connectionProvider;
   VectorEmbeddingProviderFactory(ConnectionProvider connectionProvider) { this.connectionProvider = connectionProvider; }
   VectorEmbeddingProvider forSource(String sourceId) {

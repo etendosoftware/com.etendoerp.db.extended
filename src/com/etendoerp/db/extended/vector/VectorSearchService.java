@@ -42,9 +42,14 @@ public final class VectorSearchService {
   }
 
   VectorSearchService(ConnectionProvider connectionProvider, VectorStore vectorStore) {
+    this(connectionProvider, vectorStore, new VectorEmbeddingProviderFactory(connectionProvider));
+  }
+
+  VectorSearchService(ConnectionProvider connectionProvider, VectorStore vectorStore,
+      VectorEmbeddingProviderFactory providers) {
     this.connectionProvider = connectionProvider;
     this.vectorStore = vectorStore;
-    this.providers = new VectorEmbeddingProviderFactory(connectionProvider);
+    this.providers = providers;
     this.sources = new VectorSearchSourceResolver(connectionProvider);
     this.targets = new VectorSearchTargetResolver(connectionProvider);
   }
