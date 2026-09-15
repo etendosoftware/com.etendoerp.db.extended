@@ -43,7 +43,17 @@ public final class DictionaryVectorOutboxConsumer implements VectorOutboxConsume
   private final Map<String, VectorEmbeddingProvider> providerBySource = new HashMap<>();
   /** Embeddings resolved by {@link #prepare(List)}, drained as each event is consumed. */
   private final Map<String, double[]> embeddingByEvent = new HashMap<>();
-  public DictionaryVectorOutboxConsumer(ConnectionProvider cp, VectorStore store) { this.cp = cp; this.store = store; providers = new VectorEmbeddingProviderFactory(cp); }
+  public DictionaryVectorOutboxConsumer(ConnectionProvider cp, VectorStore store) {
+    this(cp, store, new VectorEmbeddingProviderFactory(cp));
+  }
+
+  /** Takes the provider factory so a test can deliver without reaching an external service. */
+  DictionaryVectorOutboxConsumer(ConnectionProvider cp, VectorStore store,
+      VectorEmbeddingProviderFactory providers) {
+    this.cp = cp;
+    this.store = store;
+    this.providers = providers;
+  }
   @Override public String namespace() { return "*"; }
   @Override public boolean supports(String namespace) { return true; }
   @Override public int batchSize(VectorOutboxEvent event) {
