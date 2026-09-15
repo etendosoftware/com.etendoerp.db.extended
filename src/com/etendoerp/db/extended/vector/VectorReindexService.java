@@ -68,7 +68,7 @@ public class VectorReindexService {
 
   /** The source, the table it indexes, and the request it already has, if any. */
   private static final String EXISTING_SQL =
-      "SELECT r.status, t.tablename FROM etarc_vector_source s "
+      "SELECT r.status, t.tablename, COALESCE(r.enqueued_count, 0) FROM etarc_vector_source s "
           + "JOIN ad_table t ON t.ad_table_id = s.ad_table_id "
           + "LEFT JOIN etarc_vector_reindex_req r ON r.etarc_vector_source_id = s.etarc_vector_source_id "
           + "WHERE s.etarc_vector_source_id = ?";

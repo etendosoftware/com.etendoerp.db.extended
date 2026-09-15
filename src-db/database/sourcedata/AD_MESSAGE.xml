@@ -234,7 +234,7 @@
 <!--A045D7DEF5734CB9A9B582880CE6E800-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--A045D7DEF5734CB9A9B582880CE6E800-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--A045D7DEF5734CB9A9B582880CE6E800-->  <VALUE><![CDATA[ETARC_VectorReindexNeedsConfirmation]]></VALUE>
-<!--A045D7DEF5734CB9A9B582880CE6E800-->  <MSGTEXT><![CDATA[already walked %0 record(s) and would enqueue roughly %1 again from the beginning, losing the counters of that walk. Nothing was changed. Tick "Restart a reindex that already ran" to go ahead.]]></MSGTEXT>
+<!--A045D7DEF5734CB9A9B582880CE6E800-->  <MSGTEXT><![CDATA[already walked %0 record(s) and would enqueue roughly %1 again from the beginning, losing the counters of that walk. Nothing was changed. Tick "Enqueue the whole table again, discarding the previous walk" to go ahead.]]></MSGTEXT>
 <!--A045D7DEF5734CB9A9B582880CE6E800-->  <MSGTYPE><![CDATA[I]]></MSGTYPE>
 <!--A045D7DEF5734CB9A9B582880CE6E800-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--A045D7DEF5734CB9A9B582880CE6E800-->  <ISINCLUDEINI18N><![CDATA[N]]></ISINCLUDEINI18N>

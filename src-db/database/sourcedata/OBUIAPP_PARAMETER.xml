@@ -6,7 +6,7 @@
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <OBUIAPP_PROCESS_ID><![CDATA[725CA3F95FF24C41AD02DD6C218C3AAD]]></OBUIAPP_PROCESS_ID>
-<!--C034AD9D861D40AEB5BBDE9389E66370-->  <NAME><![CDATA[Restart a reindex that already ran]]></NAME>
+<!--C034AD9D861D40AEB5BBDE9389E66370-->  <NAME><![CDATA[Enqueue the whole table again, discarding the previous walk]]></NAME>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <COLUMNNAME><![CDATA[Confirm_Restart]]></COLUMNNAME>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <AD_REFERENCE_ID><![CDATA[20]]></AD_REFERENCE_ID>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISMANDATORY><![CDATA[N]]></ISMANDATORY>
@@ -17,7 +17,7 @@
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISREADONLY><![CDATA[N]]></ISREADONLY>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISFIXED><![CDATA[N]]></ISFIXED>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISSHOWTITLE><![CDATA[Y]]></ISSHOWTITLE>
-<!--C034AD9D861D40AEB5BBDE9389E66370-->  <DESCRIPTION><![CDATA[Leave it unticked to be told what restarting would cost before anything happens]]></DESCRIPTION>
+<!--C034AD9D861D40AEB5BBDE9389E66370-->  <DESCRIPTION><![CDATA[Only affects a source that was already walked. Leave it unticked to be told what restarting would cost before anything happens]]></DESCRIPTION>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <HELP><![CDATA[A source that has never been walked needs none of this: its reindex is requested straight away. This only concerns a source that already has a request. Restarting one enqueues its whole table again and discards the counters of the walk it did before, so with this unticked the button reports how many records that would mean and changes nothing. Tick it once you have read that number.]]></HELP>
 <!--C034AD9D861D40AEB5BBDE9389E66370--></OBUIAPP_PARAMETER>
 

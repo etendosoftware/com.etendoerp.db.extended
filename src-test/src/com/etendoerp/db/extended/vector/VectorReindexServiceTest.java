@@ -375,6 +375,7 @@ class VectorReindexServiceTest {
 
   private ResultSet rowsFor(String sql, boolean filtered, int[] chunk) throws Exception {
     ResultSet rs = mock(ResultSet.class);
+    refuseColumnsBeyondTheSelect(rs, sql);
     if (sql.startsWith("SELECT r.etarc_vector_reindex_req_id") || sql.contains("FROM etarc_vector_reindex_req r")) {
       when(rs.next()).thenReturn(true);
       when(rs.getString(1)).thenReturn("REQ1");
@@ -415,6 +416,54 @@ class VectorReindexServiceTest {
       when(rs.next()).thenReturn(false);
     }
     return rs;
+  }
+
+  /**
+   * Makes the result set behave like a real one about how many columns it has.
+   *
+   * <p>Without this a fixture answers any index it was told to answer, so reading a column the
+   * query does not select passes here and fails in production with "column index out of range" --
+   * which is exactly how it did once. The count is read from the select list, so adding a column
+   * to a query and forgetting it here, or reading one that was never added, both fail.</p>
+   */
+  private static void refuseColumnsBeyondTheSelect(ResultSet rs, String sql) throws Exception {
+    int columns = selectedColumns(sql);
+    for (int index = columns + 1; index <= columns + 4; index++) {
+      String message = "column index out of range: " + index + ", columns: " + columns;
+      when(rs.getString(index)).thenThrow(new java.sql.SQLException(message));
+      when(rs.getInt(index)).thenThrow(new java.sql.SQLException(message));
+      when(rs.getLong(index)).thenThrow(new java.sql.SQLException(message));
+      when(rs.getObject(index)).thenThrow(new java.sql.SQLException(message));
+    }
+  }
+
+  /**
+   * Columns in the outermost select list, so a nested function or subselect counts as one.
+   *
+   * <p>The list ends at the FROM that belongs to this select, not at the first one in the text: a
+   * subselect among the columns brings a FROM of its own.</p>
+   */
+  private static int selectedColumns(String sql) {
+    String upper = sql.toUpperCase(java.util.Locale.ROOT);
+    int select = upper.indexOf("SELECT ");
+    if (select < 0) {
+      return Integer.MAX_VALUE - 8;
+    }
+    int depth = 0;
+    int count = 1;
+    for (int i = select + "SELECT ".length(); i < sql.length(); i++) {
+      char character = sql.charAt(i);
+      if (character == '(') {
+        depth++;
+      } else if (character == ')') {
+        depth--;
+      } else if (character == ',' && depth == 0) {
+        count++;
+      } else if (depth == 0 && upper.startsWith(" FROM ", i)) {
+        return count;
+      }
+    }
+    return Integer.MAX_VALUE - 8;
   }
 
   // --- reading the log ------------------------------------------------------------------------
