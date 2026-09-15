@@ -16,8 +16,6 @@
  */
 package com.etendoerp.db.extended.vector;
 
-import java.sql.PreparedStatement;
-import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -30,8 +28,10 @@ import org.openbravo.database.ConnectionProvider;
 import org.openbravo.erpCommon.utility.OBMessageUtils;
 import org.openbravo.service.db.DalConnectionProvider;
 
-import com.etendoerp.db.extended.data.VectorEmbedProvider;
 import com.etendoerp.db.extended.data.VectorSource;
+import com.etendoerp.db.extended.vector.VectorSourceReadiness.Candidate;
+import com.etendoerp.db.extended.vector.VectorSourceReadiness.Collection;
+import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
 import com.smf.jobs.Action;
 import com.smf.jobs.ActionResult;
 import com.smf.jobs.Result;
@@ -70,21 +70,6 @@ public class ActivateVectorSource extends Action {
 
   private static final Logger log = LogManager.getLogger();
 
-  /** The collection as stored, so it can be compared with what the source now asks for. */
-  private static final String COLLECTION_SQL =
-      "SELECT dimensions, metric FROM etarc_vector_collection WHERE namespace = ?";
-
-  /**
-   * Counts the columns exactly as the consumer reads them, so the button cannot call a source
-   * ready when delivery would reject it.
-   *
-   * @see DictionaryVectorOutboxConsumer
-   */
-  private static final String COLUMN_COUNT_SQL =
-      "SELECT count(*), count(*) FILTER (WHERE sc.iscontent = 'Y') "
-          + "FROM etarc_vector_source_column sc "
-          + "WHERE sc.etarc_vector_source_id = ? AND sc.isactive = 'Y'";
-
   /**
    * Where the run makes its work durable.
    *
@@ -112,7 +97,7 @@ public class ActivateVectorSource extends Action {
       // closes the DAL session, and an entity read after that is detached.
       List<Candidate> candidates = new ArrayList<>();
       for (VectorSource source : getInputContents(VectorSource.class)) {
-        candidates.add(candidate(connectionProvider, source));
+        candidates.add(VectorSourceReadiness.candidate(connectionProvider, source));
       }
 
       Report report = run(candidates, connectionProvider, new VectorStoreService(connectionProvider),
@@ -158,9 +143,9 @@ public class ActivateVectorSource extends Action {
 
     List<Line> lines = new ArrayList<>();
     for (Candidate candidate : candidates) {
-      Collection collection = collection(connectionProvider, candidate.namespace);
-      Verdict verdict = verdict(candidate, collection);
-      if (verdict == Verdict.COLLECTION_CREATED) {
+      Collection collection = VectorSourceReadiness.collection(connectionProvider, candidate.namespace);
+      Verdict verdict = VectorSourceReadiness.verdict(candidate, collection);
+      if (verdict == Verdict.COLLECTION_MISSING) {
         // Tenant scope is always on: the search context derives client and organization from the
         // session and never lets a caller supply them, so a collection that did not require them
         // would accept records no search could ever reach.
@@ -170,7 +155,7 @@ public class ActivateVectorSource extends Action {
       // The collection has to exist before the table starts enqueueing into it, and a source that
       // cannot be delivered has to stop enqueueing at all, so this runs after the verdict and
       // follows it either way.
-      VectorTriggerService.Deployment deployment = verdict.isReady()
+      VectorTriggerService.Deployment deployment = verdict.isUsable()
           ? triggers.deploy(candidate.id)
           : triggers.teardown(candidate.id);
       lines.add(new Line(candidate, collection, verdict, deployment));
@@ -185,69 +170,6 @@ public class ActivateVectorSource extends Action {
       checkpoint.commit();
     }
     return new Report(capability, lines);
-  }
-
-  /**
-   * Decides what one source is, given what it asks for and what its collection currently holds.
-   *
-   * <p>A pure decision on purpose. It is the part of this action worth being sure about -- every
-   * branch is a way a source can be silently useless -- and it needs neither a database nor a
-   * dictionary to be stated.</p>
-   *
-   * @param candidate the source as configured
-   * @param collection its collection as stored, or {@code null} when it has none yet
-   */
-  static Verdict verdict(Candidate candidate, Collection collection) {
-    if (!candidate.enabled) {
-      return Verdict.DISABLED;
-    }
-    if (candidate.dimensions == null) {
-      return Verdict.WITHOUT_PROVIDER;
-    }
-    if (candidate.columns == 0) {
-      return Verdict.WITHOUT_COLUMNS;
-    }
-    if (candidate.contentColumns == 0) {
-      return Verdict.WITHOUT_CONTENT;
-    }
-    if (collection == null) {
-      return Verdict.COLLECTION_CREATED;
-    }
-    if (collection.dimensions != candidate.dimensions.intValue()) {
-      return Verdict.DIMENSION_DRIFT;
-    }
-    if (!collection.metric.equals(candidate.metric)) {
-      return Verdict.METRIC_DRIFT;
-    }
-    return Verdict.ALREADY_ACTIVE;
-  }
-
-  /** What a selected source turned out to be, and whether it can be indexed as it stands. */
-  enum Verdict {
-    DISABLED("ETARC_VectorSourceDisabled", false),
-    WITHOUT_PROVIDER("ETARC_VectorSourceWithoutProvider", false),
-    WITHOUT_COLUMNS("ETARC_VectorSourceWithoutColumns", false),
-    WITHOUT_CONTENT("ETARC_VectorSourceWithoutContent", false),
-    COLLECTION_CREATED("ETARC_VectorCollectionCreated", true),
-    DIMENSION_DRIFT("ETARC_VectorCollectionDimensionDrift", false),
-    METRIC_DRIFT("ETARC_VectorCollectionMetricDrift", false),
-    ALREADY_ACTIVE("ETARC_VectorSourceAlreadyActive", true);
-
-    private final String messageKey;
-    private final boolean ready;
-
-    Verdict(String messageKey, boolean ready) {
-      this.messageKey = messageKey;
-      this.ready = ready;
-    }
-
-    String getMessageKey() {
-      return messageKey;
-    }
-
-    boolean isReady() {
-      return ready;
-    }
   }
 
   // --- turning the report into what the administrator reads -----------------------------------
@@ -284,69 +206,7 @@ public class ActivateVectorSource extends Action {
 
   // --- reading what the run needs -------------------------------------------------------------
 
-  private Candidate candidate(ConnectionProvider connectionProvider, VectorSource source) throws Exception {
-    VectorEmbedProvider provider = source.getEtarcVectorEmbedProvider();
-    int columns = 0;
-    int contentColumns = 0;
-    try (PreparedStatement statement = connectionProvider.getPreparedStatement(COLUMN_COUNT_SQL)) {
-      statement.setString(1, source.getId());
-      try (ResultSet result = statement.executeQuery()) {
-        if (result.next()) {
-          columns = result.getInt(1);
-          contentColumns = result.getInt(2);
-        }
-      }
-    }
-    return new Candidate(source.getId(), source.getName(), source.getNamespace(),
-        source.getDistanceMetric(), Boolean.TRUE.equals(source.isEnabled()),
-        provider == null ? null : provider.getDimensions().intValue(), columns, contentColumns);
-  }
-
-  private Collection collection(ConnectionProvider connectionProvider, String namespace) throws Exception {
-    try (PreparedStatement statement = connectionProvider.getPreparedStatement(COLLECTION_SQL)) {
-      statement.setString(1, namespace);
-      try (ResultSet result = statement.executeQuery()) {
-        return result.next() ? new Collection(result.getInt(1), result.getString(2)) : null;
-      }
-    }
-  }
-
   // --- what the run carries -------------------------------------------------------------------
-
-  /** What one selected source contributes to the run, detached from the DAL session. */
-  static final class Candidate {
-    final String id;
-    final String name;
-    final String namespace;
-    final String metric;
-    final boolean enabled;
-    final Integer dimensions;
-    final int columns;
-    final int contentColumns;
-
-    Candidate(String id, String name, String namespace, String metric, boolean enabled,
-        Integer dimensions, int columns, int contentColumns) {
-      this.id = id;
-      this.name = name;
-      this.namespace = namespace;
-      this.metric = metric;
-      this.enabled = enabled;
-      this.dimensions = dimensions;
-      this.columns = columns;
-      this.contentColumns = contentColumns;
-    }
-  }
-
-  /** The stored shape of a collection, which a source can no longer agree with. */
-  static final class Collection {
-    final int dimensions;
-    final String metric;
-
-    Collection(int dimensions, String metric) {
-      this.dimensions = dimensions;
-      this.metric = metric;
-    }
-  }
 
   /** What happened to one source. */
   static final class Line {
@@ -387,7 +247,7 @@ public class ActivateVectorSource extends Action {
     }
 
     boolean allReady() {
-      return lines.stream().allMatch(line -> line.verdict.isReady());
+      return lines.stream().allMatch(line -> line.verdict.isUsable());
     }
   }
 }

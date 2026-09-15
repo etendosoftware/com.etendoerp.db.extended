@@ -31,10 +31,10 @@ import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.openbravo.database.ConnectionProvider;
 
-import com.etendoerp.db.extended.vector.ActivateVectorSource.Candidate;
-import com.etendoerp.db.extended.vector.ActivateVectorSource.Collection;
+import com.etendoerp.db.extended.vector.VectorSourceReadiness.Candidate;
+import com.etendoerp.db.extended.vector.VectorSourceReadiness.Collection;
 import com.etendoerp.db.extended.vector.ActivateVectorSource.Report;
-import com.etendoerp.db.extended.vector.ActivateVectorSource.Verdict;
+import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
 
 /**
  * Covers the two halves of the activation button: what it decides about a source, and the order it
@@ -50,18 +50,18 @@ class ActivateVectorSourceTest {
 
   @Test
   void refusesASourceThatCaptureWouldOnlyBreakOn() {
-    assertEquals(Verdict.DISABLED, ActivateVectorSource.verdict(source().disabled(), null));
-    assertEquals(Verdict.WITHOUT_PROVIDER, ActivateVectorSource.verdict(source().withoutProvider(), null));
-    assertEquals(Verdict.WITHOUT_COLUMNS, ActivateVectorSource.verdict(source().withColumns(0, 0), null));
-    assertEquals(Verdict.WITHOUT_CONTENT, ActivateVectorSource.verdict(source().withColumns(3, 0), null),
+    assertEquals(Verdict.DISABLED, VectorSourceReadiness.verdict(source().disabled(), null));
+    assertEquals(Verdict.WITHOUT_PROVIDER, VectorSourceReadiness.verdict(source().withoutProvider(), null));
+    assertEquals(Verdict.WITHOUT_COLUMNS, VectorSourceReadiness.verdict(source().withColumns(0, 0), null));
+    assertEquals(Verdict.WITHOUT_CONTENT, VectorSourceReadiness.verdict(source().withColumns(3, 0), null),
         "columns that are all metadata leave the consumer with nothing to embed");
   }
 
   @Test
   void treatsEveryRefusalAsNotReady() {
     for (Verdict verdict : Verdict.values()) {
-      boolean expected = verdict == Verdict.COLLECTION_CREATED || verdict == Verdict.ALREADY_ACTIVE;
-      assertEquals(expected, verdict.isReady(), verdict + " must not drift from what it means");
+      boolean expected = verdict == Verdict.COLLECTION_MISSING || verdict == Verdict.READY;
+      assertEquals(expected, verdict.isUsable(), verdict + " must not drift from what it means");
       assertFalse(verdict.getMessageKey().isEmpty(),
           verdict + " has to name a message, or the administrator is told nothing");
     }
@@ -69,7 +69,7 @@ class ActivateVectorSourceTest {
 
   @Test
   void createsTheCollectionOfASourceThatHasNoneYet() {
-    assertEquals(Verdict.COLLECTION_CREATED, ActivateVectorSource.verdict(source().build(), null));
+    assertEquals(Verdict.COLLECTION_MISSING, VectorSourceReadiness.verdict(source().build(), null));
   }
 
   @Test
@@ -77,7 +77,7 @@ class ActivateVectorSourceTest {
     Candidate candidate = source().withDimensions(3072).build();
 
     assertEquals(Verdict.DIMENSION_DRIFT,
-        ActivateVectorSource.verdict(candidate, new Collection(1536, "COSINE")),
+        VectorSourceReadiness.verdict(candidate, new Collection(1536, "COSINE")),
         "writing 3072-dimension vectors into a 1536 collection fails on every row");
   }
 
@@ -86,14 +86,14 @@ class ActivateVectorSourceTest {
     Candidate candidate = source().withMetric("L2").build();
 
     assertEquals(Verdict.METRIC_DRIFT,
-        ActivateVectorSource.verdict(candidate, new Collection(1536, "COSINE")),
+        VectorSourceReadiness.verdict(candidate, new Collection(1536, "COSINE")),
         "the collection decides which operator a search uses, so a changed metric is not applied");
   }
 
   @Test
   void leavesASourceThatAlreadyAgreesWithItsCollectionAlone() {
-    assertEquals(Verdict.ALREADY_ACTIVE,
-        ActivateVectorSource.verdict(source().build(), new Collection(1536, "COSINE")));
+    assertEquals(Verdict.READY,
+        VectorSourceReadiness.verdict(source().build(), new Collection(1536, "COSINE")));
   }
 
   @Test
@@ -101,7 +101,7 @@ class ActivateVectorSourceTest {
     // A disabled source with a drifted collection has two problems; the one to report is the one
     // the administrator can act on in the window.
     assertEquals(Verdict.DISABLED,
-        ActivateVectorSource.verdict(source().disabled(), new Collection(99, "L2")));
+        VectorSourceReadiness.verdict(source().disabled(), new Collection(99, "L2")));
   }
 
   // --- the order of the run -------------------------------------------------------------------
