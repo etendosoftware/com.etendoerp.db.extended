@@ -12,6 +12,8 @@
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISMANDATORY><![CDATA[N]]></ISMANDATORY>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <FIELDLENGTH><![CDATA[1]]></FIELDLENGTH>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <SEQNO><![CDATA[10]]></SEQNO>
+<!--C034AD9D861D40AEB5BBDE9389E66370-->  <STARTINNEWLINE><![CDATA[Y]]></STARTINNEWLINE>
+<!--C034AD9D861D40AEB5BBDE9389E66370-->  <NUMCOLUMN><![CDATA[1]]></NUMCOLUMN>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISEVALUATESDISPLAYLOGIC><![CDATA[N]]></ISEVALUATESDISPLAYLOGIC>
 <!--C034AD9D861D40AEB5BBDE9389E66370-->  <ISREADONLY><![CDATA[N]]></ISREADONLY>
@@ -37,12 +39,12 @@
 <!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISEVALUATESDISPLAYLOGIC><![CDATA[N]]></ISEVALUATESDISPLAYLOGIC>
 <!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISFIXED><![CDATA[N]]></ISFIXED>
 <!--2D18289FCF7C445AA4E427CF1C70AA13-->  <ISSHOWTITLE><![CDATA[Y]]></ISSHOWTITLE>
-<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DISPLAYEDROWS><![CDATA[9]]></DISPLAYEDROWS>
-<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <NUMCOLUMN><![CDATA[2]]></NUMCOLUMN>
-<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <STARTINNEWLINE><![CDATA[N]]></STARTINNEWLINE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DISPLAYEDROWS><![CDATA[5]]></DISPLAYEDROWS>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <NUMCOLUMN><![CDATA[1]]></NUMCOLUMN>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <STARTINNEWLINE><![CDATA[Y]]></STARTINNEWLINE>
 <!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DISPLAYTITLE><![CDATA[Y]]></DISPLAYTITLE>
 <!--2D18289FCF7C445AA4E427CF1C70AA13-->  <READONLYLOGIC><![CDATA[true]]></READONLYLOGIC>
-<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DEFAULTVALUE><![CDATA['A reindex walks the whole table of the source and enqueues every record it finds, so the scheduled process embeds them all again: on a large table that is a long run and, with a paid provider, a bill. Asking for one is therefore not free even the first time.\n\nRestarting one that already ran costs more than that. A source keeps a single request for its whole life, so this does not add a second walk: it puts the one it has back at the start. What the previous walk had already enqueued, where it had got to and what it estimated are gone, and the table is walked from the beginning.\n\nLeave the box below unticked and press Done to be told, for each source you selected, how many records its previous walk covered and roughly how many this one would enqueue. Nothing is changed until you tick it.']]></DEFAULTVALUE>
+<!--2D18289FCF7C445AA4E427CF1C70AA13-->  <DEFAULTVALUE><![CDATA['Re-embeds every record of the table: on a large one that is a long run and, with a paid provider, a bill -- even the first time.\n\nTicking the box below restarts the walk this source already has, discarding what it had enqueued and how far it got. Leave it unticked and press Done to be told those numbers first; nothing changes until you tick it.']]></DEFAULTVALUE>
 <!--2D18289FCF7C445AA4E427CF1C70AA13--></OBUIAPP_PARAMETER>
 
 </data>
