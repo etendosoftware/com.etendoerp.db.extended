@@ -94,6 +94,12 @@ the Etendo LLM proxy, an Azure OpenAI deployment, a corporate gateway — makes 
 configuration work against any of them. Such a gateway serves several providers and is told which
 one to use in the model name, so there **Embedding Model** takes the form `provider/model`.
 
+Writing to an instrumented table costs one outbox insert per row whose watched content actually
+changed, and nothing measurable otherwise — a column nobody watches is not even considered, because
+the trigger is declared `AFTER UPDATE OF` that column. A table with no ready source carries no
+trigger at all. The numbers and the method are in
+[docs/vector-write-path-performance.md](docs/vector-write-path-performance.md).
+
 Text leaves the tenant on every embedding call. **Max Input Characters** truncates a record before
 it is sent, which bounds the request but also means a long record is embedded from its beginning
 only.
