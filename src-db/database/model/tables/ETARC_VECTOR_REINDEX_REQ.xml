@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
   <database name="TABLE ETARC_VECTOR_REINDEX_REQ">
-    <table name="ETARC_VECTOR_REINDEX_REQ" primaryKey="ETARC_VEC_REINDEX_REQUEST_PK">
+    <table name="ETARC_VECTOR_REINDEX_REQ" primaryKey="ETARC_VECTOR_REINDEX_REQ_PK">
       <column name="ETARC_VECTOR_REINDEX_REQ_ID" primaryKey="true" required="true" type="VARCHAR" size="32" autoIncrement="false">
         <default/>
         <onCreateDefault/>
