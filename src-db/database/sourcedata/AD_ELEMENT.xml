@@ -526,4 +526,18 @@
 <!--FEF4178134D84547AC3865FA50CDA561-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
 <!--FEF4178134D84547AC3865FA50CDA561--></AD_ELEMENT>
 
+<!--AB194D73FF34406288E41FD4444AD89C--><AD_ELEMENT>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <AD_ELEMENT_ID><![CDATA[AB194D73FF34406288E41FD4444AD89C]]></AD_ELEMENT_ID>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <COLUMNNAME><![CDATA[Request_Reindex]]></COLUMNNAME>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <NAME><![CDATA[Request Reindex]]></NAME>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <PRINTNAME><![CDATA[Reindex]]></PRINTNAME>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <DESCRIPTION><![CDATA[Asks for the records the source already held to be indexed]]></DESCRIPTION>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <HELP><![CDATA[The triggers only capture what changes from the moment they are installed, so a source configured over a table that already has rows indexes nothing until those rows are walked. Select the sources and press this button to ask for that walk; the scheduled process does it, in bounded chunks, so a table of millions of rows neither holds your session nor fills the queue faster than delivery drains it. The message tells you roughly how many records you just asked for. A source has one request for its whole life, so asking again starts it over and the counters of the previous walk are lost. A walk already in progress is left alone, and a source that could not be delivered is refused rather than queued.]]></HELP>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--AB194D73FF34406288E41FD4444AD89C-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
+<!--AB194D73FF34406288E41FD4444AD89C--></AD_ELEMENT>
+
 </data>

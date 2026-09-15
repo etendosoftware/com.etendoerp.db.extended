@@ -66,6 +66,33 @@ public class VectorReindexService {
   private static final String BACKLOG_SQL =
       "SELECT count(*) FROM etarc_vector_outbox WHERE etarc_vector_source_id = ? AND status = 'PENDING'";
 
+  /** The source, the table it indexes, and the request it already has, if any. */
+  private static final String EXISTING_SQL =
+      "SELECT r.status, t.tablename FROM etarc_vector_source s "
+          + "JOIN ad_table t ON t.ad_table_id = s.ad_table_id "
+          + "LEFT JOIN etarc_vector_reindex_req r ON r.etarc_vector_source_id = s.etarc_vector_source_id "
+          + "WHERE s.etarc_vector_source_id = ?";
+
+  private static final String ESTIMATE_SQL =
+      "SELECT GREATEST(COALESCE((SELECT reltuples::bigint FROM pg_class WHERE oid = ?::regclass), 0), 0)";
+
+  /**
+   * Writes the request, creating it or putting it back at the start.
+   *
+   * <p>One statement, so the unique constraint on the source decides between the two rather than a
+   * read the caller would have to trust.</p>
+   */
+  private static final String REQUEST_REINDEX_SQL =
+      "INSERT INTO etarc_vector_reindex_req (etarc_vector_reindex_req_id, ad_client_id, ad_org_id, "
+          + "isactive, created, createdby, updated, updatedby, etarc_vector_source_id, config_version, "
+          + "status, last_error, last_record_id, enqueued_count, total_count) "
+          + "SELECT get_uuid(), s.ad_client_id, s.ad_org_id, 'Y', now() AT TIME ZONE 'UTC', '0', "
+          + "now() AT TIME ZONE 'UTC', '0', s.etarc_vector_source_id, s.config_version, 'PENDING', "
+          + "NULL, NULL, 0, NULL FROM etarc_vector_source s WHERE s.etarc_vector_source_id = ? "
+          + "ON CONFLICT (etarc_vector_source_id) DO UPDATE SET status = 'PENDING', last_error = NULL, "
+          + "last_record_id = NULL, enqueued_count = 0, total_count = NULL, "
+          + "config_version = EXCLUDED.config_version, updated = now() AT TIME ZONE 'UTC', updatedby = '0'";
+
   private final ConnectionProvider connectionProvider;
   private final VectorOutboxService.TransactionBoundary transactionBoundary;
 
@@ -127,6 +154,117 @@ public class VectorReindexService {
       throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,
           "Could not enqueue the records of a vector reindex request.", e);
     }
+  }
+
+  /**
+   * Puts a source's backfill back at the start, for the scheduled process to walk.
+   *
+   * <p>Only the request is written. Walking the table is what the scheduled process is for, and a
+   * window action that enqueued millions of rows would hold the session for as long as it took and
+   * fill the queue faster than delivery drains it.</p>
+   *
+   * <p>A source has one request for its whole life -- the table has a unique constraint on it --
+   * so asking again restarts the one it has rather than adding another. That loses the record of
+   * the previous walk, which is the honest outcome: the counters describe a walk that is no longer
+   * the current one.</p>
+   *
+   * <p>A request already being walked is refused. Moving its cursor back while a run holds the old
+   * one would have the run keep writing from where it was, and the walk would cover part of the
+   * table twice and part of it never. Nothing is stuck by refusing: the claim takes PROCESSING
+   * before PENDING, so a run in flight is always resumed and finished.</p>
+   *
+   * @return what happened, and roughly how many records it will mean
+   */
+  public Outcome requestReindex(String sourceId) throws Exception {
+    Existing existing = existing(sourceId);
+    if (existing == null) {
+      return new Outcome(Result.SOURCE_NOT_FOUND, 0L);
+    }
+    if ("PROCESSING".equals(existing.status)) {
+      return new Outcome(Result.ALREADY_WALKING, 0L);
+    }
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(REQUEST_REINDEX_SQL)) {
+      statement.setString(1, sourceId);
+      statement.executeUpdate();
+    }
+    return new Outcome(existing.status == null ? Result.REQUESTED : Result.RESTARTED,
+        estimate(existing.table));
+  }
+
+  private Existing existing(String sourceId) throws Exception {
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(EXISTING_SQL)) {
+      statement.setString(1, sourceId);
+      try (ResultSet result = statement.executeQuery()) {
+        if (!result.next()) {
+          return null;
+        }
+        Existing existing = new Existing();
+        existing.status = result.getString(1);
+        existing.table = result.getString(2);
+        return existing;
+      }
+    }
+  }
+
+  /**
+   * How many records the walk will roughly cover, from the table statistics.
+   *
+   * <p>Only so the administrator learns the size of what they just asked for before it starts. An
+   * exact count would scan the table, which is the thing the whole service exists to avoid.</p>
+   */
+  private long estimate(String table) throws Exception {
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(ESTIMATE_SQL)) {
+      statement.setString(1, table.toLowerCase());
+      try (ResultSet result = statement.executeQuery()) {
+        return result.next() ? result.getLong(1) : 0L;
+      }
+    }
+  }
+
+  /** What asking for a reindex did. */
+  public enum Result {
+    REQUESTED("ETARC_VectorReindexRequested"),
+    RESTARTED("ETARC_VectorReindexRestarted"),
+    ALREADY_WALKING("ETARC_VectorReindexAlreadyWalking"),
+    SOURCE_NOT_FOUND("ETARC_VectorReindexSourceGone");
+
+    private final String messageKey;
+
+    Result(String messageKey) {
+      this.messageKey = messageKey;
+    }
+
+    public String getMessageKey() {
+      return messageKey;
+    }
+
+    public boolean isAccepted() {
+      return this == REQUESTED || this == RESTARTED;
+    }
+  }
+
+  /** What asking for a reindex did, and how big the walk it asked for is. */
+  public static final class Outcome {
+    private final Result result;
+    private final long estimate;
+
+    private Outcome(Result result, long estimate) {
+      this.result = result;
+      this.estimate = estimate;
+    }
+
+    public Result getResult() {
+      return result;
+    }
+
+    public long getEstimate() {
+      return estimate;
+    }
+  }
+
+  private static final class Existing {
+    private String status;
+    private String table;
   }
 
   private int claim() {

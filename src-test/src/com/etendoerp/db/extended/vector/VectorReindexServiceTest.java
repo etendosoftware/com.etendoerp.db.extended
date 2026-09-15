@@ -54,6 +54,9 @@ class VectorReindexServiceTest {
   private long backlog = 0;
   private int claimed = 1;
   private Long totalCount = 1000L;
+  private String existingStatus = null;
+  private boolean sourceExists = true;
+  private long estimate = 85L;
 
   @Test
   void refusesSizesThatWouldNeverMakeProgress() {
@@ -224,6 +227,76 @@ class VectorReindexServiceTest {
         "the consumer compares these against UTC, and PgJDBC takes the session zone from the JVM");
   }
 
+  // --- asking for a reindex ---------------------------------------------------------------------
+
+  @Test
+  void writesTheRequestAndLeavesTheWalkToTheScheduledProcess() throws Exception {
+    existingStatus = null;
+
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1");
+
+    assertEquals(VectorReindexService.Result.REQUESTED, outcome.getResult());
+    assertTrue(log.stream().anyMatch(s -> s.startsWith("INSERT INTO etarc_vector_reindex_req")));
+    assertEquals(0, count("WITH page AS"),
+        "a window action that walked the table would hold the session for as long as it took");
+  }
+
+  @Test
+  void decidesBetweenCreatingAndRestartingWithTheUniqueConstraint() throws Exception {
+    existingStatus = null;
+
+    service().requestReindex("SRC1");
+
+    String request = first("INSERT INTO etarc_vector_reindex_req");
+    assertTrue(request.contains("ON CONFLICT (etarc_vector_source_id) DO UPDATE"),
+        "one statement, so the constraint decides rather than a read the caller has to trust");
+    assertTrue(request.contains("last_record_id = NULL") && request.contains("enqueued_count = 0"),
+        "a restart begins at the beginning of the table, not where the last walk stopped");
+  }
+
+  @Test
+  void saysItRestartedWhenTheSourceHadBeenWalkedBefore() throws Exception {
+    existingStatus = "DONE";
+
+    assertEquals(VectorReindexService.Result.RESTARTED, service().requestReindex("SRC1").getResult(),
+        "the administrator has to know the counters of the previous walk are gone");
+  }
+
+  @Test
+  void refusesToRestartAWalkThatIsStillRunning() throws Exception {
+    existingStatus = "PROCESSING";
+
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1");
+
+    assertEquals(VectorReindexService.Result.ALREADY_WALKING, outcome.getResult());
+    assertFalse(outcome.getResult().isAccepted());
+    assertEquals(0, count("INSERT INTO etarc_vector_reindex_req"),
+        "moving the cursor back under a run in flight would have it keep writing from where it "
+            + "was, covering part of the table twice and part of it never");
+  }
+
+  @Test
+  void saysSoWhenTheSourceIsNoLongerThere() throws Exception {
+    sourceExists = false;
+
+    assertEquals(VectorReindexService.Result.SOURCE_NOT_FOUND,
+        service().requestReindex("SRC1").getResult());
+    assertEquals(0, count("INSERT INTO etarc_vector_reindex_req"));
+  }
+
+  @Test
+  void reportsHowBigTheWalkIsWithoutCountingTheTable() throws Exception {
+    existingStatus = null;
+    estimate = 2_400_000L;
+
+    VectorReindexService.Outcome outcome = service().requestReindex("SRC1");
+
+    assertEquals(2_400_000L, outcome.getEstimate(),
+        "so the administrator learns the size of what they asked for before it starts");
+    assertTrue(first("SELECT GREATEST").contains("reltuples"),
+        "an exact count scans the table, which is what the whole service exists to avoid");
+  }
+
   // --- fixtures -------------------------------------------------------------------------------
 
   private VectorReindexService service() {
@@ -301,6 +374,13 @@ class VectorReindexServiceTest {
         when(rs.getInt(1)).thenReturn(size);
         when(rs.getString(2)).thenReturn("key-" + chunk[0]);
       }
+    } else if (sql.startsWith("SELECT r.status, t.tablename")) {
+      when(rs.next()).thenReturn(sourceExists);
+      when(rs.getString(1)).thenReturn(existingStatus);
+      when(rs.getString(2)).thenReturn("C_BPartner");
+    } else if (sql.startsWith("SELECT GREATEST")) {
+      when(rs.next()).thenReturn(true);
+      when(rs.getLong(1)).thenReturn(estimate);
     } else if (sql.contains("count(*)") || sql.contains("COUNT(*)")) {
       when(rs.next()).thenReturn(true);
       when(rs.getLong(1)).thenReturn(backlog);
