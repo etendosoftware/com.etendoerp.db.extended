@@ -147,19 +147,6 @@ class ActivateVectorSourceTest {
   }
 
   @Test
-  void serialisesActivationsAgainstEachOther() throws Exception {
-    Run run = run(structureAccepted(true), source().build());
-
-    int lock = run.indexOf("SELECT pg_advisory_lock");
-    int unlock = run.indexOf("SELECT pg_advisory_unlock");
-    assertTrue(lock >= 0, "two administrators pressing the button at once would interleave");
-    assertTrue(lock < run.indexOf("SELECT ad_db_modified('N')"),
-        "the lock has to cover the reading, not just the writing");
-    assertTrue(unlock > run.indexOf("SELECT ad_db_modified('Y')"),
-        "the lock is held until the structure has been accepted");
-  }
-
-  @Test
   void leavesTheStructureAloneWhenSomethingElseHadAlreadyChangedIt() throws Exception {
     Run run = run(structureAccepted(false), source().build());
 

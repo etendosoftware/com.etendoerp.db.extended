@@ -126,16 +126,6 @@ public class ActivateVectorSource extends Action {
   Report run(List<Candidate> candidates, ConnectionProvider connectionProvider, VectorStore store,
       Checkpoint checkpoint) throws Exception {
     VectorTriggerService triggers = new VectorTriggerService(connectionProvider);
-    triggers.lockActivation();
-    try {
-      return activate(candidates, connectionProvider, store, checkpoint, triggers);
-    } finally {
-      triggers.unlockActivation();
-    }
-  }
-
-  private Report activate(List<Candidate> candidates, ConnectionProvider connectionProvider,
-      VectorStore store, Checkpoint checkpoint, VectorTriggerService triggers) throws Exception {
     // The capture triggers go on the application's own tables, and the trigger part of
     // ad_db_modified is the one it does not restrict by schema, so installing them moves the
     // structure checksum. excludeFilter.xml does not help: it keeps them out of the DBSM model
@@ -181,10 +171,24 @@ public class ActivateVectorSource extends Action {
     // 'N' can only mean the function is not answering -- and a run that genuinely changed nothing
     // has nothing to stamp either way.
     if (structureWasAccepted && triggers.isDatabaseModified()) {
-      triggers.acceptDatabaseStructure();
+      triggers.acceptDatabaseStructure(describeChange(lines));
       checkpoint.commit();
     }
     return new Report(capability, lines);
+  }
+
+  /** What this run changed, for the record the acceptance leaves behind. */
+  private static String describeChange(List<Line> lines) {
+    int installed = 0;
+    int removed = 0;
+    List<String> sources = new ArrayList<>();
+    for (Line line : lines) {
+      installed += line.deployment.getInstalled();
+      removed += line.deployment.getRemoved();
+      sources.add(line.candidate.name);
+    }
+    return "activating " + sources + ": " + installed + " trigger(s) installed, " + removed
+        + " removed";
   }
 
   // --- turning the report into what the administrator reads -----------------------------------

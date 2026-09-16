@@ -106,12 +106,6 @@ public class VectorTriggerService {
   private static final String FUNCTIONS_SQL =
       "SELECT proname FROM pg_proc WHERE ";
 
-  /**
-   * Key of the session-level advisory lock activation is serialised with. The two-integer form
-   * keeps it readable: the ticket that introduced it, and a counter within it.
-   */
-  private static final String ACTIVATION_LOCK = "5118, 1";
-
   private final ConnectionProvider cp;
 
   /**
@@ -403,39 +397,6 @@ public class VectorTriggerService {
   }
 
   /**
-   * Takes the lock that serialises activations against each other.
-   *
-   * <p>Deciding whether the structure was accepted, changing it, and accepting it again is three
-   * statements that have to hold together, and the run commits in between, so a transaction-scoped
-   * lock would be released halfway. Two administrators pressing the button at once would otherwise
-   * interleave, and the one that finishes last would stamp a structure it never inspected.</p>
-   *
-   * @throws Exception
-   *     if the lock cannot be taken
-   */
-  public void lockActivation() throws Exception {
-    try (PreparedStatement statement = cp.getPreparedStatement(
-        "SELECT pg_advisory_lock(" + ACTIVATION_LOCK + ")");
-        ResultSet result = statement.executeQuery()) {
-      result.next();
-    }
-  }
-
-  /**
-   * Releases the activation lock. Safe to call when it was never taken.
-   *
-   * @throws Exception
-   *     if the lock cannot be released
-   */
-  public void unlockActivation() throws Exception {
-    try (PreparedStatement statement = cp.getPreparedStatement(
-        "SELECT pg_advisory_unlock(" + ACTIVATION_LOCK + ")");
-        ResultSet result = statement.executeQuery()) {
-      result.next();
-    }
-  }
-
-  /**
    * Accepts the current database structure as the reference for the next update.
    *
    * <p>The module script needs none of this: dbsm runs module scripts before stamping the checksum
@@ -459,7 +420,8 @@ public class VectorTriggerService {
    * @throws Exception
    *     if the checksum cannot be read or re-stamped
    */
-  public void acceptDatabaseStructure() throws Exception {
+  public void acceptDatabaseStructure(String changed) throws Exception {
+    String replaced = storedChecksum();
     Timestamp watermark = null;
     try (PreparedStatement statement = cp.getPreparedStatement(
         "SELECT last_dbupdate FROM ad_system_info");
@@ -481,7 +443,20 @@ public class VectorTriggerService {
         statement.executeUpdate();
       }
     }
-    log.info("Database checksum re-stamped after changing vector source triggers.");
+
+    // Named in full on purpose. Accepting the structure is the one thing here that can absorb a
+    // change nobody meant to accept, and the checksum it replaced is the only way to tell
+    // afterwards that it happened and what it stood for.
+    log.info("Database structure accepted after {}. Checksum {} replaced by {}.", changed,
+        replaced, storedChecksum());
+  }
+
+  private String storedChecksum() throws Exception {
+    try (PreparedStatement statement = cp.getPreparedStatement(
+        "SELECT db_checksum FROM ad_system_info");
+        ResultSet result = statement.executeQuery()) {
+      return result.next() ? result.getString(1) : null;
+    }
   }
 
   private void execute(String sql) throws Exception {
