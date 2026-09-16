@@ -40,8 +40,20 @@ before the provider changed holds vectors of a size the new model no longer prod
 reports both instead of queueing work that can only fail, and it never repairs a mismatched
 collection: making one match again means dropping it, and that deletes every vector it holds.
 
-The action needs a database role allowed to `CREATE EXTENSION`. Running it again is harmless and
-is also how a source added later finishes being set up.
+The action needs a database role allowed to `CREATE EXTENSION` and to create a schema. Running it
+again is harmless and is also how a source added later finishes being set up.
+
+The vector storage lives in a schema of its own, `etarc_vector`, rather than in the application's.
+`ad_db_modified` restricts every one of its queries to `current_schema()` except the one for
+triggers, so storage kept outside it is not part of the structure checksum and creating it is not a
+local change anybody has to accept. An instance that indexed something under an earlier version has
+its tables moved there on the next activation, with their rows, indexes and foreign key.
+
+The capture triggers are the part this does not cover: they belong to the table they watch. The
+action re-stamps the checksum for them, and only when the structure was accepted beforehand -- and
+it verifies afterwards that the structure really did move, because `ad_db_modified` ends in
+`EXCEPTION WHEN OTHERS THEN RETURN 'N'` and answers `N` for a database that carries no checksum at
+all, so an unguarded reading cannot tell a clean database from one that cannot answer.
 
 ### Indexing what a table already held
 
@@ -156,7 +168,8 @@ For the optional vector capability:
   `vector_cosine_ops`, `vector_l2_ops` and `vector_ip_ops`. Nothing here uses `halfvec`,
   `sparsevec` or `binary_quantize`; `excludeFilter.xml` names them so that a server that does have
   them keeps them out of DBSM exports, and on an older one those entries simply match nothing.
-- A database role allowed to run `CREATE EXTENSION`, for the activation action only.
+- A database role allowed to run `CREATE EXTENSION` and to create a schema, for the activation
+  action only.
 - Developed and tested against pgvector 0.8.6 on PostgreSQL 16.
 
 ---

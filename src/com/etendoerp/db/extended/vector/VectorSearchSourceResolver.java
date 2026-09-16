@@ -32,7 +32,7 @@ final class VectorSearchSourceResolver {
   VectorSearchSource resolve(String namespace) {
     String sql = "SELECT s.etarc_vector_source_id, s.namespace, c.metric, p.provider_type, p.model, p.dimensions "
         + "FROM etarc_vector_source s "
-        + "JOIN etarc_vector_collection c ON c.namespace = s.namespace AND c.active = true "
+        + "JOIN etarc_vector.etarc_vector_collection c ON c.namespace = s.namespace AND c.active = true "
         + "JOIN etarc_vector_embed_provider p ON p.etarc_vector_embed_provider_id = s.etarc_vector_embed_provider_id "
         + "WHERE s.namespace = ? AND s.isactive = 'Y' AND p.isactive = 'Y'";
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(sql)) {

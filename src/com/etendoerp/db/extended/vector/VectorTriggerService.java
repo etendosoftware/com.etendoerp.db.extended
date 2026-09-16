@@ -106,6 +106,12 @@ public class VectorTriggerService {
   private static final String FUNCTIONS_SQL =
       "SELECT proname FROM pg_proc WHERE ";
 
+  /**
+   * Key of the session-level advisory lock activation is serialised with. The two-integer form
+   * keeps it readable: the ticket that introduced it, and a counter within it.
+   */
+  private static final String ACTIVATION_LOCK = "5118, 1";
+
   private final ConnectionProvider cp;
 
   /**
@@ -371,6 +377,61 @@ public class VectorTriggerService {
     try (PreparedStatement statement = cp.getPreparedStatement("SELECT ad_db_modified('N') FROM DUAL");
         ResultSet result = statement.executeQuery()) {
       return result.next() && "Y".equalsIgnoreCase(result.getString(1));
+    }
+  }
+
+  /**
+   * Whether a structure checksum was ever stamped on this database.
+   *
+   * <p>Without this, {@link #isDatabaseModified()} cannot be read as "the structure is accepted".
+   * {@code ad_db_modified} answers {@code N} when the stored checksum matches <em>and</em> when
+   * there is no stored checksum at all -- its test is {@code aux is null or aux = computed}. A
+   * database restored from a dump that never carried one therefore reports itself unmodified, and
+   * anything already changed in it would be accepted on the first activation. Nothing is lost by
+   * refusing: with no checksum stored, update.database does not object either.</p>
+   *
+   * @return whether {@code AD_SYSTEM_INFO.DB_CHECKSUM} holds a value
+   * @throws Exception
+   *     if the checksum cannot be read
+   */
+  public boolean hasStampedChecksum() throws Exception {
+    try (PreparedStatement statement = cp.getPreparedStatement(
+        "SELECT db_checksum IS NOT NULL FROM ad_system_info");
+        ResultSet result = statement.executeQuery()) {
+      return result.next() && result.getBoolean(1);
+    }
+  }
+
+  /**
+   * Takes the lock that serialises activations against each other.
+   *
+   * <p>Deciding whether the structure was accepted, changing it, and accepting it again is three
+   * statements that have to hold together, and the run commits in between, so a transaction-scoped
+   * lock would be released halfway. Two administrators pressing the button at once would otherwise
+   * interleave, and the one that finishes last would stamp a structure it never inspected.</p>
+   *
+   * @throws Exception
+   *     if the lock cannot be taken
+   */
+  public void lockActivation() throws Exception {
+    try (PreparedStatement statement = cp.getPreparedStatement(
+        "SELECT pg_advisory_lock(" + ACTIVATION_LOCK + ")");
+        ResultSet result = statement.executeQuery()) {
+      result.next();
+    }
+  }
+
+  /**
+   * Releases the activation lock. Safe to call when it was never taken.
+   *
+   * @throws Exception
+   *     if the lock cannot be released
+   */
+  public void unlockActivation() throws Exception {
+    try (PreparedStatement statement = cp.getPreparedStatement(
+        "SELECT pg_advisory_unlock(" + ACTIVATION_LOCK + ")");
+        ResultSet result = statement.executeQuery()) {
+      result.next();
     }
   }
 

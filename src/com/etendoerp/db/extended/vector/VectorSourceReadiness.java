@@ -37,7 +37,7 @@ final class VectorSourceReadiness {
 
   /** The collection as stored, so it can be compared with what the source now asks for. */
   private static final String COLLECTION_SQL =
-      "SELECT dimensions, metric FROM etarc_vector_collection WHERE namespace = ?";
+      "SELECT dimensions, metric FROM etarc_vector.etarc_vector_collection WHERE namespace = ?";
 
   /**
    * Counts the columns exactly as the consumer reads them, so nothing can call a source ready when

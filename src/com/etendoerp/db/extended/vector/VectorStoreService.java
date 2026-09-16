@@ -25,10 +25,10 @@ public class VectorStoreService implements VectorStore {
   private boolean activationVerified;
   public VectorStoreService(ConnectionProvider cp) { this.cp = cp; capability = new VectorCapabilityService(cp); }
   public void createCollection(VectorCollection collection) {
-    requireActive(); String sql = "INSERT INTO etarc_vector_collection (namespace, dimensions, metric, client_scoped, organization_scoped) VALUES (?, ?, ?, ?, ?)";
+    requireActive(); String sql = "INSERT INTO etarc_vector.etarc_vector_collection (namespace, dimensions, metric, client_scoped, organization_scoped) VALUES (?, ?, ?, ?, ?)";
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) { ps.setString(1, collection.getNamespace()); ps.setInt(2, collection.getDimensions()); ps.setString(3, collection.getMetric().name()); ps.setBoolean(4, collection.isClientScoped()); ps.setBoolean(5, collection.isOrganizationScoped()); ps.executeUpdate(); } catch (Exception e) { throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "Could not create vector collection.", e); }
   }
-  public void upsert(VectorRecord record) { requireActive(); CollectionInfo c = collection(record.getNamespace()); if (c.dimensions != record.getVector().length) throw new VectorException(VectorErrorCode.VECTOR_DIMENSION_MISMATCH, "Vector dimension does not match the collection."); validateScope(c, record.getClientId(), record.getOrganizationId()); validateMetadata(record.getMetadata()); String sql = "INSERT INTO etarc_vector_record (namespace, external_key, client_id, organization_id, embedding, metadata) VALUES (?, ?, ?, ?, ?::vector, ?::jsonb) ON CONFLICT (namespace, external_key, client_id, organization_id) DO UPDATE SET embedding = EXCLUDED.embedding, metadata = EXCLUDED.metadata, updated_at = now()"; try (PreparedStatement ps = cp.getPreparedStatement(sql)) { ps.setString(1, record.getNamespace()); ps.setString(2, record.getKey()); ps.setString(3, scopeValue(record.getClientId())); ps.setString(4, scopeValue(record.getOrganizationId())); ps.setString(5, literal(record.getVector())); ps.setString(6, record.getMetadata()); ps.executeUpdate(); } catch (VectorException e) { throw e; } catch (Exception e) { throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "Could not store vector record.", e); } }
+  public void upsert(VectorRecord record) { requireActive(); CollectionInfo c = collection(record.getNamespace()); if (c.dimensions != record.getVector().length) throw new VectorException(VectorErrorCode.VECTOR_DIMENSION_MISMATCH, "Vector dimension does not match the collection."); validateScope(c, record.getClientId(), record.getOrganizationId()); validateMetadata(record.getMetadata()); String sql = "INSERT INTO etarc_vector.etarc_vector_record (namespace, external_key, client_id, organization_id, embedding, metadata) VALUES (?, ?, ?, ?, ?::vector, ?::jsonb) ON CONFLICT (namespace, external_key, client_id, organization_id) DO UPDATE SET embedding = EXCLUDED.embedding, metadata = EXCLUDED.metadata, updated_at = now()"; try (PreparedStatement ps = cp.getPreparedStatement(sql)) { ps.setString(1, record.getNamespace()); ps.setString(2, record.getKey()); ps.setString(3, scopeValue(record.getClientId())); ps.setString(4, scopeValue(record.getOrganizationId())); ps.setString(5, literal(record.getVector())); ps.setString(6, record.getMetadata()); ps.executeUpdate(); } catch (VectorException e) { throw e; } catch (Exception e) { throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "Could not store vector record.", e); } }
   public List<VectorMatch> search(VectorQuery q) {
     requireActive();
     CollectionInfo c = collection(q.getNamespace());
@@ -42,7 +42,7 @@ public class VectorStoreService implements VectorStore {
     String organizationClause = organizationIds.isEmpty() ? ""
         : " AND organization_id IN (" + String.join(", ", java.util.Collections.nCopies(organizationIds.size(), "?")) + ")";
     String sql = "SELECT external_key, metadata::text, embedding " + q.getMetric().getOperator()
-        + " ?::vector AS distance FROM etarc_vector_record WHERE namespace = ? AND "
+        + " ?::vector AS distance FROM etarc_vector.etarc_vector_record WHERE namespace = ? AND "
         + q.getMetadataFilter().getClause() + " AND (? IS NULL OR client_id = ?)" + organizationClause
         + " ORDER BY embedding " + q.getMetric().getOperator() + " ?::vector LIMIT ?";
     List<VectorMatch> result = new ArrayList<>();
@@ -67,8 +67,8 @@ public class VectorStoreService implements VectorStore {
       throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "Could not search vector records.", e);
     }
   }
-  public void delete(String namespace, String key) { requireActive(); try(PreparedStatement ps=cp.getPreparedStatement("DELETE FROM etarc_vector_record WHERE namespace = ? AND external_key = ?")){ps.setString(1,namespace);ps.setString(2,key);ps.executeUpdate();}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not delete vector record.",e);} }
-  public void deleteCollection(String namespace) { requireActive(); try(PreparedStatement ps=cp.getPreparedStatement("DELETE FROM etarc_vector_collection WHERE namespace = ?")){ps.setString(1,namespace);ps.executeUpdate();}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not delete vector collection.",e);} }
+  public void delete(String namespace, String key) { requireActive(); try(PreparedStatement ps=cp.getPreparedStatement("DELETE FROM etarc_vector.etarc_vector_record WHERE namespace = ? AND external_key = ?")){ps.setString(1,namespace);ps.setString(2,key);ps.executeUpdate();}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not delete vector record.",e);} }
+  public void deleteCollection(String namespace) { requireActive(); try(PreparedStatement ps=cp.getPreparedStatement("DELETE FROM etarc_vector.etarc_vector_collection WHERE namespace = ?")){ps.setString(1,namespace);ps.executeUpdate();}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not delete vector collection.",e);} }
   /**
    * Verifies once per service instance that pgvector is installed and explicitly activated.
    *
@@ -89,7 +89,7 @@ public class VectorStoreService implements VectorStore {
     }
     activationVerified = true;
   }
-  private CollectionInfo collection(String namespace){try(PreparedStatement ps=cp.getPreparedStatement("SELECT dimensions, client_scoped, organization_scoped FROM etarc_vector_collection WHERE namespace = ? AND active = true")){ps.setString(1,namespace);try(ResultSet rs=ps.executeQuery()){if(!rs.next())throw new VectorException(VectorErrorCode.VECTOR_COLLECTION_NOT_FOUND,"Vector collection was not found.");return new CollectionInfo(rs.getInt(1),rs.getBoolean(2),rs.getBoolean(3));}}catch(VectorException e){throw e;}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not read vector collection.",e);}}
+  private CollectionInfo collection(String namespace){try(PreparedStatement ps=cp.getPreparedStatement("SELECT dimensions, client_scoped, organization_scoped FROM etarc_vector.etarc_vector_collection WHERE namespace = ? AND active = true")){ps.setString(1,namespace);try(ResultSet rs=ps.executeQuery()){if(!rs.next())throw new VectorException(VectorErrorCode.VECTOR_COLLECTION_NOT_FOUND,"Vector collection was not found.");return new CollectionInfo(rs.getInt(1),rs.getBoolean(2),rs.getBoolean(3));}}catch(VectorException e){throw e;}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not read vector collection.",e);}}
   private static void validateScope(CollectionInfo c, String client, java.util.List<String> organizationIds) {
     if ((c.client && client == null) || (c.org && organizationIds.isEmpty())) {
       throw new VectorException(VectorErrorCode.VECTOR_INVALID_METADATA, "Required vector tenant scope is missing.");

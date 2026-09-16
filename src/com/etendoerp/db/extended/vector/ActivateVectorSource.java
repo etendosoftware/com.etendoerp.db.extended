@@ -126,18 +126,30 @@ public class ActivateVectorSource extends Action {
   Report run(List<Candidate> candidates, ConnectionProvider connectionProvider, VectorStore store,
       Checkpoint checkpoint) throws Exception {
     VectorTriggerService triggers = new VectorTriggerService(connectionProvider);
+    triggers.lockActivation();
+    try {
+      return activate(candidates, connectionProvider, store, checkpoint, triggers);
+    } finally {
+      triggers.unlockActivation();
+    }
+  }
 
-    // Everything activation creates -- the runtime tables, the sequence, the trigger functions and
-    // the triggers -- is declared out of the module's model by excludeFilter.xml, so
-    // export.database has nothing to write for any of it; but ad_db_modified computes the checksum
-    // inside the database, reads only pg_catalog, and counts them all. A later update.database
-    // would then report local changes nobody can export away. Re-stamping settles that, and it is
-    // only ours to settle when the structure was already accepted: otherwise the delta holds
-    // somebody else's change as well, and catching that is what the check is for.
+  private Report activate(List<Candidate> candidates, ConnectionProvider connectionProvider,
+      VectorStore store, Checkpoint checkpoint, VectorTriggerService triggers) throws Exception {
+    // The capture triggers go on the application's own tables, and the trigger part of
+    // ad_db_modified is the one it does not restrict by schema, so installing them moves the
+    // structure checksum. excludeFilter.xml does not help: it keeps them out of the DBSM model
+    // comparison, while the checksum is computed inside the database from pg_catalog alone. A
+    // later update.database would then report local changes nobody can export away.
     //
-    // This has to be read before the first statement that can alter the schema, which is the
-    // activation and its CREATE TABLE IF NOT EXISTS, not the triggers further down.
-    boolean structureWasAccepted = !triggers.isDatabaseModified();
+    // Re-stamping settles that, and it is only ours to settle when the structure was already
+    // accepted: otherwise the delta holds somebody else's change as well, and catching that is
+    // what the check is for. The stored checksum has to exist for "accepted" to mean anything --
+    // see hasStampedChecksum.
+    //
+    // This has to be read before the first statement that can alter the schema.
+    boolean structureWasAccepted =
+        triggers.hasStampedChecksum() && !triggers.isDatabaseModified();
 
     VectorCapability capability = new VectorActivationService(connectionProvider).activate();
     checkpoint.commit();
@@ -163,10 +175,12 @@ public class ActivateVectorSource extends Action {
     }
     checkpoint.commit();
 
-    // No attempt to decide whether anything actually changed: a run that changed nothing stamps the
-    // same checksum again, which is a harmless write, while getting that judgement wrong in the
-    // other direction leaves the database reporting changes forever.
-    if (structureWasAccepted) {
+    // Stamping is refused unless the structure really did move, which also fences off the way
+    // ad_db_modified fails: it ends in EXCEPTION WHEN OTHERS THEN RETURN 'N', so an error inside it
+    // is indistinguishable from a clean database. Having just changed the structure, a verdict of
+    // 'N' can only mean the function is not answering -- and a run that genuinely changed nothing
+    // has nothing to stamp either way.
+    if (structureWasAccepted && triggers.isDatabaseModified()) {
       triggers.acceptDatabaseStructure();
       checkpoint.commit();
     }

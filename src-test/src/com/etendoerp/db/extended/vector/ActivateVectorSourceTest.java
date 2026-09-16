@@ -111,7 +111,7 @@ class ActivateVectorSourceTest {
     Run run = run(structureAccepted(true), source().build());
 
     int baseline = run.indexOf("SELECT ad_db_modified('N')");
-    int firstDdl = run.indexOf("CREATE TABLE IF NOT EXISTS etarc_vector_activation");
+    int firstDdl = run.indexOf("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_activation");
     assertTrue(baseline >= 0, "the run has to look before it leaps");
     assertTrue(baseline < firstDdl,
         "activation creates tables of its own, so reading after it would report our own change "
@@ -125,6 +125,38 @@ class ActivateVectorSourceTest {
     assertTrue(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"));
     assertTrue(run.indexOf("SELECT ad_db_modified('Y')") > run.indexOf("CREATE TRIGGER"),
         "the structure is accepted once the run has finished changing it");
+  }
+
+  @Test
+  void leavesTheStructureAloneWhenNoChecksumWasEverStamped() throws Exception {
+    Run run = run(structureNeverStamped(), source().build());
+
+    assertFalse(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"),
+        "ad_db_modified answers N both when the stored checksum matches and when there is none, "
+            + "so an unstamped database would have its existing changes accepted along with ours");
+  }
+
+  @Test
+  void leavesTheStructureAloneWhenTheDatabaseDeniesTheChangeItJustMade() throws Exception {
+    Run run = run(structureThatNeverMoves(), source().build());
+
+    assertFalse(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"),
+        "the run installed triggers, so a verdict of N means the function is not answering -- it "
+            + "ends in EXCEPTION WHEN OTHERS THEN RETURN 'N' -- and its answer cannot be trusted "
+            + "to say whose the delta is");
+  }
+
+  @Test
+  void serialisesActivationsAgainstEachOther() throws Exception {
+    Run run = run(structureAccepted(true), source().build());
+
+    int lock = run.indexOf("SELECT pg_advisory_lock");
+    int unlock = run.indexOf("SELECT pg_advisory_unlock");
+    assertTrue(lock >= 0, "two administrators pressing the button at once would interleave");
+    assertTrue(lock < run.indexOf("SELECT ad_db_modified('N')"),
+        "the lock has to cover the reading, not just the writing");
+    assertTrue(unlock > run.indexOf("SELECT ad_db_modified('Y')"),
+        "the lock is held until the structure has been accepted");
   }
 
   @Test
@@ -239,8 +271,42 @@ class ActivateVectorSourceTest {
     }
   }
 
-  private static boolean structureAccepted(boolean value) {
-    return value;
+  /**
+   * How the database answers the two questions the run asks about its structure.
+   *
+   * <p>A real database does not answer the same thing before and after the run: installing the
+   * triggers is what moves the checksum. Modelling it as one fixed value let the run look accepted
+   * after changing the schema, which is the state the run now refuses to stamp.</p>
+   */
+  private static final class Structure {
+    private final boolean stamped;
+    private final boolean accepted;
+    private final boolean movesWhenChanged;
+    private int verdicts;
+
+    private Structure(boolean stamped, boolean accepted, boolean movesWhenChanged) {
+      this.stamped = stamped;
+      this.accepted = accepted;
+      this.movesWhenChanged = movesWhenChanged;
+    }
+
+    private String verdict() {
+      return verdicts++ == 0 ? (accepted ? "N" : "Y") : (movesWhenChanged ? "Y" : "N");
+    }
+  }
+
+  private static Structure structureAccepted(boolean value) {
+    return new Structure(true, value, true);
+  }
+
+  /** A database that carries no checksum at all, so nothing about it was ever accepted. */
+  private static Structure structureNeverStamped() {
+    return new Structure(false, true, true);
+  }
+
+  /** A database that reports itself unchanged even after the run installed triggers. */
+  private static Structure structureThatNeverMoves() {
+    return new Structure(true, true, false);
   }
 
   private static Collection existingCollection(int dimensions, String metric) {
@@ -305,11 +371,11 @@ class ActivateVectorSourceTest {
     }
   }
 
-  private Run run(boolean structureAccepted, Candidate... candidates) throws Exception {
-    return run(structureAccepted, null, candidates);
+  private Run run(Structure structure, Candidate... candidates) throws Exception {
+    return run(structure, null, candidates);
   }
 
-  private Run run(boolean structureAccepted, Collection existing, Candidate... candidates)
+  private Run run(Structure structure, Collection existing, Candidate... candidates)
       throws Exception {
     Run run = new Run();
     run.store = new RecordingStore(run.statements);
@@ -318,7 +384,7 @@ class ActivateVectorSourceTest {
     when(cp.getPreparedStatement(anyString())).thenAnswer(invocation -> {
       String sql = invocation.getArgument(0);
       run.statements.add(sql);
-      ResultSet rows = rowsFor(sql, structureAccepted, existing);
+      ResultSet rows = rowsFor(sql, structure, existing);
       PreparedStatement statement = mock(PreparedStatement.class);
       when(statement.executeQuery()).thenReturn(rows);
       when(statement.executeUpdate()).thenReturn(1);
@@ -330,12 +396,15 @@ class ActivateVectorSourceTest {
     return run;
   }
 
-  private ResultSet rowsFor(String sql, boolean structureAccepted, Collection existing)
+  private ResultSet rowsFor(String sql, Structure structure, Collection existing)
       throws Exception {
     ResultSet rs = mock(ResultSet.class);
     if (sql.startsWith("SELECT ad_db_modified('N')")) {
       when(rs.next()).thenReturn(true);
-      when(rs.getString(1)).thenReturn(structureAccepted ? "N" : "Y");
+      when(rs.getString(1)).thenReturn(structure.verdict());
+    } else if (sql.startsWith("SELECT db_checksum IS NOT NULL")) {
+      when(rs.next()).thenReturn(true);
+      when(rs.getBoolean(1)).thenReturn(structure.stamped);
     } else if (sql.startsWith("SELECT dimensions, metric")) {
       when(rs.next()).thenReturn(existing != null);
       if (existing != null) {
@@ -358,7 +427,7 @@ class ActivateVectorSourceTest {
     } else if (sql.contains("installed")) {
       when(rs.next()).thenReturn(true);
       when(rs.getBoolean("installed")).thenReturn(true);
-    } else if (sql.contains("state = 'ACTIVE' FROM etarc_vector_activation")) {
+    } else if (sql.contains("state = 'ACTIVE' FROM etarc_vector.etarc_vector_activation")) {
       when(rs.next()).thenReturn(true);
       when(rs.getBoolean(1)).thenReturn(true);
     } else {
