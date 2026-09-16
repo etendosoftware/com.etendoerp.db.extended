@@ -109,6 +109,8 @@ public class VectorTriggerService {
   private final ConnectionProvider cp;
 
   /**
+   * Creates a service that installs and removes the change-capture triggers of a source.
+   *
    * @param cp
    *     connection the triggers and functions are created and dropped with
    */

@@ -104,17 +104,15 @@ public class VectorOutboxService {
    * Creates a service that closes a transaction after claiming each event and again after its
    * terminal state is written.
    *
+   * @param connectionProvider
+   *     connection the queue is read and written with
+   * @param consumers
+   *     the consumers events are dispatched to, resolved per namespace
    * @param transactionBoundary
    *     commits the work accumulated so far. It runs twice per event: once after the claim, so the
    *     PROCESSING marker becomes visible to other nodes before the consumer starts, and once after
    *     the event reaches DONE or FAILED, so an interrupted run does not discard the deliveries
    *     already made.
-   */
-  /**
-   * @param connectionProvider
-   *     connection the queue is read and written with
-   * @param consumers
-   *     the consumers events are dispatched to, resolved per namespace
    */
   public VectorOutboxService(ConnectionProvider connectionProvider,
       Collection<VectorOutboxConsumer> consumers, TransactionBoundary transactionBoundary) {

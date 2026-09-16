@@ -97,6 +97,8 @@ public class VectorReindexService {
   private final VectorOutboxService.TransactionBoundary transactionBoundary;
 
   /**
+   * Creates a service that walks a source's table in chunks, committing each one.
+   *
    * @param connectionProvider
    *     connection the request and the enqueued chunks are written with
    * @param transactionBoundary

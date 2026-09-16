@@ -44,6 +44,8 @@ public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
   private final int batchSize;
 
   /**
+   * Creates a provider that calls an OpenAI-compatible embeddings API.
+   *
    * @param endpoint
    *     base URL of an OpenAI-compatible API, up to and including {@code /v1} and no further, or
    *     {@code null} to call OpenAI itself. The path of the embeddings call is appended here and
