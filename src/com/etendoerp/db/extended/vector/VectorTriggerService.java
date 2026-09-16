@@ -108,6 +108,10 @@ public class VectorTriggerService {
 
   private final ConnectionProvider cp;
 
+  /**
+   * @param cp
+   *     connection the triggers and functions are created and dropped with
+   */
   public VectorTriggerService(ConnectionProvider cp) {
     this.cp = cp;
   }
@@ -119,6 +123,8 @@ public class VectorTriggerService {
    * since the previous run leaves triggers nobody would otherwise remove.</p>
    *
    * @return the number of sources deployed
+   * @throws Exception
+   *     if the sources cannot be read or their triggers cannot be written
    */
   public int deployAll() throws Exception {
     if (!isPostgres()) {
@@ -151,6 +157,8 @@ public class VectorTriggerService {
    *
    * @param sourceId the source to rebuild
    * @return what was installed and what was removed
+   * @throws Exception
+   *     if the source cannot be read or its triggers cannot be written
    */
   public Deployment deploy(String sourceId) throws Exception {
     return deploy(sourceId, true);
@@ -168,6 +176,8 @@ public class VectorTriggerService {
    *
    * @param sourceId the source to tear down
    * @return what was removed
+   * @throws Exception
+   *     if the triggers of the source cannot be removed
    */
   public Deployment teardown(String sourceId) throws Exception {
     return deploy(sourceId, false);
@@ -381,6 +391,9 @@ public class VectorTriggerService {
    * <p>Only call this when the structure was unmodified beforehand. Re-stamping unconditionally
    * would quietly accept whatever else someone had changed in the database, and that is precisely
    * the thing the check exists to catch.</p>
+   *
+   * @throws Exception
+   *     if the checksum cannot be read or re-stamped
    */
   public void acceptDatabaseStructure() throws Exception {
     Timestamp watermark = null;

@@ -38,6 +38,7 @@ public interface VectorOutboxConsumer {
    * @param event
    *     any event of the group about to be delivered, so the consumer can size the chunk from its
    *     own per-source configuration
+   * @return the number of events the dispatcher may deliver in one chunk
    */
   default int batchSize(VectorOutboxEvent event) {
     return 1;
@@ -49,8 +50,14 @@ public interface VectorOutboxConsumer {
    *
    * <p>Implementing it is optional: the default does nothing and each event resolves itself. A failure
    * here fails the whole chunk, which is correct when the shared call is what failed.</p>
+   *
+   * <p>Failures are reported as {@link VectorException}: a consumer that cannot resolve its chunk
+   * has failed at something this module defines, and the dispatcher treats it as such.</p>
+   *
+   * @param events
+   *     the events about to be delivered as one chunk
    */
-  default void prepare(java.util.List<VectorOutboxEvent> events) throws Exception {
+  default void prepare(java.util.List<VectorOutboxEvent> events) {
     // Nothing to resolve ahead of time.
   }
 }

@@ -96,6 +96,12 @@ public class VectorReindexService {
   private final ConnectionProvider connectionProvider;
   private final VectorOutboxService.TransactionBoundary transactionBoundary;
 
+  /**
+   * @param connectionProvider
+   *     connection the request and the enqueued chunks are written with
+   * @param transactionBoundary
+   *     commits each chunk, so an interrupted run keeps the records it already enqueued
+   */
   public VectorReindexService(ConnectionProvider connectionProvider,
       VectorOutboxService.TransactionBoundary transactionBoundary) {
     this.connectionProvider = connectionProvider;
@@ -132,19 +138,21 @@ public class VectorReindexService {
         estimateTotal(request);
         transactionBoundary.commit();
       }
-      for (int chunk = 0; chunk < maxChunks; chunk++) {
+      boolean walking = true;
+      for (int chunk = 0; chunk < maxChunks && walking; chunk++) {
         if (backlog(request.sourceId) >= backlogLimit) {
           // Leave it PROCESSING: the next run continues from the stored cursor.
-          break;
-        }
-        int added = enqueueChunk(request, chunkSize);
-        if (added == 0) {
-          complete(request.id);
+          walking = false;
+        } else {
+          int added = enqueueChunk(request, chunkSize);
+          if (added == 0) {
+            complete(request.id);
+            walking = false;
+          } else {
+            enqueued += added;
+          }
           transactionBoundary.commit();
-          break;
         }
-        enqueued += added;
-        transactionBoundary.commit();
       }
       return enqueued;
     } catch (Exception e) {
@@ -181,7 +189,11 @@ public class VectorReindexService {
    * @param confirmRestart
    *     whether the caller has already been told what restarting would cost. It has no bearing on
    *     a source that was never walked: there is nothing to lose and nothing to warn about.
+   * @param sourceId
+   *     the source to walk
    * @return what happened, and roughly how many records it will mean
+   * @throws Exception
+   *     if the request cannot be read or written
    */
   public Outcome requestReindex(String sourceId, boolean confirmRestart) throws Exception {
     Existing existing = existing(sourceId);

@@ -208,8 +208,8 @@ class ActivateVectorSourceTest {
     private int contentColumns = 2;
 
     Candidate build() {
-      return new Candidate("SRC1", "Example", "go.example", metric, enabled, dimensions, columns,
-          contentColumns);
+      return new Candidate("SRC1", "Example", "go.example", metric, enabled, dimensions,
+          new VectorSourceReadiness.Columns(columns, contentColumns));
     }
 
     Candidate disabled() {

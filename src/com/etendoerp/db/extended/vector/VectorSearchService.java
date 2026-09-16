@@ -90,7 +90,9 @@ public final class VectorSearchService {
         VectorSearchSource source = target.getSource();
         // Every readable organization goes into one query: iterating them issued a round trip each,
         // and the union of their top results is the same set this returns.
-        VectorQuery query = new VectorQuery(source.getNamespace(), embedding, topK, source.getMetric(), "{}", target.getFilter(), context.getClientId(), context.getOrganizationIds());
+        VectorQuery query = new VectorQuery(source.getNamespace(), embedding, topK,
+            source.getMetric(), "{}", target.getFilter(),
+            new VectorQuery.Scope(context.getClientId(), context.getOrganizationIds()));
         for (VectorMatch match : vectorStore.search(query)) {
           double score = scoreFor(match.getDistance(), source.getMetric());
           if (score >= minScore && score <= maxScore) matches.add(new TargetMatch(target, match, score));

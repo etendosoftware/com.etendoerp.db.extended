@@ -23,6 +23,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 import org.codehaus.jettison.json.JSONArray;
@@ -34,8 +35,13 @@ public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
   /** The base every OpenAI-compatible service is addressed by; the path is this class's business. */
   private static final String BASE_URL = "https://api.openai.com/v1";
   private static final String EMBEDDINGS_PATH = "/embeddings";
-  private final String apiKeyReference, model, endpoint;
-  private final int dimensions, timeoutSeconds, maximumInputCharacters, batchSize;
+  private final String apiKeyReference;
+  private final String model;
+  private final String endpoint;
+  private final int dimensions;
+  private final int timeoutSeconds;
+  private final int maximumInputCharacters;
+  private final int batchSize;
 
   /**
    * @param endpoint
@@ -77,55 +83,153 @@ public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
 
   @Override public int dimensions() { return dimensions; }
 
-  @Override public List<double[]> embed(List<String> texts) {
-    if (texts == null || texts.isEmpty()) throw failed("Embedding input cannot be empty.", null);
-    if (texts.size() > batchSize) {
-      throw failed("Embedding request exceeds the configured batch size of " + batchSize + ".", null);
-    }
-    for (String text : texts) {
-      if (text == null || text.trim().isEmpty()) throw failed("Embedding input cannot be empty.", null);
-    }
+  @Override
+  public List<double[]> embed(List<String> texts) {
+    validateInputs(texts);
     String key = resolveKey();
-    if (key == null || key.isEmpty()) throw failed("The OpenAI API key is not configured. Set the system property, environment variable or Openbravo.properties entry named in the provider's API Key Reference field.", null);
-    JSONArray inputs = new JSONArray();
-    for (String text : texts) {
-      inputs.put(text.length() > maximumInputCharacters ? text.substring(0, maximumInputCharacters) : text);
+    if (key == null || key.isEmpty()) {
+      throw failed("The OpenAI API key is not configured. Set the system property, environment"
+          + " variable or Openbravo.properties entry named in the provider's API Key Reference"
+          + " field.", null);
     }
     try {
-      JSONObject request = new JSONObject(); request.put("model", model); request.put("input", inputs);
-      request.put("dimensions", dimensions); request.put("encoding_format", "float");
-      HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
-      connection.setRequestMethod("POST"); connection.setConnectTimeout(timeoutSeconds * 1000);
-      connection.setReadTimeout(timeoutSeconds * 1000); connection.setDoOutput(true);
-      connection.setRequestProperty("Authorization", "Bearer " + key);
-      connection.setRequestProperty("Content-Type", "application/json");
-      try (OutputStream output = connection.getOutputStream()) { output.write(request.toString().getBytes(StandardCharsets.UTF_8)); }
-      int status = connection.getResponseCode();
-      String body = read(status >= 200 && status < 300 ? connection.getInputStream() : connection.getErrorStream());
-      if (status < 200 || status >= 300) throw failed("OpenAI embedding request failed with HTTP " + status + ".", null);
-      JSONArray data = new JSONObject(body).getJSONArray("data");
-      if (data.length() != texts.size()) {
-        throw failed("OpenAI returned " + data.length() + " embeddings for " + texts.size() + " inputs.", null);
+      return parseEmbeddings(post(key, requestBody(texts)), texts.size());
+    } catch (VectorException e) {
+      throw e;
+    } catch (Exception e) {
+      throw failed("Could not request an OpenAI embedding.", e);
+    }
+  }
+
+  /**
+   * Rejects a batch the provider would reject, before it costs a request.
+   *
+   * @param texts
+   *     the texts about to be embedded
+   */
+  private void validateInputs(List<String> texts) {
+    if (texts == null || texts.isEmpty()) {
+      throw failed("Embedding input cannot be empty.", null);
+    }
+    if (texts.size() > batchSize) {
+      throw failed("Embedding request exceeds the configured batch size of " + batchSize + ".",
+          null);
+    }
+    for (String text : texts) {
+      if (text == null || text.trim().isEmpty()) {
+        throw failed("Embedding input cannot be empty.", null);
       }
-      // The response carries an explicit index and is not guaranteed to preserve request order.
-      List<double[]> embeddings = new ArrayList<>(java.util.Collections.nCopies(texts.size(), null));
-      for (int entry = 0; entry < data.length(); entry++) {
-        JSONObject item = data.getJSONObject(entry);
-        int index = item.has("index") ? item.getInt("index") : entry;
-        if (index < 0 || index >= texts.size()) {
-          throw failed("OpenAI returned an embedding with an out of range index.", null);
-        }
-        JSONArray values = item.getJSONArray("embedding");
-        if (values.length() != dimensions) throw failed("OpenAI returned an unexpected embedding dimension.", null);
-        double[] embedding = new double[dimensions];
-        for (int i = 0; i < dimensions; i++) embedding[i] = values.getDouble(i);
-        embeddings.set(index, embedding);
+    }
+  }
+
+  /**
+   * Builds the request body, truncating any text past the configured maximum.
+   *
+   * @param texts
+   *     the texts to embed
+   * @return the body to post
+   * @throws Exception
+   *     if the body cannot be assembled
+   */
+  private JSONObject requestBody(List<String> texts) throws Exception {
+    JSONArray inputs = new JSONArray();
+    for (String text : texts) {
+      inputs.put(text.length() > maximumInputCharacters
+          ? text.substring(0, maximumInputCharacters)
+          : text);
+    }
+    JSONObject request = new JSONObject();
+    request.put("model", model);
+    request.put("input", inputs);
+    request.put("dimensions", dimensions);
+    request.put("encoding_format", "float");
+    return request;
+  }
+
+  /**
+   * Posts the request to the configured endpoint.
+   *
+   * @param key
+   *     the resolved API key
+   * @param request
+   *     the body to post
+   * @return the response body
+   * @throws Exception
+   *     if the call cannot be made
+   */
+  private String post(String key, JSONObject request) throws Exception {
+    HttpURLConnection connection = (HttpURLConnection) new URL(endpoint).openConnection();
+    connection.setRequestMethod("POST");
+    connection.setConnectTimeout(timeoutSeconds * 1000);
+    connection.setReadTimeout(timeoutSeconds * 1000);
+    connection.setDoOutput(true);
+    connection.setRequestProperty("Authorization", "Bearer " + key);
+    connection.setRequestProperty("Content-Type", "application/json");
+    try (OutputStream output = connection.getOutputStream()) {
+      output.write(request.toString().getBytes(StandardCharsets.UTF_8));
+    }
+    int status = connection.getResponseCode();
+    boolean ok = status >= 200 && status < 300;
+    String body = read(ok ? connection.getInputStream() : connection.getErrorStream());
+    if (!ok) {
+      throw failed("OpenAI embedding request failed with HTTP " + status + ".", null);
+    }
+    return body;
+  }
+
+  /**
+   * Reads the embeddings out of a response, in the order the inputs were sent.
+   *
+   * @param body
+   *     the response body
+   * @param expected
+   *     how many embeddings the request asked for
+   * @return one embedding per input, in input order
+   * @throws Exception
+   *     if the response cannot be read
+   */
+  private List<double[]> parseEmbeddings(String body, int expected) throws Exception {
+    JSONArray data = new JSONObject(body).getJSONArray("data");
+    if (data.length() != expected) {
+      throw failed("OpenAI returned " + data.length() + " embeddings for " + expected + " inputs.",
+          null);
+    }
+    // The response carries an explicit index and is not guaranteed to preserve request order.
+    List<double[]> embeddings = new ArrayList<>(Collections.nCopies(expected, null));
+    for (int entry = 0; entry < data.length(); entry++) {
+      JSONObject item = data.getJSONObject(entry);
+      int index = item.has("index") ? item.getInt("index") : entry;
+      if (index < 0 || index >= expected) {
+        throw failed("OpenAI returned an embedding with an out of range index.", null);
       }
-      for (double[] embedding : embeddings) {
-        if (embedding == null) throw failed("OpenAI did not return an embedding for every input.", null);
+      embeddings.set(index, vector(item.getJSONArray("embedding")));
+    }
+    for (double[] embedding : embeddings) {
+      if (embedding == null) {
+        throw failed("OpenAI did not return an embedding for every input.", null);
       }
-      return embeddings;
-    } catch (VectorException e) { throw e; } catch (Exception e) { throw failed("Could not request an OpenAI embedding.", e); }
+    }
+    return embeddings;
+  }
+
+  /**
+   * Converts one embedding of the response into a vector of the configured width.
+   *
+   * @param values
+   *     the embedding as the provider returned it
+   * @return the embedding
+   * @throws Exception
+   *     if a value cannot be read
+   */
+  private double[] vector(JSONArray values) throws Exception {
+    if (values.length() != dimensions) {
+      throw failed("OpenAI returned an unexpected embedding dimension.", null);
+    }
+    double[] embedding = new double[dimensions];
+    for (int i = 0; i < dimensions; i++) {
+      embedding[i] = values.getDouble(i);
+    }
+    return embedding;
   }
 
   private static String read(java.io.InputStream stream) throws Exception { if (stream == null) return ""; StringBuilder value = new StringBuilder(); try (BufferedReader reader = new BufferedReader(new InputStreamReader(stream, StandardCharsets.UTF_8))) { String line; while ((line = reader.readLine()) != null) value.append(line); } return value.toString(); }

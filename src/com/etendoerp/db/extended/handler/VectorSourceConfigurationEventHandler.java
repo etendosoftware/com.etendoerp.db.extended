@@ -74,7 +74,7 @@ public class VectorSourceConfigurationEventHandler extends EntityPersistenceEven
     }
     if (event.getTargetInstance() instanceof VectorSource) {
       VectorSource source = (VectorSource) event.getTargetInstance();
-      if (changedAny(event, source)) {
+      if (changedAny(event)) {
         bump(event, source);
       }
     } else if (event.getTargetInstance() instanceof VectorSourceColumn) {
@@ -94,7 +94,7 @@ public class VectorSourceConfigurationEventHandler extends EntityPersistenceEven
     }
   }
 
-  private boolean changedAny(EntityUpdateEvent event, VectorSource source) {
+  private boolean changedAny(EntityUpdateEvent event) {
     Entity entity = ModelProvider.getInstance().getEntity(VectorSource.ENTITY_NAME);
     for (String propertyName : VERSIONED_PROPERTIES) {
       Property property = entity.getProperty(propertyName);

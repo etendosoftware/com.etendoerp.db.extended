@@ -79,6 +79,7 @@ public class ActivateVectorSource extends Action {
    */
   @FunctionalInterface
   interface Checkpoint {
+    /** Commits the work accumulated so far, making it visible to other sessions. */
     void commit();
   }
 

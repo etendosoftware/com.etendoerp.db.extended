@@ -70,10 +70,10 @@ final class VectorSourceReadiness {
     if (candidate.dimensions == null) {
       return Verdict.WITHOUT_PROVIDER;
     }
-    if (candidate.columns == 0) {
+    if (candidate.columns.total == 0) {
       return Verdict.WITHOUT_COLUMNS;
     }
-    if (candidate.contentColumns == 0) {
+    if (candidate.columns.content == 0) {
       return Verdict.WITHOUT_CONTENT;
     }
     if (collection == null) {
@@ -104,7 +104,8 @@ final class VectorSourceReadiness {
     }
     return new Candidate(source.getId(), source.getName(), source.getNamespace(),
         source.getDistanceMetric(), Boolean.TRUE.equals(source.isEnabled()),
-        provider == null ? null : provider.getDimensions().intValue(), columns, contentColumns);
+        provider == null ? null : provider.getDimensions().intValue(),
+        new Columns(columns, contentColumns));
   }
 
   static Collection collection(ConnectionProvider connectionProvider, String namespace) throws Exception {
@@ -156,11 +157,10 @@ final class VectorSourceReadiness {
     final String metric;
     final boolean enabled;
     final Integer dimensions;
-    final int columns;
-    final int contentColumns;
+    final Columns columns;
 
     Candidate(String id, String name, String namespace, String metric, boolean enabled,
-        Integer dimensions, int columns, int contentColumns) {
+        Integer dimensions, Columns columns) {
       this.id = id;
       this.name = name;
       this.namespace = namespace;
@@ -168,7 +168,22 @@ final class VectorSourceReadiness {
       this.enabled = enabled;
       this.dimensions = dimensions;
       this.columns = columns;
-      this.contentColumns = contentColumns;
+    }
+  }
+
+  /**
+   * How many columns a source has and how many of them carry content.
+   *
+   * <p>They are counted by one query and read by two adjacent checks, and a source with columns but
+   * no content is a distinct verdict from one with no columns at all.</p>
+   */
+  static final class Columns {
+    final int total;
+    final int content;
+
+    Columns(int total, int content) {
+      this.total = total;
+      this.content = content;
     }
   }
 

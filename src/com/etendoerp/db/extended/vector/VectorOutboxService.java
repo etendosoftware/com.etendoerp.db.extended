@@ -110,6 +110,12 @@ public class VectorOutboxService {
    *     the event reaches DONE or FAILED, so an interrupted run does not discard the deliveries
    *     already made.
    */
+  /**
+   * @param connectionProvider
+   *     connection the queue is read and written with
+   * @param consumers
+   *     the consumers events are dispatched to, resolved per namespace
+   */
   public VectorOutboxService(ConnectionProvider connectionProvider,
       Collection<VectorOutboxConsumer> consumers, TransactionBoundary transactionBoundary) {
     this.connectionProvider = connectionProvider;
@@ -117,10 +123,12 @@ public class VectorOutboxService {
     this.transactionBoundary = transactionBoundary;
   }
 
+  private static final String MAX_EVENTS_MUST_BE_POSITIVE = "maxEvents must be positive";
+
   /** Processes at most {@code maxEvents} events and returns the number successfully delivered. */
   public int processPending(int maxEvents) {
     if (maxEvents < 1) {
-      throw new IllegalArgumentException("maxEvents must be positive");
+      throw new IllegalArgumentException(MAX_EVENTS_MUST_BE_POSITIVE);
     }
     // Events are grouped by source so that every chunk shares one provider, and the chunk size is
     // whatever that provider resolves in a single round trip. The chunk is also the transaction the
@@ -214,6 +222,10 @@ public class VectorOutboxService {
    *
    * <p>The attempt counter is reset: this is an explicit decision taken after correcting the
    * provider or source configuration, so the event is entitled to a full budget again.</p>
+   *
+   * @param maxEvents
+   *     upper bound of events requeued in this call
+   * @return the number of events requeued
    */
   public int requeueFailed(int maxEvents) {
     return requeue("FAILED", maxEvents, null, true, false);
@@ -240,6 +252,10 @@ public class VectorOutboxService {
    * <p>They are marked FAILED so they leave the recovery loop and become visible to an
    * administrator, who can correct the configuration and requeue them explicitly.</p>
    *
+   * @param minimumAge
+   *     how long an event must have been abandoned before it is considered
+   * @param maxEvents
+   *     upper bound of events retired in this call
    * @return the number of events retired
    */
   public int exhaustStaleProcessing(Duration minimumAge, int maxEvents) {
@@ -247,7 +263,7 @@ public class VectorOutboxService {
       throw new IllegalArgumentException("minimumAge must be positive");
     }
     if (maxEvents < 1) {
-      throw new IllegalArgumentException("maxEvents must be positive");
+      throw new IllegalArgumentException(MAX_EVENTS_MUST_BE_POSITIVE);
     }
     String sql = "UPDATE etarc_vector_outbox SET status = 'FAILED', updated = now() AT TIME ZONE 'UTC', updatedby = '0', "
         + "last_error = 'Delivery abandoned after exhausting the provider retry limit.' "
@@ -348,7 +364,7 @@ public class VectorOutboxService {
    */
   public int purgeTerminal(Duration retention, int maxEvents) {
     if (maxEvents < 1) {
-      throw new IllegalArgumentException("maxEvents must be positive");
+      throw new IllegalArgumentException(MAX_EVENTS_MUST_BE_POSITIVE);
     }
     if (retention == null || retention.isNegative()) {
       throw new IllegalArgumentException("retention must not be negative");
@@ -370,7 +386,7 @@ public class VectorOutboxService {
   private int requeue(String status, int maxEvents, Duration minimumAge, boolean resetAttempts,
       boolean withinAttemptLimit) {
     if (maxEvents < 1) {
-      throw new IllegalArgumentException("maxEvents must be positive");
+      throw new IllegalArgumentException(MAX_EVENTS_MUST_BE_POSITIVE);
     }
     String ageCondition = minimumAge == null ? "" : " AND updated < now() AT TIME ZONE 'UTC' - (? * interval '1 second')";
     String attemptReset = resetAttempts ? ", attempt_count = 0" : "";

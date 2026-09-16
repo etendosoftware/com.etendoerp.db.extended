@@ -43,6 +43,14 @@ public final class DictionaryVectorOutboxConsumer implements VectorOutboxConsume
   private final Map<String, VectorEmbeddingProvider> providerBySource = new HashMap<>();
   /** Embeddings resolved by {@link #prepare(List)}, drained as each event is consumed. */
   private final Map<String, double[]> embeddingByEvent = new HashMap<>();
+  /**
+   * Builds a consumer that resolves its providers from the dictionary.
+   *
+   * @param cp
+   *     connection to read the source configuration and the indexed rows with
+   * @param store
+   *     where the resulting vectors are written
+   */
   public DictionaryVectorOutboxConsumer(ConnectionProvider cp, VectorStore store) {
     this(cp, store, new VectorEmbeddingProviderFactory(cp));
   }
@@ -68,17 +76,24 @@ public final class DictionaryVectorOutboxConsumer implements VectorOutboxConsume
    * provider accepts many inputs at once. Everything else stays per event, so a row that cannot be
    * read or upserted still fails on its own.</p>
    */
-  @Override public void prepare(List<VectorOutboxEvent> events) throws Exception {
+  @Override public void prepare(List<VectorOutboxEvent> events) {
     embeddingByEvent.clear();
     List<VectorOutboxEvent> embeddable = new ArrayList<>();
     List<String> texts = new ArrayList<>();
-    for (VectorOutboxEvent event : events) {
-      Payload payload = payload(event);
-      if (payload == null) {
-        continue;
+    try {
+      for (VectorOutboxEvent event : events) {
+        Payload payload = payload(event);
+        if (payload == null) {
+          continue;
+        }
+        embeddable.add(event);
+        texts.add(payload.text);
       }
-      embeddable.add(event);
-      texts.add(payload.text);
+    } catch (VectorException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,
+          "Could not read the records of a delivery chunk.", e);
     }
     if (texts.isEmpty()) {
       return;
@@ -118,7 +133,9 @@ public final class DictionaryVectorOutboxConsumer implements VectorOutboxConsume
     if (columns.stream().noneMatch(SourceColumn::isContent)) throw new VectorException(VectorErrorCode.VECTOR_INVALID_METADATA, "The vector source has no content columns.");
     String sql = "SELECT " + quoted(columnNames(columns)) + " FROM " + quote(source.table) + " WHERE " + quote(source.key) + " = ?";
     try (PreparedStatement statement = cp.getPreparedStatement(sql)) { statement.setString(1, event.getRecordId()); try (ResultSet result = statement.executeQuery()) {
-      if (!result.next()) { store.delete(event.getNamespace(), event.getRecordId()); return null; } JSONObject fields = new JSONObject(); StringBuilder text = new StringBuilder();
+      if (!result.next()) { store.delete(event.getNamespace(), event.getRecordId()); return null; }
+      JSONObject fields = new JSONObject();
+      StringBuilder text = new StringBuilder();
       for (SourceColumn column : columns) { String value = result.getString(column.name); if (value != null) { fields.put(column.name, value); if (column.isContent()) text.append(column.name).append(": ").append(value).append('\n'); } }
       JSONObject metadata = new JSONObject(); metadata.put("sourceId", event.getSourceId()); metadata.put("configVersion", event.getConfigVersion()); metadata.put("fields", fields);
       return new Payload(text.toString(), metadata.toString());
@@ -132,20 +149,24 @@ public final class DictionaryVectorOutboxConsumer implements VectorOutboxConsume
     private Payload(String text, String metadata) { this.text = text; this.metadata = metadata; }
   }
   private Source source(String id) throws Exception { try (PreparedStatement s = cp.getPreparedStatement("SELECT s.config_version, t.tablename, k.columnname FROM etarc_vector_source s JOIN ad_table t ON t.ad_table_id=s.ad_table_id JOIN ad_column k ON k.ad_table_id=t.ad_table_id AND k.iskey='Y' AND k.isactive='Y' WHERE s.etarc_vector_source_id=?")) { s.setString(1,id); try(ResultSet r=s.executeQuery()){if(!r.next()) throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,"Vector source was not found."); return new Source(r.getLong(1),r.getString(2),r.getString(3));} } }
-  private List<SourceColumn> cachedColumns(String id) throws Exception {
-    List<SourceColumn> cached = columnsBySource.get(id);
-    if (cached == null) {
-      cached = sourceColumns(id);
-      columnsBySource.put(id, cached);
-    }
-    return cached;
+  private List<SourceColumn> cachedColumns(String id) {
+    return columnsBySource.computeIfAbsent(id, this::sourceColumns);
   }
 
   private VectorEmbeddingProvider cachedProvider(String id) {
     return providerBySource.computeIfAbsent(id, providers::forSource);
   }
 
-  private List<SourceColumn> sourceColumns(String id) throws Exception { List<SourceColumn> result=new ArrayList<>(); try(PreparedStatement s=cp.getPreparedStatement("SELECT c.columnname, sc.iscontent FROM etarc_vector_source_column sc JOIN ad_column c ON c.ad_column_id=sc.ad_column_id WHERE sc.etarc_vector_source_id=? AND sc.isactive='Y' ORDER BY sc.seqno")){s.setString(1,id);try(ResultSet r=s.executeQuery()){while(r.next())result.add(new SourceColumn(r.getString(1), "Y".equals(r.getString(2))));}}return result; }
+  private List<SourceColumn> sourceColumns(String id) {
+    try {
+      List<SourceColumn> result=new ArrayList<>(); try(PreparedStatement s=cp.getPreparedStatement("SELECT c.columnname, sc.iscontent FROM etarc_vector_source_column sc JOIN ad_column c ON c.ad_column_id=sc.ad_column_id WHERE sc.etarc_vector_source_id=? AND sc.isactive='Y' ORDER BY sc.seqno")){s.setString(1,id);try(ResultSet r=s.executeQuery()){while(r.next())result.add(new SourceColumn(r.getString(1), "Y".equals(r.getString(2))));}}return result;
+    } catch (VectorException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,
+          "Could not read the columns of a vector source.", e);
+    }
+  }
   private static String columnNames(List<SourceColumn> columns) { StringBuilder result = new StringBuilder(); for(SourceColumn column:columns){if(result.length()>0)result.append(',');result.append(column.name);}return result.toString(); }
   private static String quoted(String values) { StringBuilder result=new StringBuilder(); for(String value:values.split(",")){if(result.length()>0)result.append(',');result.append(quote(value));}return result.toString(); }
   private static String quote(String value) { return "\""+value.toLowerCase().replace("\"","\"\"")+"\""; }

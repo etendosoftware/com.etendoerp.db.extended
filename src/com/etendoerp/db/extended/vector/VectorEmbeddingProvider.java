@@ -29,12 +29,22 @@ public interface VectorEmbeddingProvider {
    */
   List<double[]> embed(List<String> texts);
 
-  /** Maximum number of inputs the provider accepts in one request. */
+  /**
+   * Maximum number of inputs the provider accepts in one request.
+   *
+   * @return the largest batch this provider accepts
+   */
   int batchSize();
 
   int dimensions();
 
-  /** Embeds a single text. Kept for callers that have nothing to batch. */
+  /**
+   * Embeds a single text. Kept for callers that have nothing to batch.
+   *
+   * @param text
+   *     the text to embed
+   * @return the embedding of that text
+   */
   default double[] embed(String text) {
     return embed(List.of(text)).get(0);
   }

@@ -149,7 +149,7 @@ class VectorOutboxServiceTest {
 
     @Override public int batchSize(VectorOutboxEvent event) { return batchSize; }
 
-    @Override public void prepare(List<VectorOutboxEvent> events) throws Exception {
+    @Override public void prepare(List<VectorOutboxEvent> events) {
       log.add("prepare");
       if (failPrepare) {
         throw new IllegalStateException("the provider is unreachable");
