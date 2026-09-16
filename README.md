@@ -53,7 +53,11 @@ The capture triggers are the part this does not cover: they belong to the table 
 action re-stamps the checksum for them, and only when the structure was accepted beforehand -- and
 it verifies afterwards that the structure really did move, because `ad_db_modified` ends in
 `EXCEPTION WHEN OTHERS THEN RETURN 'N'` and answers `N` for a database that carries no checksum at
-all, so an unguarded reading cannot tell a clean database from one that cannot answer.
+all, so an unguarded reading cannot tell a clean database from one that cannot answer. The
+acceptance is logged with the checksum it replaced and the one it stamped, because it is the one
+act here that can absorb a change nobody meant to accept. What was measured, what is left, and
+what the core would have to offer for this to disappear are in
+[doc/checksum-acceptance.md](doc/checksum-acceptance.md).
 
 ### Indexing what a table already held
 
@@ -110,7 +114,7 @@ Writing to an instrumented table costs one outbox insert per row whose watched c
 changed, and nothing measurable otherwise — a column nobody watches is not even considered, because
 the trigger is declared `AFTER UPDATE OF` that column. A table with no ready source carries no
 trigger at all. The numbers and the method are in
-[docs/vector-write-path-performance.md](doc/vector-write-path-performance.md).
+[doc/vector-write-path-performance.md](doc/vector-write-path-performance.md).
 
 Text leaves the tenant on every embedding call. **Max Input Characters** truncates a record before
 it is sent, which bounds the request but also means a long record is embedded from its beginning
