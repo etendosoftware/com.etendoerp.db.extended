@@ -39,7 +39,21 @@ public class VectorActivationService {
       throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "pgvector activation failed; verify extension permissions and retry.", e);
     }
   }
-  private void persistFailure() { try { VectorRuntimeSchema.ensure(cp); execute("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_activation (id boolean primary key default true, state varchar(16) not null, diagnostic text, updated_at timestamptz not null default now())"); execute("INSERT INTO etarc_vector.etarc_vector_activation (id, state, diagnostic) VALUES (true, 'FAILED', 'Activation failed; verify extension permissions and retry.') ON CONFLICT (id) DO UPDATE SET state = 'FAILED', diagnostic = EXCLUDED.diagnostic, updated_at = now()"); } catch (Exception ignored) { } }
+  private void persistFailure() {
+    try {
+      VectorRuntimeSchema.ensure(cp);
+      execute("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_activation (id boolean primary"
+          + " key default true, state varchar(16) not null, diagnostic text, updated_at timestamptz"
+          + " not null default now())");
+      execute("INSERT INTO etarc_vector.etarc_vector_activation (id, state, diagnostic)"
+          + " VALUES (true, 'FAILED', 'Activation failed; verify extension permissions and retry.')"
+          + " ON CONFLICT (id) DO UPDATE SET state = 'FAILED', diagnostic = EXCLUDED.diagnostic,"
+          + " updated_at = now()");
+    } catch (Exception ignored) {
+      // Recording the failure is best effort: the caller is already throwing the failure itself,
+      // and a database that cannot take this row is usually the very reason activation failed.
+    }
+  }
   private void execute(String sql) throws Exception { try (PreparedStatement ps = cp.getPreparedStatement(sql)) { ps.executeUpdate(); } }
   static VectorException disabled(VectorCapability capability) { return new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, capability.getDiagnostic()); }
 

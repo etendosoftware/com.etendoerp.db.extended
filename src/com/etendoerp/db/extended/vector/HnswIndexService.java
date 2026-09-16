@@ -17,10 +17,17 @@
 package com.etendoerp.db.extended.vector;
 
 import java.sql.PreparedStatement;
+import java.sql.ResultSet;
+
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
 
 /** Explicit HNSW index lifecycle; exact search remains available without an index. */
 public class HnswIndexService {
+  private static final Logger log = LogManager.getLogger();
+  private static final String COLLECTION_NOT_FOUND = "Vector collection was not found.";
+
   private final ConnectionProvider cp; private final VectorCapabilityService capability;
   public HnswIndexService(ConnectionProvider cp) { this.cp = cp; capability = new VectorCapabilityService(cp); }
   public void create(String namespace, DistanceMetric metric) {
@@ -30,7 +37,61 @@ public class HnswIndexService {
     try (PreparedStatement format = cp.getPreparedStatement(template)) { format.setString(1, index); format.setString(2, namespace); try (java.sql.ResultSet rs = format.executeQuery()) { if (!rs.next()) throw new java.sql.SQLException("Could not create HNSW statement"); try (PreparedStatement create = cp.getPreparedStatement(rs.getString(1))) { create.executeUpdate(); } } updateStatus(namespace, "READY"); }
     catch (Exception e) { updateStatus(namespace, "FAILED"); throw new VectorException(VectorErrorCode.VECTOR_INDEX_OPERATION_FAILED, "Could not create the HNSW vector index.", e); }
   }
-  public String status(String namespace) { try (PreparedStatement ps = cp.getPreparedStatement("SELECT index_status FROM etarc_vector.etarc_vector_collection WHERE namespace = ?")) { ps.setString(1, namespace); try (java.sql.ResultSet rs = ps.executeQuery()) { if (!rs.next()) throw new VectorException(VectorErrorCode.VECTOR_COLLECTION_NOT_FOUND, "Vector collection was not found."); return rs.getString(1); } } catch (VectorException e) { throw e; } catch (Exception e) { throw new VectorException(VectorErrorCode.VECTOR_INDEX_OPERATION_FAILED, "Could not inspect the HNSW index.", e); } }
-  private long collectionId(String namespace) { try (PreparedStatement ps = cp.getPreparedStatement("SELECT id FROM etarc_vector.etarc_vector_collection WHERE namespace = ?")) { ps.setString(1, namespace); try (java.sql.ResultSet rs = ps.executeQuery()) { if (!rs.next()) throw new VectorException(VectorErrorCode.VECTOR_COLLECTION_NOT_FOUND, "Vector collection was not found."); return rs.getLong(1); } } catch (VectorException e) { throw e; } catch (Exception e) { throw new VectorException(VectorErrorCode.VECTOR_INDEX_OPERATION_FAILED, "Could not resolve vector collection identity.", e); } }
-  private void updateStatus(String namespace, String status) { try (PreparedStatement ps = cp.getPreparedStatement("UPDATE etarc_vector.etarc_vector_collection SET index_status = ? WHERE namespace = ?")) { ps.setString(1, status); ps.setString(2, namespace); ps.executeUpdate(); } catch (Exception ignored) { } }
+  /**
+   * Reads the index state stored for a collection.
+   *
+   * @param namespace
+   *     the collection to inspect
+   * @return the stored index status
+   */
+  public String status(String namespace) {
+    try (PreparedStatement ps = cp.getPreparedStatement(
+        "SELECT index_status FROM etarc_vector.etarc_vector_collection WHERE namespace = ?")) {
+      ps.setString(1, namespace);
+      try (ResultSet rs = ps.executeQuery()) {
+        if (!rs.next()) {
+          throw new VectorException(VectorErrorCode.VECTOR_COLLECTION_NOT_FOUND,
+              COLLECTION_NOT_FOUND);
+        }
+        return rs.getString(1);
+      }
+    } catch (VectorException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.VECTOR_INDEX_OPERATION_FAILED,
+          "Could not inspect the HNSW index.", e);
+    }
+  }
+  private long collectionId(String namespace) {
+    try (PreparedStatement ps = cp.getPreparedStatement(
+        "SELECT id FROM etarc_vector.etarc_vector_collection WHERE namespace = ?")) {
+      ps.setString(1, namespace);
+      try (ResultSet rs = ps.executeQuery()) {
+        if (!rs.next()) {
+          throw new VectorException(VectorErrorCode.VECTOR_COLLECTION_NOT_FOUND,
+              COLLECTION_NOT_FOUND);
+        }
+        return rs.getLong(1);
+      }
+    } catch (VectorException e) {
+      throw e;
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.VECTOR_INDEX_OPERATION_FAILED,
+          "Could not resolve vector collection identity.", e);
+    }
+  }
+  private void updateStatus(String namespace, String status) {
+    try (PreparedStatement ps = cp.getPreparedStatement(
+        "UPDATE etarc_vector.etarc_vector_collection SET index_status = ? WHERE namespace = ?")) {
+      ps.setString(1, status);
+      ps.setString(2, namespace);
+      ps.executeUpdate();
+    } catch (Exception e) {
+      // The caller is already reporting the failure this was recording, so this must not replace
+      // it with one about the recording. It is logged instead, because a status left behind makes
+      // the collection describe an index it does not have.
+      log.warn("Could not set the index status of vector collection {} to {}.", namespace, status,
+          e);
+    }
+  }
 }

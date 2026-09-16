@@ -417,6 +417,9 @@ public class VectorTriggerService {
    * would quietly accept whatever else someone had changed in the database, and that is precisely
    * the thing the check exists to catch.</p>
    *
+   * @param changed
+   *     what this run altered, recorded alongside the checksums so the acceptance can be told
+   *     apart afterwards
    * @throws Exception
    *     if the checksum cannot be read or re-stamped
    */
