@@ -35,6 +35,7 @@ public class VectorCapabilityService {
           + "EXISTS (SELECT 1 FROM pg_extension WHERE extname = ?) AS installed";
 
   private final ConnectionProvider connectionProvider;
+  private VectorCapability activeCapability;
 
   public VectorCapabilityService(ConnectionProvider connectionProvider) {
     this.connectionProvider = connectionProvider;
@@ -46,6 +47,20 @@ public class VectorCapabilityService {
    * @return the detected capability or a safe failed-state diagnostic when inspection cannot complete
    */
   public VectorCapability inspect() {
+    if (activeCapability != null) {
+      return activeCapability;
+    }
+    VectorCapability capability = queryCapability();
+    if (capability.getState() == VectorCapabilityState.ACTIVE) {
+      // Only the ACTIVE state is remembered. Activation moves in one direction, so a cached ACTIVE
+      // cannot go stale, whereas caching AVAILABLE or UNAVAILABLE would keep reporting the feature
+      // as off after an administrator turns it on. Every other state is re-inspected.
+      activeCapability = capability;
+    }
+    return capability;
+  }
+
+  private VectorCapability queryCapability() {
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(CAPABILITY_SQL)) {
       statement.setString(1, VECTOR_EXTENSION);
       statement.setString(2, VECTOR_EXTENSION);

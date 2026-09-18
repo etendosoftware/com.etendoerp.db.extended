@@ -40,18 +40,32 @@ import org.openbravo.erpCommon.utility.OBMessageUtils;
 
 import com.etendoerp.db.extended.data.TableConfig;
 
+/**
+ * Refuses a partitioning configuration the database could not honour, at the moment it is saved.
+ *
+ * <p>Partitioning a table is not reversible by editing a record: the table is rebuilt around the
+ * column chosen here. So the conditions that would make it fail are checked before the
+ * configuration is accepted rather than while the rebuild runs -- a partition key with null values
+ * has rows that belong to no partition, and a table carrying a unique constraint that does not
+ * include the key cannot be partitioned at all in PostgreSQL.</p>
+ *
+ * <p>The checks read the database through dynamic SQL, so every identifier that reaches a
+ * statement is validated against {@code IDENTIFIER} and quoted first.</p>
+ */
 public class PartitionTableEventHandler extends EntityPersistenceEventObserver {
   private static final Logger logger = LogManager.getLogger();
   private static final Entity[] entities = { ModelProvider.getInstance().getEntity(TableConfig.ENTITY_NAME) };
   public static final String ETARC_COULD_NOT_RETRIEVE_TABLES = "ETARC_CouldNotRetrieveTables";
 
-  private static final Pattern IDENTIFIER = Pattern.compile("^[A-Za-z_][A-Za-z0-9_]*$");
+  /** A leading digit is excluded on purpose, so the first class is not {@code \w}. */
+  private static final Pattern IDENTIFIER = Pattern.compile("^[A-Za-z_]\\w*$");
   private static final String DEFAULT_SCHEMA = "public";
 
   /**
    * Validates and safely quotes an SQL identifier (schema/table/column) for use in
    * dynamic SQL. The identifier must match the allowed {@code IDENTIFIER} pattern
-   * (by default: {@code [A-Za-z_][A-Za-z0-9_]*}); otherwise an {@link OBException} is thrown.
+   * (a letter or underscore, then letters, digits or underscores); otherwise an
+   * {@link OBException} is thrown.
    * <p>
    * The returned value is wrapped in double quotes, and any embedded double quotes
    * are escaped by doubling them, following ANSI/PostgreSQL rules.

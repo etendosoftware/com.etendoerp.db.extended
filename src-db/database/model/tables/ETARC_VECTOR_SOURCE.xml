@@ -81,6 +81,22 @@
         <default/>
         <onCreateDefault/>
       </column>
+      <column name="AD_FILTER_COLUMN_ID" primaryKey="false" required="false" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="DISTANCE_METRIC" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
+        <default><![CDATA[COSINE]]></default>
+        <onCreateDefault><![CDATA['COSINE']]></onCreateDefault>
+      </column>
+      <column name="ACTIVATE" primaryKey="false" required="false" type="VARCHAR" size="60" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="REQUEST_REINDEX" primaryKey="false" required="false" type="VARCHAR" size="60" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
       <foreign-key foreignTable="AD_CLIENT" name="ETARC_VSRC_AD_CLIENT">
         <reference local="AD_CLIENT_ID" foreign="AD_CLIENT_ID"/>
       </foreign-key>
@@ -93,13 +109,27 @@
       <foreign-key foreignTable="AD_TABLE" name="ETARC_VSRC_AD_TABLE">
         <reference local="AD_TABLE_ID" foreign="AD_TABLE_ID"/>
       </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VSRC_CREATEDBY">
+        <reference local="CREATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
       <foreign-key foreignTable="ETARC_VECTOR_EMBED_PROVIDER" name="ETARC_VSRC_EMBEDDING_PROVIDER">
         <reference local="ETARC_VECTOR_EMBED_PROVIDER_ID" foreign="ETARC_VECTOR_EMBED_PROVIDER_ID"/>
       </foreign-key>
+      <foreign-key foreignTable="AD_COLUMN" name="ETARC_VSRC_FILTER_COLUMN">
+        <reference local="AD_FILTER_COLUMN_ID" foreign="AD_COLUMN_ID"/>
+      </foreign-key>
+      <foreign-key foreignTable="AD_USER" name="ETARC_VSRC_UPDATEDBY">
+        <reference local="UPDATEDBY" foreign="AD_USER_ID"/>
+      </foreign-key>
+      <unique name="ETARC_VSRC_NAMESPACE_UQ">
+        <unique-column name="NAMESPACE"/>
+        <unique-column name="AD_CLIENT_ID"/>
+      </unique>
       <check name="ETARC_VSRC_ACTIVE_CHK"><![CDATA[ISACTIVE IN ('Y', 'N')]]></check>
       <check name="ETARC_VSRC_DELETE_CHK"><![CDATA[ISDELETEENABLED IN ('Y', 'N')]]></check>
       <check name="ETARC_VSRC_ENABLED_CHK"><![CDATA[ISENABLED IN ('Y', 'N')]]></check>
       <check name="ETARC_VSRC_INSERT_CHK"><![CDATA[ISINSERTENABLED IN ('Y', 'N')]]></check>
+      <check name="ETARC_VSRC_METRIC_CHK"><![CDATA[DISTANCE_METRIC IN ('COSINE', 'L2', 'INNER_PRODUCT')]]></check>
       <check name="ETARC_VSRC_UPDATE_CHK"><![CDATA[ISUPDATEENABLED IN ('Y', 'N')]]></check>
     </table>
   </database>

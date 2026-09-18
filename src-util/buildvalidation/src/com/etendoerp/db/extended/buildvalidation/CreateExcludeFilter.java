@@ -257,7 +257,7 @@ public class CreateExcludeFilter extends BuildValidation {
             try (ResultSet watchedRows = watched.executeQuery()) {
               while (watchedRows.next()) {
                 triggersToExclude.add(prefix + "_U_"
-                    + shortId(watchedRows.getString("ad_column_id")).toUpperCase());
+                    + columnKey(watchedRows.getString("ad_column_id")).toUpperCase());
               }
             }
           }
@@ -268,8 +268,18 @@ public class CreateExcludeFilter extends BuildValidation {
     }
   }
 
-  private static String shortId(String id) {
-    return id.substring(0, Math.min(8, id.length()));
+  /**
+   * Builds the per-column suffix of a watched-column trigger name.
+   * <p>
+   * <b>Must stay identical to {@code GenerateVectorSourceTriggers.columnKey}</b>: that module
+   * script names the generated triggers with this same rule, and if the two drift apart the
+   * excluded names stop matching the real ones and DBSM reports them as local changes.
+   *
+   * @param id the AD_COLUMN_ID of the watched column
+   * @return an 8-character lowercase hexadecimal suffix
+   */
+  private static String columnKey(String id) {
+    return String.format("%08x", id.hashCode());
   }
 
   private String getBaseTablesQuery() {
