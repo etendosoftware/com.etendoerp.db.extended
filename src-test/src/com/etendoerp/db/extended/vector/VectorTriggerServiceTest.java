@@ -18,9 +18,12 @@ package com.etendoerp.db.extended.vector;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
+import static org.mockito.Mockito.doAnswer;
+import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
@@ -50,6 +53,7 @@ class VectorTriggerServiceTest {
 
   /** Every statement the service asked for, in order. */
   private final List<String> statements = new ArrayList<>();
+  private final List<Timestamp> restoredWatermarks = new ArrayList<>();
 
   @Test
   void instrumentsAReadySourceForInsertDeleteAndEachWatchedColumn() throws Exception {
@@ -174,6 +178,17 @@ class VectorTriggerServiceTest {
   }
 
   @Test
+  void putsANullDictionaryWatermarkBackAfterAcceptingTheStructure() throws Exception {
+    service(ready(true), (Timestamp) null).acceptDatabaseStructure("a test");
+
+    assertTrue(statements.contains("UPDATE ad_system_info SET last_dbupdate = ?"),
+        "a null watermark is still the previous value: otherwise accepting the checksum turns it "
+            + "into now and can hide pending dictionary changes");
+    assertEquals(1, restoredWatermarks.size());
+    assertNull(restoredWatermarks.get(0), "the null watermark itself has to be restored");
+  }
+
+  @Test
   void recordsTheChecksumItReplacedWhenAcceptingTheStructure() throws Exception {
     Timestamp watermark = Timestamp.valueOf("2026-09-14 18:28:21");
     service(ready(true), watermark).acceptDatabaseStructure("a test");
@@ -224,6 +239,12 @@ class VectorTriggerServiceTest {
       PreparedStatement statement = mock(PreparedStatement.class);
       when(statement.executeQuery()).thenReturn(rows);
       when(statement.executeUpdate()).thenReturn(1);
+      if (sql.equals("UPDATE ad_system_info SET last_dbupdate = ?")) {
+        doAnswer(answerInvocation -> {
+          restoredWatermarks.add(answerInvocation.getArgument(1));
+          return null;
+        }).when(statement).setTimestamp(eq(1), any());
+      }
       return statement;
     });
     return new VectorTriggerService(cp);

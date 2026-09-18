@@ -439,12 +439,10 @@ public class VectorTriggerService {
       result.next();
     }
 
-    if (watermark != null) {
-      try (PreparedStatement statement = cp.getPreparedStatement(
-          "UPDATE ad_system_info SET last_dbupdate = ?")) {
-        statement.setTimestamp(1, watermark);
-        statement.executeUpdate();
-      }
+    try (PreparedStatement statement = cp.getPreparedStatement(
+        "UPDATE ad_system_info SET last_dbupdate = ?")) {
+      statement.setTimestamp(1, watermark);
+      statement.executeUpdate();
     }
 
     // Named in full on purpose. Accepting the structure is the one thing here that can absorb a
