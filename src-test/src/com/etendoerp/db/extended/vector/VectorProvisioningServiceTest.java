@@ -193,6 +193,7 @@ class VectorProvisioningServiceTest {
       when(rs.wasNull()).thenReturn(row.dimensions == null);
       when(rs.getInt("columns")).thenReturn(row.columns);
       when(rs.getInt("content_columns")).thenReturn(row.contentColumns);
+      when(rs.getInt("key_columns")).thenReturn(1);
     } else if (sql.startsWith("SELECT dimensions, metric")) {
       when(rs.next()).thenReturn(false);
     } else if (sql.contains("t.tablename")) {

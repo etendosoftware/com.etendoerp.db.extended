@@ -46,6 +46,8 @@ public class VectorProvisioningService {
   private final VectorStore store;
 
   /**
+   * Creates a service that provisions what the configured sources need.
+   *
    * @param cp
    *     connection the provisioning statements are issued with
    * @param store

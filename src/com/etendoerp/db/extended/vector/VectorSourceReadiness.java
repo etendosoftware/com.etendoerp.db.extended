@@ -52,6 +52,12 @@ final class VectorSourceReadiness {
           + "FROM etarc_vector_source_column sc "
           + "WHERE sc.etarc_vector_source_id = ? AND sc.isactive = 'Y'";
 
+  /** Asked separately because it is a fact about the indexed table, not about the source. */
+  private static final String KEY_COLUMN_SQL =
+      "SELECT count(*) FROM ad_column k "
+          + "JOIN etarc_vector_source s ON s.ad_table_id = k.ad_table_id "
+          + "WHERE s.etarc_vector_source_id = ? AND k.iskey = 'Y' AND k.isactive = 'Y'";
+
   /**
    * Every configured source, read over JDBC rather than through the DAL.
    *
@@ -67,7 +73,10 @@ final class VectorSourceReadiness {
           + "      AND sc.isactive = 'Y') AS columns, "
           + "  (SELECT count(*) FROM etarc_vector_source_column sc "
           + "    WHERE sc.etarc_vector_source_id = s.etarc_vector_source_id "
-          + "      AND sc.isactive = 'Y' AND sc.iscontent = 'Y') AS content_columns "
+          + "      AND sc.isactive = 'Y' AND sc.iscontent = 'Y') AS content_columns, "
+          + "  (SELECT count(*) FROM ad_column k "
+          + "    WHERE k.ad_table_id = s.ad_table_id "
+          + "      AND k.iskey = 'Y' AND k.isactive = 'Y') AS key_columns "
           + "FROM etarc_vector_source s "
           + "LEFT JOIN etarc_vector_embed_provider p "
           + "  ON p.etarc_vector_embed_provider_id = s.etarc_vector_embed_provider_id "
@@ -100,7 +109,8 @@ final class VectorSourceReadiness {
         candidates.add(new Candidate(result.getString("etarc_vector_source_id"),
             result.getString("name"), result.getString("namespace"),
             result.getString("distance_metric"), enabled, dimensions,
-            new Columns(result.getInt("columns"), result.getInt("content_columns"))));
+            new Columns(result.getInt("columns"), result.getInt("content_columns"),
+                result.getInt("key_columns") > 0)));
       }
     }
     return candidates;
@@ -119,6 +129,11 @@ final class VectorSourceReadiness {
   static Verdict verdict(Candidate candidate, Collection collection) {
     if (!candidate.enabled) {
       return Verdict.DISABLED;
+    }
+    // Before anything about the source itself: the trigger writes the record's key into the queue,
+    // so without one there is nothing to instrument and no configuration would make there be.
+    if (!candidate.columns.key) {
+      return Verdict.WITHOUT_KEY;
     }
     if (candidate.dimensions == null) {
       return Verdict.WITHOUT_PROVIDER;
@@ -155,10 +170,24 @@ final class VectorSourceReadiness {
         }
       }
     }
+    boolean hasKey = false;
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(KEY_COLUMN_SQL)) {
+      statement.setString(1, source.getId());
+      try (ResultSet result = statement.executeQuery()) {
+        hasKey = result.next() && result.getInt(1) > 0;
+      }
+    }
+    // Both flags, and the provider's own: a deactivated source is not instrumented however
+    // enabled it says it is, and delivery resolves the provider with isactive = 'Y', so an
+    // inactive one is no provider at all. Reading either differently here would have the window
+    // call a source ready that the update then leaves alone, or worse, instrument.
+    boolean usable = Boolean.TRUE.equals(source.isActive())
+        && Boolean.TRUE.equals(source.isEnabled());
+    boolean hasProvider = provider != null && Boolean.TRUE.equals(provider.isActive());
     return new Candidate(source.getId(), source.getName(), source.getNamespace(),
-        source.getDistanceMetric(), Boolean.TRUE.equals(source.isEnabled()),
-        provider == null ? null : provider.getDimensions().intValue(),
-        new Columns(columns, contentColumns));
+        source.getDistanceMetric(), usable,
+        hasProvider ? provider.getDimensions().intValue() : null,
+        new Columns(columns, contentColumns, hasKey));
   }
 
   static Collection collection(ConnectionProvider connectionProvider, String namespace) throws Exception {
@@ -173,6 +202,7 @@ final class VectorSourceReadiness {
   /** What a source turned out to be. Whether each verdict is actionable is the caller's business. */
   enum Verdict {
     DISABLED("ETARC_VectorSourceDisabled"),
+    WITHOUT_KEY("ETARC_VectorSourceWithoutKey"),
     WITHOUT_PROVIDER("ETARC_VectorSourceWithoutProvider"),
     WITHOUT_COLUMNS("ETARC_VectorSourceWithoutColumns"),
     WITHOUT_CONTENT("ETARC_VectorSourceWithoutContent"),
@@ -225,18 +255,22 @@ final class VectorSourceReadiness {
   }
 
   /**
-   * How many columns a source has and how many of them carry content.
+   * What the columns of a source amount to: how many it configures, how many carry content, and
+   * whether the table it indexes has a key column to identify a record by.
    *
-   * <p>They are counted by one query and read by two adjacent checks, and a source with columns but
-   * no content is a distinct verdict from one with no columns at all.</p>
+   * <p>All three are read together and by adjacent checks, and each is its own verdict: a source
+   * with columns but no content is not the same as one with no columns, and neither is a table
+   * whose records the queue could not name.</p>
    */
   static final class Columns {
     final int total;
     final int content;
+    final boolean key;
 
-    Columns(int total, int content) {
+    Columns(int total, int content, boolean key) {
       this.total = total;
       this.content = content;
+      this.key = key;
     }
   }
 

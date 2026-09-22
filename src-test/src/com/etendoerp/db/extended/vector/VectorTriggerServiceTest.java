@@ -22,14 +22,11 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
-import static org.mockito.Mockito.doAnswer;
-import static org.mockito.Mockito.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -53,7 +50,6 @@ class VectorTriggerServiceTest {
 
   /** Every statement the service asked for, in order. */
   private final List<String> statements = new ArrayList<>();
-  private final List<Timestamp> restoredWatermarks = new ArrayList<>();
 
   @Test
   void instrumentsAReadySourceForInsertDeleteAndEachWatchedColumn() throws Exception {
@@ -162,6 +158,20 @@ class VectorTriggerServiceTest {
         "a column name reaches this as an identifier, not as text to concatenate");
   }
 
+  @Test
+  void doesNotInstrumentASourceWhoseProviderIsInactive() throws Exception {
+    service(ready(true)).deployAll();
+
+    String sources = onlyMatching("SELECT s.etarc_vector_source_id, t.tablename");
+    assertTrue(sources.contains("etarc_vector_embed_provider ep"),
+        "readiness has to look at the provider itself, not only at the column pointing to it");
+    assertTrue(sources.contains("ep.isactive = 'Y'"),
+        "delivery resolves the provider with isactive = 'Y', so instrumenting a source whose "
+            + "provider is inactive fills the outbox with events nothing can ever deliver");
+    assertTrue(sources.contains("ep.etarc_vector_embed_provider_id IS NOT NULL"),
+        "and the readiness expression has to test the joined row, not the foreign key");
+  }
+
   // --- fixtures -------------------------------------------------------------------------------
 
   private static final class Column {
@@ -183,11 +193,6 @@ class VectorTriggerServiceTest {
   }
 
   private VectorTriggerService service(boolean sourceIsReady, Column... columns) throws Exception {
-    return service(sourceIsReady, null, columns);
-  }
-
-  private VectorTriggerService service(boolean sourceIsReady, Timestamp watermark, Column... columns)
-      throws Exception {
     ConnectionProvider cp = mock(ConnectionProvider.class);
     when(cp.getRDBMS()).thenReturn("POSTGRE");
     when(cp.getPreparedStatement(anyString())).thenAnswer(invocation -> {
@@ -195,23 +200,17 @@ class VectorTriggerServiceTest {
       statements.add(sql);
       // Built before the statement is stubbed: Mockito cannot stub one mock while the stubbing of
       // another is still open, and the result set is itself a mock.
-      ResultSet rows = resultFor(sql, sourceIsReady, watermark, columns);
+      ResultSet rows = resultFor(sql, sourceIsReady, columns);
       PreparedStatement statement = mock(PreparedStatement.class);
       when(statement.executeQuery()).thenReturn(rows);
       when(statement.executeUpdate()).thenReturn(1);
-      if (sql.equals("UPDATE ad_system_info SET last_dbupdate = ?")) {
-        doAnswer(answerInvocation -> {
-          restoredWatermarks.add(answerInvocation.getArgument(1));
-          return null;
-        }).when(statement).setTimestamp(eq(1), any());
-      }
       return statement;
     });
     return new VectorTriggerService(cp);
   }
 
   /** One result set shaped for whichever query the service is running. */
-  private ResultSet resultFor(String sql, boolean sourceIsReady, Timestamp watermark, Column[] columns)
+  private ResultSet resultFor(String sql, boolean sourceIsReady, Column[] columns)
       throws Exception {
     ResultSet rs = mock(ResultSet.class);
     if (sql.contains("FROM etarc_vector_source ")) {
@@ -247,9 +246,6 @@ class VectorTriggerServiceTest {
     } else if (sql.startsWith("SELECT proname")) {
       when(rs.next()).thenReturn(true, false);
       when(rs.getString(1)).thenReturn(PREFIX + "_fn");
-    } else if (sql.contains("last_dbupdate FROM ad_system_info")) {
-      when(rs.next()).thenReturn(true);
-      when(rs.getTimestamp(1)).thenReturn(watermark);
     } else {
       when(rs.next()).thenReturn(false);
     }

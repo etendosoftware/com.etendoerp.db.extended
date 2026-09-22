@@ -68,6 +68,14 @@ class ActivateVectorSourceTest {
   }
 
   @Test
+  void refusesASourceWhoseTableHasNoKeyColumn() {
+    assertEquals(Verdict.WITHOUT_KEY,
+        VectorSourceReadiness.verdict(source().withoutKeyColumn(), null),
+        "the trigger writes the record's key into the queue, so the update instruments nothing "
+            + "and a window that called this ready would promise indexing that never happens");
+  }
+
+  @Test
   void reportsASourceWithNoCollectionAsWaitingForTheUpdate() {
     assertEquals(Verdict.COLLECTION_MISSING, VectorSourceReadiness.verdict(source().build(), null));
   }
@@ -179,10 +187,11 @@ class ActivateVectorSourceTest {
     private String metric = "COSINE";
     private int columns = 3;
     private int contentColumns = 2;
+    private boolean key = true;
 
     Candidate build() {
       return new Candidate("SRC1", "Example", "go.example", metric, enabled, dimensions,
-          new VectorSourceReadiness.Columns(columns, contentColumns));
+          new VectorSourceReadiness.Columns(columns, contentColumns, key));
     }
 
     Candidate disabled() {
@@ -192,6 +201,11 @@ class ActivateVectorSourceTest {
 
     Candidate withoutProvider() {
       dimensions = null;
+      return build();
+    }
+
+    Candidate withoutKeyColumn() {
+      key = false;
       return build();
     }
 

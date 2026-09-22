@@ -58,7 +58,7 @@ public class VectorTriggerService {
    */
   private static final String READY_EXPR =
       "(s.isactive = 'Y' AND s.isenabled = 'Y' AND k.columnname IS NOT NULL "
-          + " AND s.etarc_vector_embed_provider_id IS NOT NULL "
+          + " AND ep.etarc_vector_embed_provider_id IS NOT NULL "
           + " AND EXISTS (SELECT 1 FROM etarc_vector_source_column sc "
           + "             WHERE sc.etarc_vector_source_id = s.etarc_vector_source_id "
           + "               AND sc.isactive = 'Y' AND sc.iscontent = 'Y'))";
@@ -79,7 +79,13 @@ public class VectorTriggerService {
           + "LEFT JOIN ad_column f ON f.ad_column_id = s.ad_filter_column_id "
           + "  AND f.ad_table_id = s.ad_table_id AND f.isactive = 'Y' "
           + "LEFT JOIN ad_column k ON k.ad_table_id = t.ad_table_id "
-          + "  AND k.iskey = 'Y' AND k.isactive = 'Y' ";
+          + "  AND k.iskey = 'Y' AND k.isactive = 'Y' "
+          // Joined on isactive, not merely on the foreign key: delivery resolves the provider with
+          // that same condition, so a source pointing at an inactive one has no provider at all.
+          // Instrumenting it anyway would fill the outbox with events nothing can ever deliver.
+          + "LEFT JOIN etarc_vector_embed_provider ep "
+          + "  ON ep.etarc_vector_embed_provider_id = s.etarc_vector_embed_provider_id "
+          + " AND ep.isactive = 'Y' ";
 
   private static final String READY_SOURCES_SQL =
       "SELECT " + SOURCE_COLUMNS + SOURCE_JOINS
