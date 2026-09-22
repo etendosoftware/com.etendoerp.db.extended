@@ -71,25 +71,25 @@ public class VectorCapabilityService {
       try (ResultSet resultSet = statement.executeQuery()) {
         if (!resultSet.next()) {
           return new VectorCapability(VectorCapabilityState.FAILED,
-              "Could not inspect the PostgreSQL pgvector capability.");
+              "the pgvector capability could not be inspected; see the log for the reason.");
         }
         if (resultSet.getBoolean("installed")) {
           return new VectorCapability(VectorCapabilityState.ACTIVE,
-              "The pgvector extension is installed in this database.");
+              "the extension is installed in this database.");
         }
         if (resultSet.getBoolean("available")) {
           return new VectorCapability(VectorCapabilityState.AVAILABLE,
-              "The pgvector extension is available but has not been activated in this database.");
+              "the PostgreSQL server provides pgvector, but this database does not have the extension yet. \nThe next update.database creates it.");
         }
         return new VectorCapability(VectorCapabilityState.UNAVAILABLE,
-            "The PostgreSQL server does not provide the pgvector extension.");
+            "the PostgreSQL server does not provide pgvector, so no update can install it here. \nInstall the pgvector package on the server first.");
       }
     } catch (Exception exception) {
       // Logged rather than swallowed: this method exists to diagnose, and the one thing an
       // administrator cannot act on is a diagnosis that hides why it failed.
       log.error("Could not inspect the PostgreSQL pgvector capability.", exception);
       return new VectorCapability(VectorCapabilityState.FAILED,
-          "Could not inspect the PostgreSQL pgvector capability.");
+          "the pgvector capability could not be inspected; see the log for the reason.");
     }
   }
 }

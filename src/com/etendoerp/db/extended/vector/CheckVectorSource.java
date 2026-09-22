@@ -132,8 +132,11 @@ public class CheckVectorSource extends Action {
 
   private String render(Report report) {
     List<String> outcomes = new ArrayList<>();
+    // The state name is for the log, not for this. An administrator reading "AVAILABLE" next to a
+    // sentence about availability reasonably concludes the extension is there, when the word means
+    // the server offers it and this database does not have it. The sentence says which.
     outcomes.add(OBMessageUtils.messageBD("ETARC_VectorActivationState") + " "
-        + report.capability.getState() + ". " + report.capability.getDiagnostic());
+        + report.capability.getDiagnostic());
     if (report.failure != null) {
       outcomes.add(report.failure);
     }

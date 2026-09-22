@@ -70,4 +70,18 @@ class VectorCapabilityServiceTest {
     assertTrue(VectorCapabilityService.CAPABILITY_SQL.contains("pg_extension"));
     return capability;
   }
+
+  @Test
+  void neverSaysAvailableWithoutSayingWhereItIsAvailable() throws Exception {
+    VectorCapability capability = inspect(true, false);
+
+    assertEquals(VectorCapabilityState.AVAILABLE, capability.getState());
+    assertTrue(capability.getDiagnostic().contains("server provides"),
+        "the state name alone reads as if the extension were there; the sentence has to separate "
+            + "what the server offers from what this database has");
+    assertTrue(capability.getDiagnostic().contains("does not have the extension"),
+        "and say plainly that this database does not have it");
+    assertTrue(capability.getDiagnostic().contains("update.database"),
+        "and what puts it there, because that is the next thing the reader needs");
+  }
 }
