@@ -140,6 +140,17 @@ class CheckVectorSourceTest {
   }
 
   @Test
+  void repeatsWhatTheUpdateRecordedWhenItCouldNotProvision() throws Exception {
+    Run run = check(provisioningFailed(), source().build());
+
+    assertEquals("Activation failed; verify extension permissions.", run.report.failure,
+        "the update that failed ran hours earlier and its exception is long gone; the window "
+            + "reads what it wrote down, so the reason reaches a screen and not only a log");
+    assertFalse(run.report.allReady(),
+        "a source whose storage could not be created is not ready, however well it is configured");
+  }
+
+  @Test
   void refusesToCallItASuccessWhenTheDatabaseCouldNotBeInspected() throws Exception {
     Run run = check(uninspectable(), source().build());
 
@@ -280,7 +291,9 @@ class CheckVectorSourceTest {
     /** No update has run yet, so the storage does not exist. */
     NOT_PROVISIONED,
     /** The capability query answers nothing, so the database cannot be judged at all. */
-    UNINSPECTABLE
+    UNINSPECTABLE,
+    /** An update ran and wrote down that it could not provision. */
+    PROVISIONING_FAILED
   }
 
   private static Db provisioned() {
@@ -293,6 +306,10 @@ class CheckVectorSourceTest {
 
   private static Db uninspectable() {
     return Db.UNINSPECTABLE;
+  }
+
+  private static Db provisioningFailed() {
+    return Db.PROVISIONING_FAILED;
   }
 
   private Run check(Candidate... candidates) throws Exception {
@@ -325,7 +342,10 @@ class CheckVectorSourceTest {
   private ResultSet rowsFor(String sql, Db db, Collection existing)
       throws Exception {
     ResultSet rs = mock(ResultSet.class);
-    if (sql.startsWith("SELECT to_regclass")) {
+    if (sql.contains("diagnostic FROM etarc_vector")) {
+      when(rs.next()).thenReturn(db == Db.PROVISIONING_FAILED);
+      when(rs.getString(1)).thenReturn("Activation failed; verify extension permissions.");
+    } else if (sql.startsWith("SELECT to_regclass")) {
       when(rs.next()).thenReturn(true);
       when(rs.getBoolean(1)).thenReturn(db != Db.NOT_PROVISIONED);
     } else if (sql.startsWith("SELECT dimensions, metric")) {

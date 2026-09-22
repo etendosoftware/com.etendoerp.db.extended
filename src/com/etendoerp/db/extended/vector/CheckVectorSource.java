@@ -124,7 +124,8 @@ public class CheckVectorSource extends Action {
           : null;
       lines.add(new Line(candidate, collection, VectorSourceReadiness.verdict(candidate, collection)));
     }
-    return new Report(capability, lines);
+    return new Report(capability,
+        VectorActivationService.recordedFailure(connectionProvider), lines);
   }
 
   // --- turning the report into what the administrator reads -----------------------------------
@@ -133,6 +134,9 @@ public class CheckVectorSource extends Action {
     List<String> outcomes = new ArrayList<>();
     outcomes.add(OBMessageUtils.messageBD("ETARC_VectorActivationState") + " "
         + report.capability.getState() + ". " + report.capability.getDiagnostic());
+    if (report.failure != null) {
+      outcomes.add(report.failure);
+    }
     for (Line line : report.lines) {
       outcomes.add(line.candidate.name + ": " + render(line));
     }
@@ -177,10 +181,13 @@ public class CheckVectorSource extends Action {
   /** What a whole check amounted to. */
   static final class Report {
     final VectorCapability capability;
+    /** What the last update recorded when it could not provision, or {@code null}. */
+    final String failure;
     final List<Line> lines;
 
-    Report(VectorCapability capability, List<Line> lines) {
+    Report(VectorCapability capability, String failure, List<Line> lines) {
       this.capability = capability;
+      this.failure = failure;
       this.lines = lines;
     }
 
@@ -192,7 +199,8 @@ public class CheckVectorSource extends Action {
      * one.</p>
      */
     boolean allReady() {
-      return capability.getState() != VectorCapabilityState.FAILED
+      return failure == null
+          && capability.getState() != VectorCapabilityState.FAILED
           && lines.stream().allMatch(line -> line.verdict.isUsable());
     }
   }

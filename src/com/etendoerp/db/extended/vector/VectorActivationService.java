@@ -87,6 +87,35 @@ public class VectorActivationService {
     }
   }
 
+  /**
+   * What the last provisioning attempt recorded, when it recorded a failure.
+   *
+   * <p>A failed attempt is not an exception the window can catch: it happened during an update,
+   * hours or days earlier. It is written down instead, and this is how the window reads it, so an
+   * administrator sees "verify extension permissions" on screen rather than only in a log nobody
+   * opens.</p>
+   *
+   * @param cp
+   *     connection the state is read with
+   * @return the recorded diagnostic, or {@code null} when the last attempt did not fail
+   */
+  static String recordedFailure(ConnectionProvider cp) {
+    try {
+      if (!storageExists(cp)) {
+        return null;
+      }
+      try (PreparedStatement ps = cp.getPreparedStatement(
+          "SELECT diagnostic FROM etarc_vector.etarc_vector_activation "
+              + "WHERE id = true AND state = 'FAILED'");
+          java.sql.ResultSet rs = ps.executeQuery()) {
+        return rs.next() ? rs.getString(1) : null;
+      }
+    } catch (Exception e) {
+      log.debug("Could not read the recorded activation failure.", e);
+      return null;
+    }
+  }
+
   private static boolean storageExists(ConnectionProvider cp) throws Exception {
     try (PreparedStatement ps = cp.getPreparedStatement(
         "SELECT to_regclass('etarc_vector.etarc_vector_activation') IS NOT NULL");

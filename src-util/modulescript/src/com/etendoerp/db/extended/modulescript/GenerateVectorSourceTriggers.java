@@ -16,6 +16,8 @@
  */
 package com.etendoerp.db.extended.modulescript;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.openbravo.modulescript.PostUpdateModuleScript;
 
 import com.etendoerp.db.extended.vector.VectorProvisioningService;
@@ -48,13 +50,23 @@ import com.etendoerp.db.extended.vector.VectorStoreService;
  */
 public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
 
+  private static final Logger log4j = LogManager.getLogger();
+
   @Override
   public void execute() {
     try {
       new VectorProvisioningService(getConnectionProvider(),
           new VectorStoreService(getConnectionProvider())).provision();
     } catch (Exception e) {
-      handleError(e);
+      // Deliberately not handleError, which fails the update. Semantic search is optional and
+      // opt-in, and the reasons it cannot be provisioned are mostly environmental -- the role may
+      // not be allowed to CREATE EXTENSION, the server may not ship pgvector. Letting that stop
+      // update.database would mean one optional feature, configured by one administrator, blocks
+      // every later update of the whole application. The failure is recorded in the activation
+      // state with its diagnostic, the Search Sources window reports it, and the next update
+      // retries: provisioning is idempotent.
+      log4j.error("Could not provision the vector search capability. The update continues; the "
+          + "sources stay unprovisioned and the Search Sources window reports why.", e);
     }
   }
 }
