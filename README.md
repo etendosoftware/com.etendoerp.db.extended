@@ -29,35 +29,34 @@ as `com.etendoerp.go` does that.
 
 ### Turning it on
 
-**Search Source → Activate Vector Indexing** is the entry point. It takes several records at a
-time, so one source, a few or all of them can be turned on in a single step. Each run installs the
-extension and the runtime storage once per database, and then, for each selected source, either
-creates its collection or explains what is stopping it.
+Configuring a search source takes two steps: save it, then run `update.database`. The second step
+is where the extension, the runtime storage, the collection of each source and the change capture
+triggers are created. From then on the scheduled processes do the rest.
 
-The check matters because a source can be broken in ways that only surface much later. One with no
+They are created there and nowhere else, because all of it is DDL. DDL performed while the
+application is running moves the structure checksum, the next `update.database` refuses to run over
+it, and getting past that would mean accepting the whole structure on the administrator's behalf --
+including whatever else had been changed in the database and not yet exported. Done from inside the
+update, the run that makes the change is the run that accepts it. Why this was not obvious, and
+what was measured along the way, is in [doc/checksum-acceptance.md](doc/checksum-acceptance.md).
+
+Nothing is installed for an instance that configured no usable source. Having the module installed
+is not asking for pgvector: no extension is created, and no vector object either.
+
+**Search Source → Activate Vector Indexing** answers the question an administrator has *before*
+running the update: is this source going to produce anything? It writes nothing. It takes several
+records at a time and, for each, either confirms it is ready or names what is stopping it.
+
+That check matters because a source can be broken in ways that only surface much later. One with no
 content column is accepted by the dictionary and fails on every delivery; a collection created
-before the provider changed holds vectors of a size the new model no longer produces. Activation
-reports both instead of queueing work that can only fail, and it never repairs a mismatched
-collection: making one match again means dropping it, and that deletes every vector it holds.
+before the provider changed holds vectors of a size the new model no longer produces. Both are
+reported rather than queued as work that can only fail, and a mismatched collection is never
+repaired: making one match again means dropping it, and that deletes every vector it holds.
 
-The action needs a database role allowed to `CREATE EXTENSION` and to create a schema. Running it
-again is harmless and is also how a source added later finishes being set up.
-
-The vector storage lives in a schema of its own, `etarc_vector`, rather than in the application's.
-`ad_db_modified` restricts every one of its queries to `current_schema()` except the one for
-triggers, so storage kept outside it is not part of the structure checksum and creating it is not a
-local change anybody has to accept. An instance that indexed something under an earlier version has
-its tables moved there on the next activation, with their rows, indexes and foreign key.
-
-The capture triggers are the part this does not cover: they belong to the table they watch. The
-action re-stamps the checksum for them, and only when the structure was accepted beforehand -- and
-it verifies afterwards that the structure really did move, because `ad_db_modified` ends in
-`EXCEPTION WHEN OTHERS THEN RETURN 'N'` and answers `N` for a database that carries no checksum at
-all, so an unguarded reading cannot tell a clean database from one that cannot answer. The
-acceptance is logged with the checksum it replaced and the one it stamped, because it is the one
-act here that can absorb a change nobody meant to accept. What was measured, what is left, and
-what the core would have to offer for this to disappear are in
-[doc/checksum-acceptance.md](doc/checksum-acceptance.md).
+The update needs a database role allowed to `CREATE EXTENSION` and to create a schema, because the
+vector storage lives in a schema of its own, `etarc_vector`, rather than in the application's. An
+instance that indexed something under an earlier version has its tables moved there on the next
+update, with their rows, indexes and foreign key.
 
 ### Indexing what a table already held
 
@@ -138,11 +137,13 @@ creation is a separate explicit operation.
 
 ### What is not in the model
 
-Activation creates its storage at runtime, so no vector-typed column belongs in
+The storage is created by the post-update module script rather than by the model, because the
+`vector` type does not exist until the extension does, so no vector-typed column belongs in
 `src-db/database/model`. The versioned `excludeFilter.xml` keeps those runtime tables, the
 generated source triggers and functions, and the pgvector extension objects out of DBSM exports.
-Note that the database structure checksum does not read that file, which is why activation accepts
-the structure it changed — see `VectorTriggerService.acceptDatabaseStructure`.
+Note that the database structure checksum does not read that file: it is computed inside the
+database from `pg_catalog` alone. That is why the storage and the triggers are created from the
+update rather than from a window — see [doc/checksum-acceptance.md](doc/checksum-acceptance.md).
 
 ## 🏗️ Architecture Overview
 
@@ -172,8 +173,8 @@ For the optional vector capability:
   `vector_cosine_ops`, `vector_l2_ops` and `vector_ip_ops`. Nothing here uses `halfvec`,
   `sparsevec` or `binary_quantize`; `excludeFilter.xml` names them so that a server that does have
   them keeps them out of DBSM exports, and on an older one those entries simply match nothing.
-- A database role allowed to run `CREATE EXTENSION` and to create a schema, for the activation
-  action only.
+- A database role allowed to run `CREATE EXTENSION` and to create a schema, for
+  `update.database` only.
 - Developed and tested against pgvector 0.8.6 on PostgreSQL 16.
 
 ---

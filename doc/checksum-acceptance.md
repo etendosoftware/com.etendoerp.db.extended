@@ -1,13 +1,14 @@
-# Accepting the database structure after activation
+# Why the vector objects are created by the update
 
-Activating a vector source installs database objects while the application is running. That moves
-the structure checksum, and the next `update.database` refuses to run until somebody accepts it.
-This note records what was measured, what the module does about it today, and what the core would
-have to offer for the module to stop doing it at all.
+Everything this module creates in the database — the pgvector extension, the runtime storage, a
+collection per search source and the change capture triggers — is created by the post-update module
+script, inside `update.database`. Configuring a source is therefore two steps: save it, then run the
+update.
 
-It is written for a decision, not as a description of the code.
+That is not an arbitrary choice, and it was not the first one. This note records what was measured
+on the way to it, so the decision is not re-litigated from memory.
 
-## What the checksum actually covers
+## What the structure checksum covers
 
 `ad_db_modified`, in `src-db/database/model/prescript-PostgreSql.sql`, hashes PL functions,
 triggers, tables with their primary keys, columns, foreign keys and indexes, and materialized
@@ -17,7 +18,7 @@ different check.
 
 Every one of its queries is restricted to `current_schema()` **except the one for triggers**, which
 has no schema filter and excludes only names matching `'^RI'` or `UPPER(name) LIKE 'AU_%'` — note
-that `_` is a wildcard in `LIKE`, so that pattern is `AU` followed by any character.
+that `_` is a wildcard in `LIKE`.
 
 Measured on PostgreSQL 16, each inside a transaction that was rolled back, calling only
 `ad_db_modified('N')`, which does not write:
@@ -32,91 +33,56 @@ Measured on PostgreSQL 16, each inside a transaction that was rolled back, calli
 | trigger, ordinary name, function in another schema | `Y` |
 | trigger named `AU_…` | `N` |
 
-Two consequences. Storage kept in its own schema is not part of the checksum. And a trigger escapes
-only by its name, because the trigger's function body is hashed as part of the trigger row.
+So a trigger escapes the checksum only by its name, because the trigger's function body is hashed
+as part of the trigger row. Keeping the storage in its own schema takes it out; the capture
+triggers cannot be taken out, because they belong to the tables they watch.
 
-## What the module does today
+## Why that settles where the work happens
 
-The runtime storage lives in the `etarc_vector` schema, so creating it is not a local change anybody
-has to accept. Tables left in the application schema by an earlier version are moved there on the
-next activation, carrying their rows, indexes and foreign key.
+Creating those triggers moves the checksum. `update.database` then refuses to run:
+`DBUpdater.checkIfDBWasModified` aborts with *Database has local changes. Update.database will not
+be done.* before reaching the end, where the core re-stamps.
 
-What remains is the capture triggers, which belong to the tables they watch. For those the
-activation re-stamps the checksum, under three conditions:
+A window action can only get past that by accepting the structure itself — and the checksum is a
+single MD5 of the whole schema, with no way to attribute a delta. Accepting the triggers therefore
+also accepts every other change present at that moment, including dictionary work somebody had not
+yet exported. On an instance many people share, that is a lot of authority for a button.
 
-- a checksum is stored at all. `ad_db_modified` answers `N` both when the stored checksum matches
-  and when there is none — its test is `aux is null or aux = computed` — so a database restored
-  from a dump without one reports itself unmodified;
-- it answered `N` before the run touched anything;
-- it answers `Y` afterwards. Having just installed triggers, `N` can only mean the function is not
-  answering: it ends in `EXCEPTION WHEN OTHERS THEN RETURN 'N'`.
+Run from inside the update, the question disappears rather than being managed: the run that creates
+the objects is the run that accepts the structure, and the core already re-stamps once every
+post-update script has finished (EPL-1810).
 
-The acceptance is logged with the checksum it replaced and the one it stamped.
+## What this costs
 
-The `update.database` path needs none of this. DBSM runs module scripts before stamping
-(`executeModuleScripts` precedes `updateCRC` in `DBUpdater`), so triggers generated there are
-accepted by the same update that generated them.
-
-## What is left, and what the core could do
-
-The window the module cannot close: between reading the baseline and stamping, DDL from somebody
-else can land and be accepted along with ours. It is narrow — `update.database` needs Tomcat down
-and the button needs it up, so the realistic source is manual DDL on a live instance — but the
-checksum is a single MD5 of the whole schema, with no way to attribute a delta, so no amount of
-care inside the module closes it.
-
-**Proposal.** A declarative exclusion, owned by a module and constrained to its own objects. A
-dictionary table of module, object type and name prefix, and one clause in the trigger loop:
-
-```sql
-AND NOT EXISTS (SELECT 1 FROM ad_db_checksum_exclusion x
-                 WHERE x.isactive = 'Y' AND x.object_type = 'TRIGGER'
-                   AND upper(trg.tgname) LIKE upper(x.name_prefix) || '%')
-```
-
-What keeps it from leaking is a single rule: `name_prefix` must begin with an `AD_MODULE_DBPREFIX`
-belonging to that module. This module's prefix is `ETARC` and its triggers are named
-`etarc_vsrc_…`, so it fits; and it structurally cannot exclude `AD_*`, `C_*`, or another module's
-objects. The rows are dictionary data, exported with the module and reviewed in its pull request —
-unlike `AU_%`, where the only approval needed is choosing a name.
-
-It should cover functions as well as triggers. A trigger's function is already left out while the
-trigger exists, since the function loop skips anything in `pg_trigger`, but a function briefly
-outliving its trigger would reappear in the hash.
-
-With that in place the module stops re-stamping entirely: an object that never enters the hash
-moves it neither when created nor when dropped, so the acceptance and its guard are deleted rather
-than maintained.
-
-Two things worth knowing before writing it:
-
-- **It deploys by itself.** The prescript runs on `update.database` as well as on create
-  (`DBUpdater.executePreScript`), so no migration script is needed.
-- **It is invisible to itself.** The function loop excludes anything named `ad_db_modified`, so
-  changing that function does not move the checksum. Verified by measurement: adding an overload of
-  that name leaves the verdict at `N`, while any other new function moves it to `Y`. The core change
-  would not make every existing instance report local changes.
-- **The bootstrap needs a guard.** The prescript runs before the model is updated, so on the first
-  update against the new core the exclusion table does not exist yet. The query would fail, and
-  because `ad_db_modified` ends in `EXCEPTION WHEN OTHERS THEN RETURN 'N'` it would answer "no
-  changes" rather than failing loudly. Guard it with
-  `to_regclass('ad_db_checksum_exclusion') IS NOT NULL`, or the fix introduces a worse failure than
-  the one it removes.
+A new search source does not take effect when it is saved. It takes effect on the next
+`update.database`. The window reports whether a source is going to produce anything, so that is
+answerable before running it, but applying it is a deploy-time act.
 
 ## Rejected alternatives
 
-- **Naming the module's triggers `AU_…`.** Works, and was measured to work. It squats on the core's
-  audit prefix, states something untrue about the objects, and depends on an undocumented pattern:
-  if the core ever tightens it, the regression is silent and surfaces on a customer instance as a
-  refused `update.database`.
-- **Not stamping, and letting the next `update.database` do it.** It cannot. `checkIfDBWasModified`
-  aborts with "Database has local changes. Update.database will not be done." before reaching the
-  end, where EPL-1810 re-stamps.
-- **Passing the expected objects to `ad_db_modified` so it can attribute the delta.** Precise for
-  objects that appear, but not symmetric: tearing a source down removes triggers the stored checksum
-  still accounts for, so the comparison fails and the acceptance is refused. A declarative exclusion
-  has no direction to get wrong.
-- **An advisory lock around the activation.** Tried and removed. It is session-scoped while the run
-  spans several transactions: the checkpoint closes the connection, which returns to the pool still
-  holding the lock. It also only serialised activations against each other, which is the case that
-  does no harm.
+- **Accepting the structure from the button, guarded.** This is what the module did first. The
+  guard grew to three conditions — a checksum had to exist, it had to have been accepted
+  beforehand, and the structure had to have actually moved — because `ad_db_modified` answers `N`
+  both when the stored checksum matches and when there is none (`aux is null or aux = computed`),
+  and ends in `EXCEPTION WHEN OTHERS THEN RETURN 'N'`, so an unguarded reading cannot tell a clean
+  database from one that cannot answer. Even fully guarded it still accepted a concurrent third
+  party's DDL, which no amount of care inside the module can prevent.
+- **An advisory lock around the activation.** Session-scoped while the run spans several
+  transactions: the checkpoint closes the connection, which returns to the pool still holding the
+  lock. It also only serialised activations against each other, which is the harmless case.
+- **Naming the module's triggers `AU_…`.** Measured to work. It squats on the core's audit prefix,
+  states something untrue about the objects, and depends on an undocumented pattern: if the core
+  ever tightens it, the regression is silent and surfaces on a customer instance as a refused
+  `update.database`.
+- **A plain `ModuleScript` instead of a post-update one.** Tried, and wrong. In `DBUpdater` the
+  order is `executeModuleScripts` and only then `Platform.alterData`, which is where the sourcedata
+  is applied, so a plain script generates the triggers of a source from the configuration the
+  update is about to replace — wrong precisely for the sources a module ships.
+
+## Still open
+
+`PostUpdateModuleScript` lives only on the core's `epic/ETP-3504` (EPL-1810), not on `develop` or
+`main`, and this module depends on it. Until it reaches a released core, this module cannot be
+installed on one: `ModuleScriptHandler` resolves every module script class, a missing superclass
+raises `NoClassDefFoundError`, and an `Error` escapes its catch for `Exception`, so the whole
+install fails rather than this one script. The pipeline pins the core branch for the same reason.
