@@ -399,12 +399,11 @@ public class VectorTriggerService {
   /**
    * Accepts the current database structure as the reference for the next update.
    *
-   * <p>The module script needs none of this: dbsm runs module scripts before stamping the checksum
-   * at the end of its own phase -- {@code executeModuleScripts} precedes {@code updateCRC} in
-   * {@code DBUpdater} -- so the triggers it generates are accepted by the update that generated
-   * them. A source activated from the window is the case nothing covers: it changes triggers long
-   * after any update, and would leave every later update.database aborting with "Database has
-   * local changes" until somebody forced one.</p>
+   * <p>The module script needs none of this: it runs inside the update, and the core re-stamps the
+   * checksum once every post-update script has run (EPL-1810), so what it generates is accepted by
+   * the update that generated it. A source activated from the window is the case nothing covers:
+   * it changes triggers long after any update, and would leave every later update.database
+   * aborting with "Database has local changes" until somebody forced one.</p>
    *
    * <p>{@code ad_db_modified('Y')} writes two things, and only one of them is ours to write. Along
    * with the structure checksum it moves {@code LAST_DBUPDATE}, and that column is the watermark

@@ -16,7 +16,7 @@
  */
 package com.etendoerp.db.extended.modulescript;
 
-import org.openbravo.modulescript.ModuleScript;
+import org.openbravo.modulescript.PostUpdateModuleScript;
 
 import com.etendoerp.db.extended.vector.VectorTriggerService;
 
@@ -29,11 +29,12 @@ import com.etendoerp.db.extended.vector.VectorTriggerService;
  * {@code ETARC_VECTOR_OUTBOX}. This script runs after dictionary data is installed so it can see
  * the complete source configuration.</p>
  *
- * <p>It is a plain {@link ModuleScript} rather than a post-update one on purpose. DBSM runs these
- * before it stamps the structure checksum -- {@code executeModuleScripts} precedes
- * {@code updateCRC} in {@code DBUpdater} -- so the triggers this creates are accepted by the same
- * update that created them, with nothing left to re-stamp afterwards. A post-update script runs
- * after that stamp, and would also tie this module to a core carrying the post-update framework.</p>
+ * <p>It is a {@link PostUpdateModuleScript} because it has to read the dictionary as the update
+ * leaves it. A plain module script runs earlier than its name suggests: in {@code DBUpdater} the
+ * order is {@code executeModuleScripts} and only then {@code Platform.alterData}, which is where
+ * the sourcedata is applied. One would therefore generate the triggers of a source from the
+ * configuration the update was about to replace, which is wrong precisely for the sources a module
+ * ships -- the ones whose rows arrive in that import.</p>
  *
  * <p>The generation itself lives in {@link VectorTriggerService}, in the runtime source tree,
  * because the Search Source window offers the same action for the sources an administrator
@@ -41,7 +42,7 @@ import com.etendoerp.db.extended.vector.VectorTriggerService;
  * it there would give the module two sets of trigger names to keep in agreement with the ones the
  * build validation excludes, which is one set too many.</p>
  */
-public class GenerateVectorSourceTriggers extends ModuleScript {
+public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
 
   @Override
   public void execute() {

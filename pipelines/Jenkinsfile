@@ -50,6 +50,13 @@ pipeline {
 
     MAIN_BRANCH    = "main"
     DEVELOP_BRANCH = "develop"
+    // This module's vector work needs PostUpdateModuleScript, which the core carries only on
+    // epic/ETP-3504 (EPL-1810). Until that reaches develop and then main, building against
+    // develop dies in ModuleScriptHandler: it does Class.forName over every module script class,
+    // a missing superclass raises NoClassDefFoundError, and that is an Error, so the catch for
+    // Exception does not hold it and the whole install fails. Drop this override, and the two
+    // branch names below go back to deciding everything, as soon as the core has it.
+    CLASSIC_BRANCH_OVERRIDE = "epic/ETP-3504"
   }
 
   agent { // MARK: - Agent
@@ -156,6 +163,10 @@ spec:
                   env.CLASSIC_BRANCH = env.MAIN_BRANCH
                   if (env.GIT_BRANCH.startsWith(env.DEVELOP_BRANCH) || ((env.GIT_BRANCH.startsWith("feature") || env.GIT_BRANCH.startsWith("epic")) && !(env.GIT_BRANCH.contains("-Y")))) {
                       env.CLASSIC_BRANCH = env.DEVELOP_BRANCH
+                  }
+                  if (env.CLASSIC_BRANCH_OVERRIDE?.trim()) {
+                      echo "Overriding the Classic branch: ${env.CLASSIC_BRANCH} -> ${env.CLASSIC_BRANCH_OVERRIDE}"
+                      env.CLASSIC_BRANCH = env.CLASSIC_BRANCH_OVERRIDE
                   }
                   echo "---------------------- Clonning Classic Repo ----------------------"
                   sh "sudo apt update && sudo apt install -y python3-venv"
