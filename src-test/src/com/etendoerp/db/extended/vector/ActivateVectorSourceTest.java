@@ -37,12 +37,12 @@ import com.etendoerp.db.extended.vector.ActivateVectorSource.Report;
 import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
 
 /**
- * Covers the two halves of the activation button: what it decides about a source, and the order it
- * works in.
+ * Covers what the button decides about a source, and that deciding is all it does.
  *
- * <p>Both are invisible afterwards. A source wrongly called ready looks exactly like a working one
- * until its first delivery fails; a checksum accepted at the wrong moment looks like nothing at
- * all until an update.database months later refuses to run, or fails to refuse.</p>
+ * <p>A source wrongly called ready looks exactly like a working one until its first delivery
+ * fails, which is the whole reason to ask before running the update. And a check that wrote
+ * something would be back to changing the database from a window, which is what this stopped
+ * doing.</p>
  */
 class ActivateVectorSourceTest {
 
@@ -68,7 +68,7 @@ class ActivateVectorSourceTest {
   }
 
   @Test
-  void createsTheCollectionOfASourceThatHasNoneYet() {
+  void reportsASourceWithNoCollectionAsWaitingForTheUpdate() {
     assertEquals(Verdict.COLLECTION_MISSING, VectorSourceReadiness.verdict(source().build(), null));
   }
 
@@ -104,99 +104,39 @@ class ActivateVectorSourceTest {
         VectorSourceReadiness.verdict(source().disabled(), new Collection(99, "L2")));
   }
 
-  // --- the order of the run -------------------------------------------------------------------
+  // --- and deciding is all it does -------------------------------------------------------------
 
   @Test
-  void readsTheStructureBeforeTheFirstStatementThatCanAlterIt() throws Exception {
-    Run run = run(structureAccepted(true), source().build());
+  void writesNothingAtAll() throws Exception {
+    Run run = check(source().build());
 
-    int baseline = run.indexOf("SELECT ad_db_modified('N')");
-    int firstDdl = run.indexOf("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_activation");
-    assertTrue(baseline >= 0, "the run has to look before it leaps");
-    assertTrue(baseline < firstDdl,
-        "activation creates tables of its own, so reading after it would report our own change "
-            + "and the structure would never be accepted");
+    assertTrue(run.statements.stream().noneMatch(VectorProvisioningIsTheOnlyWriter::writes),
+        "the button runs while the application does, and DDL from there moves the structure "
+            + "checksum nobody can then accept without accepting everything else too: "
+            + run.statements);
   }
 
   @Test
-  void acceptsTheStructureItChangedWhenItWasAcceptedBefore() throws Exception {
-    Run run = run(structureAccepted(true), source().build());
+  void reportsEverySourceAsWaitingWhenTheStorageIsNotThereYet() throws Exception {
+    Run run = check(notProvisioned(), source().build());
 
-    assertTrue(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"));
-    assertTrue(run.indexOf("SELECT ad_db_modified('Y')") > run.indexOf("CREATE TRIGGER"),
-        "the structure is accepted once the run has finished changing it");
-  }
-
-  @Test
-  void leavesTheStructureAloneWhenNoChecksumWasEverStamped() throws Exception {
-    Run run = run(structureNeverStamped(), source().build());
-
-    assertFalse(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"),
-        "ad_db_modified answers N both when the stored checksum matches and when there is none, "
-            + "so an unstamped database would have its existing changes accepted along with ours");
-  }
-
-  @Test
-  void leavesTheStructureAloneWhenTheDatabaseDeniesTheChangeItJustMade() throws Exception {
-    Run run = run(structureThatNeverMoves(), source().build());
-
-    assertFalse(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"),
-        "the run installed triggers, so a verdict of N means the function is not answering -- it "
-            + "ends in EXCEPTION WHEN OTHERS THEN RETURN 'N' -- and its answer cannot be trusted "
-            + "to say whose the delta is");
-  }
-
-  @Test
-  void leavesTheStructureAloneWhenSomethingElseHadAlreadyChangedIt() throws Exception {
-    Run run = run(structureAccepted(false), source().build());
-
-    assertFalse(run.statements.contains("SELECT ad_db_modified('Y') FROM DUAL"),
-        "the delta would hold somebody else's change as well, and catching that is what the "
-            + "check exists for");
-  }
-
-  @Test
-  void createsTheCollectionBeforeTheTableStartsEnqueueingIntoIt() throws Exception {
-    Run run = run(structureAccepted(true), source().build());
-
-    assertEquals(1, run.store.created.size());
-    assertTrue(run.store.createdAt < run.indexOf("CREATE TRIGGER"),
-        "a trigger firing before its collection exists enqueues events that fail on delivery");
-  }
-
-  @Test
-  void takesDownTheCaptureOfASourceItRefuses() throws Exception {
-    Run run = run(structureAccepted(true), source().withColumns(3, 0));
-
-    assertTrue(run.store.created.isEmpty(), "no collection for a source that cannot be delivered");
-    assertEquals(0, run.count("CREATE TRIGGER"));
-    assertTrue(run.statements.stream().anyMatch(s -> s.startsWith("DROP TRIGGER")));
-  }
-
-  @Test
-  void commitsTheActivationBeforeTouchingAnySource() throws Exception {
-    Run run = run(structureAccepted(true), source().build());
-
-    // A commit records how many statements had run when it happened, so it sits between the last
-    // statement before it and the first one after.
-    assertTrue(run.indexOf("CREATE TABLE IF NOT EXISTS etarc_vector_record") < run.commits.get(0),
-        "the runtime storage has to be durable before a source is written into it");
-    assertTrue(run.commits.get(0) <= run.indexOf("SELECT dimensions, metric"),
-        "and no source may be looked at before that commit");
-    assertEquals(3, run.commits.size(), "activation, the sources, and the accepted structure");
+    assertEquals(Verdict.COLLECTION_MISSING, run.report.lines.get(0).verdict);
+    assertEquals(0, run.count("SELECT dimensions, metric"),
+        "before the first update there is no collection table to ask, and asking anyway fails "
+            + "with a missing relation instead of the true answer");
   }
 
   @Test
   void reportsAWholeRunAsUnreadyWhenAnySourceIs() throws Exception {
-    Report report = run(structureAccepted(true), source().build(), source().disabled()).report;
+    Report report = check(source().build(), source().disabled()).report;
 
     assertEquals(2, report.lines.size());
-    assertFalse(report.allReady(), "one unusable source is not a successful run");
+    assertFalse(report.allReady(), "one unusable source is not a successful check");
   }
 
   @Test
   void carriesBothSidesOfADriftSoTheMessageCanNameThem() throws Exception {
-    Run run = run(structureAccepted(true), existingCollection(1536, "COSINE"),
+    Run run = check(provisioned(), existingCollection(1536, "COSINE"),
         source().withDimensions(3072).build());
 
     String[] params = run.report.lines.get(0).messageParameters();
@@ -207,9 +147,23 @@ class ActivateVectorSourceTest {
 
   @Test
   void saysNothingAboutValuesWhenThereIsNoDriftToExplain() throws Exception {
-    Run run = run(structureAccepted(true), source().build());
+    Run run = check(source().build());
 
     assertEquals(0, run.report.lines.get(0).messageParameters().length);
+  }
+
+  /** Every statement that changes something, named once so the check above cannot drift. */
+  private static final class VectorProvisioningIsTheOnlyWriter {
+    private static final List<String> PREFIXES = List.of("CREATE ", "DROP ", "ALTER ", "INSERT ",
+        "UPDATE ", "DELETE ", "DO $");
+
+    private VectorProvisioningIsTheOnlyWriter() {
+    }
+
+    private static boolean writes(String sql) {
+      String normalised = sql.trim().toUpperCase();
+      return PREFIXES.stream().anyMatch(normalised::startsWith);
+    }
   }
 
   // --- fixtures -------------------------------------------------------------------------------
@@ -258,90 +212,13 @@ class ActivateVectorSourceTest {
     }
   }
 
-  /**
-   * How the database answers the two questions the run asks about its structure.
-   *
-   * <p>A real database does not answer the same thing before and after the run: installing the
-   * triggers is what moves the checksum. Modelling it as one fixed value let the run look accepted
-   * after changing the schema, which is the state the run now refuses to stamp.</p>
-   */
-  private static final class Structure {
-    private final boolean stamped;
-    private final boolean accepted;
-    private final boolean movesWhenChanged;
-    private int verdicts;
-
-    private Structure(boolean stamped, boolean accepted, boolean movesWhenChanged) {
-      this.stamped = stamped;
-      this.accepted = accepted;
-      this.movesWhenChanged = movesWhenChanged;
-    }
-
-    private String verdict() {
-      return verdicts++ == 0 ? (accepted ? "N" : "Y") : (movesWhenChanged ? "Y" : "N");
-    }
-  }
-
-  private static Structure structureAccepted(boolean value) {
-    return new Structure(true, value, true);
-  }
-
-  /** A database that carries no checksum at all, so nothing about it was ever accepted. */
-  private static Structure structureNeverStamped() {
-    return new Structure(false, true, true);
-  }
-
-  /** A database that reports itself unchanged even after the run installed triggers. */
-  private static Structure structureThatNeverMoves() {
-    return new Structure(true, true, false);
-  }
-
   private static Collection existingCollection(int dimensions, String metric) {
     return new Collection(dimensions, metric);
-  }
-
-  /** A recording store, so creating a collection is observable without a database. */
-  private static final class RecordingStore implements VectorStore {
-    private final List<VectorCollection> created = new ArrayList<>();
-    private final List<String> statements;
-    private int createdAt = -1;
-
-    private RecordingStore(List<String> statements) {
-      this.statements = statements;
-    }
-
-    @Override
-    public void createCollection(VectorCollection collection) {
-      created.add(collection);
-      createdAt = statements.size();
-    }
-
-    @Override
-    public void upsert(VectorRecord record) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public List<VectorMatch> search(VectorQuery query) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void delete(String namespace, String key) {
-      throw new UnsupportedOperationException();
-    }
-
-    @Override
-    public void deleteCollection(String namespace) {
-      throw new UnsupportedOperationException();
-    }
   }
 
   /** One execution, with everything it did written down in order. */
   private static final class Run {
     private final List<String> statements = new ArrayList<>();
-    private final List<Integer> commits = new ArrayList<>();
-    private RecordingStore store;
     private Report report;
 
     private int indexOf(String prefix) {
@@ -358,41 +235,46 @@ class ActivateVectorSourceTest {
     }
   }
 
-  private Run run(Structure structure, Candidate... candidates) throws Exception {
-    return run(structure, null, candidates);
+  private static boolean provisioned() {
+    return true;
   }
 
-  private Run run(Structure structure, Collection existing, Candidate... candidates)
+  /** A database on which no update has provisioned anything yet. */
+  private static boolean notProvisioned() {
+    return false;
+  }
+
+  private Run check(Candidate... candidates) throws Exception {
+    return check(true, null, candidates);
+  }
+
+  private Run check(boolean provisioned, Candidate... candidates) throws Exception {
+    return check(provisioned, null, candidates);
+  }
+
+  private Run check(boolean provisioned, Collection existing, Candidate... candidates)
       throws Exception {
     Run run = new Run();
-    run.store = new RecordingStore(run.statements);
     ConnectionProvider cp = mock(ConnectionProvider.class);
     when(cp.getRDBMS()).thenReturn("POSTGRE");
     when(cp.getPreparedStatement(anyString())).thenAnswer(invocation -> {
       String sql = invocation.getArgument(0);
       run.statements.add(sql);
-      ResultSet rows = rowsFor(sql, structure, existing);
+      ResultSet rows = rowsFor(sql, provisioned, existing);
       PreparedStatement statement = mock(PreparedStatement.class);
       when(statement.executeQuery()).thenReturn(rows);
       when(statement.executeUpdate()).thenReturn(1);
       return statement;
     });
 
-    run.report = new ActivateVectorSource().run(List.of(candidates), cp, run.store,
-        () -> run.commits.add(run.statements.size()));
+    run.report = new ActivateVectorSource().check(List.of(candidates), cp);
     return run;
   }
 
-  private ResultSet rowsFor(String sql, Structure structure, Collection existing)
+  private ResultSet rowsFor(String sql, boolean provisioned, Collection existing)
       throws Exception {
     ResultSet rs = mock(ResultSet.class);
-    if (sql.startsWith("SELECT ad_db_modified('N')")) {
-      when(rs.next()).thenReturn(true);
-      when(rs.getString(1)).thenReturn(structure.verdict());
-    } else if (sql.startsWith("SELECT db_checksum IS NOT NULL")) {
-      when(rs.next()).thenReturn(true);
-      when(rs.getBoolean(1)).thenReturn(structure.stamped);
-    } else if (sql.startsWith("SELECT dimensions, metric")) {
+    if (sql.startsWith("SELECT dimensions, metric")) {
       when(rs.next()).thenReturn(existing != null);
       if (existing != null) {
         when(rs.getInt(1)).thenReturn(existing.dimensions);
@@ -414,9 +296,9 @@ class ActivateVectorSourceTest {
     } else if (sql.contains("installed")) {
       when(rs.next()).thenReturn(true);
       when(rs.getBoolean("installed")).thenReturn(true);
-    } else if (sql.contains("state = 'ACTIVE' FROM etarc_vector.etarc_vector_activation")) {
-      when(rs.next()).thenReturn(true);
-      when(rs.getBoolean(1)).thenReturn(true);
+    } else if (sql.contains("state = 'ACTIVE'")) {
+      when(rs.next()).thenReturn(provisioned);
+      when(rs.getBoolean(1)).thenReturn(provisioned);
     } else {
       when(rs.next()).thenReturn(false);
     }

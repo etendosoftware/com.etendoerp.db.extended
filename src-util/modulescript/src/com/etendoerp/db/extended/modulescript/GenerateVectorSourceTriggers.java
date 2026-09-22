@@ -18,7 +18,8 @@ package com.etendoerp.db.extended.modulescript;
 
 import org.openbravo.modulescript.PostUpdateModuleScript;
 
-import com.etendoerp.db.extended.vector.VectorTriggerService;
+import com.etendoerp.db.extended.vector.VectorProvisioningService;
+import com.etendoerp.db.extended.vector.VectorStoreService;
 
 /**
  * Materializes PostgreSQL outbox triggers for the enabled generic vector sources.
@@ -36,18 +37,22 @@ import com.etendoerp.db.extended.vector.VectorTriggerService;
  * configuration the update was about to replace, which is wrong precisely for the sources a module
  * ships -- the ones whose rows arrive in that import.</p>
  *
- * <p>The generation itself lives in {@link VectorTriggerService}, in the runtime source tree,
- * because the Search Source window offers the same action for the sources an administrator
- * selects and a module script cannot be called from a window. Leaving the logic here and copying
- * it there would give the module two sets of trigger names to keep in agreement with the ones the
- * build validation excludes, which is one set too many.</p>
+ * <p>It provisions the whole capability, not only the triggers: the extension and its storage,
+ * the collection each source needs, and then the triggers. All of it is DDL, and this is the one
+ * moment at which DDL is free -- the update that performs it is also the one that accepts the
+ * structure it leaves behind. The window no longer does any of this; it reports what a source
+ * still needs, and the change is applied by the next update.database.</p>
+ *
+ * <p>The work itself lives in {@link VectorProvisioningService}, in the runtime source tree, so
+ * the window can report from the same definitions this provisions from.</p>
  */
 public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
 
   @Override
   public void execute() {
     try {
-      new VectorTriggerService(getConnectionProvider()).deployAll();
+      new VectorProvisioningService(getConnectionProvider(),
+          new VectorStoreService(getConnectionProvider())).provision();
     } catch (Exception e) {
       handleError(e);
     }

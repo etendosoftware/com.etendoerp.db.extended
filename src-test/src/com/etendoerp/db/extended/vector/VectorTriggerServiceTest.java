@@ -162,46 +162,6 @@ class VectorTriggerServiceTest {
         "a column name reaches this as an identifier, not as text to concatenate");
   }
 
-  @Test
-  void putsTheDictionaryWatermarkBackAfterAcceptingTheStructure() throws Exception {
-    Timestamp watermark = Timestamp.valueOf("2026-09-14 18:28:21");
-    service(ready(true), watermark).acceptDatabaseStructure("a test");
-
-    assertTrue(statements.contains("SELECT ad_db_modified('Y') FROM DUAL"));
-    assertTrue(statements.contains("UPDATE ad_system_info SET last_dbupdate = ?"),
-        "ad_db_modified moves LAST_DBUPDATE along with the checksum, and that column is the "
-            + "watermark the dataset check compares row timestamps against: letting it move would "
-            + "silence the request to export pending dictionary changes across the instance");
-    assertTrue(statements.indexOf("SELECT ad_db_modified('Y') FROM DUAL")
-        < statements.indexOf("UPDATE ad_system_info SET last_dbupdate = ?"),
-        "the watermark has to be restored after the stamp, not before");
-  }
-
-  @Test
-  void putsANullDictionaryWatermarkBackAfterAcceptingTheStructure() throws Exception {
-    service(ready(true), (Timestamp) null).acceptDatabaseStructure("a test");
-
-    assertTrue(statements.contains("UPDATE ad_system_info SET last_dbupdate = ?"),
-        "a null watermark is still the previous value: otherwise accepting the checksum turns it "
-            + "into now and can hide pending dictionary changes");
-    assertEquals(1, restoredWatermarks.size());
-    assertNull(restoredWatermarks.get(0), "the null watermark itself has to be restored");
-  }
-
-  @Test
-  void recordsTheChecksumItReplacedWhenAcceptingTheStructure() throws Exception {
-    Timestamp watermark = Timestamp.valueOf("2026-09-14 18:28:21");
-    service(ready(true), watermark).acceptDatabaseStructure("a test");
-
-    long readings = statements.stream()
-        .filter(sql -> sql.equals("SELECT db_checksum FROM ad_system_info"))
-        .count();
-    assertEquals(2, readings,
-        "accepting the structure is the one act here that can absorb a change nobody meant to "
-            + "accept, so the checksum before and the checksum after are both read and logged: "
-            + "without them there is no way to tell afterwards that it happened");
-  }
-
   // --- fixtures -------------------------------------------------------------------------------
 
   private static final class Column {

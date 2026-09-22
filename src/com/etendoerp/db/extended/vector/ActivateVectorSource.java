@@ -37,51 +37,34 @@ import com.smf.jobs.ActionResult;
 import com.smf.jobs.Result;
 
 /**
- * Turns vector indexing on for the selected search sources, and reports the ones that are not
- * ready to be turned on.
+ * Reports whether the selected search sources are ready to be indexed, and what is stopping the
+ * ones that are not.
  *
- * <p>Nothing installs pgvector on its own: compiling the module, running update.database or
- * starting the application must never create an extension or a vector object. Activation is a
- * deliberate administrator action, and this is it.</p>
+ * <p>It changes nothing. Everything a source needs -- the extension, the runtime storage, its
+ * collection and its change capture -- is created by the next {@code update.database}, which is
+ * the only moment at which that DDL is free: the update that performs it is also the one that
+ * accepts the structure it leaves behind. A button doing it while the application runs would have
+ * to accept that structure on the administrator's behalf, and with it whatever else had been
+ * changed in the database and not yet exported.</p>
  *
- * <p>The button sits on the Search Source window because that is where a source is configured,
- * and it takes several records at a time so one source, a few or all of them can be activated in
- * a single step. Each run installs the extension and the runtime storage, once per database,
- * which is why the bootstrap runs even when a single source is selected. Then it looks at each
- * selected source and either creates its collection or explains what is stopping it.</p>
+ * <p>So configuring a source is two steps: save it, then run update.database. This is how an
+ * administrator finds out, before running it, whether the configuration will actually produce
+ * anything.</p>
  *
  * <p>The checks exist because a source can be broken in ways that only surface much later. A
  * source with no content column is accepted by the dictionary but fails on every delivery with a
  * no content columns error, once per event, until the retry limit gives up; a collection created
  * before the provider changed holds vectors of the wrong size, and nothing would reject the new
- * ones until they reach the database. Activation is the moment an administrator asks "is this
- * source ready?", so that is where the answer belongs, rather than in a pile of FAILED outbox
- * rows nobody is watching.</p>
+ * ones until they reach the database. This is where an administrator asks "is this source ready?",
+ * rather than finding out from a pile of FAILED outbox rows nobody is watching.</p>
  *
- * <p>Drift is reported and never repaired. Making a collection match again means dropping it, and
- * that deletes every vector it holds; whether re-embedding the whole table is worth it is the
- * administrator's call, not this button's.</p>
- *
- * <p>Running it again is harmless: the storage is created only if absent and a source that is
- * already set up is reported as such and left alone. That also makes it the way to finish setting
- * up a source added after the database was activated.</p>
+ * <p>Drift is reported and never repaired, here or anywhere else. Making a collection match again
+ * means dropping it, and that deletes every vector it holds; whether re-embedding the whole table
+ * is worth it is the administrator's call.</p>
  */
 public class ActivateVectorSource extends Action {
 
   private static final Logger log = LogManager.getLogger();
-
-  /**
-   * Where the run makes its work durable.
-   *
-   * <p>The same seam {@link VectorOutboxService} uses, and for the same reason: the order in which
-   * a run commits is a guarantee it rests on, and it leaves no trace afterwards that a test could
-   * read.</p>
-   */
-  @FunctionalInterface
-  interface Checkpoint {
-    /** Commits the work accumulated so far, making it visible to other sessions. */
-    void commit();
-  }
 
   @Override
   protected Class<?> getInputClass() {
@@ -93,22 +76,19 @@ public class ActivateVectorSource extends Action {
     ActionResult result = new ActionResult();
     try {
       ConnectionProvider connectionProvider = new DalConnectionProvider(false);
-
-      // Read everything the run needs while the records are still attached. Activation commits and
-      // closes the DAL session, and an entity read after that is detached.
       List<Candidate> candidates = new ArrayList<>();
       for (VectorSource source : getInputContents(VectorSource.class)) {
         candidates.add(VectorSourceReadiness.candidate(connectionProvider, source));
       }
 
-      Report report = run(candidates, connectionProvider, new VectorStoreService(connectionProvider),
-          () -> OBDal.getInstance().commitAndClose());
+      Report report = check(candidates, connectionProvider);
 
-      // A run that left a source unusable is not a success, however well the bootstrap went.
+      // A source that cannot be indexed as configured is not a success, however healthy the
+      // database is: the point of asking is to hear that.
       result.setType(report.allReady() ? Result.Type.SUCCESS : Result.Type.WARNING);
       result.setMessage(render(report));
     } catch (Exception e) {
-      log.error("Vector source activation failed", e);
+      log.error("Could not check the vector search sources", e);
       OBDal.getInstance().rollbackAndClose();
       result.setType(Result.Type.ERROR);
       result.setMessage(e.getMessage());
@@ -117,78 +97,34 @@ public class ActivateVectorSource extends Action {
   }
 
   /**
-   * Activates the database and every selected source, and reports what happened to each.
+   * Judges each source against the database as it stands.
    *
-   * <p>Separate from {@link #action} so the order it works in can be read: nothing here resolves a
-   * message, touches the DAL session directly or needs a dictionary record, and the order of the
-   * statements it issues is the behaviour worth checking.</p>
+   * <p>Separate from {@link #action} so what it reads can be read: no message resolution, no DAL
+   * session, and not one statement that writes.</p>
+   *
+   * @param candidates
+   *     the sources to judge
+   * @param connectionProvider
+   *     connection the database is inspected with
+   * @return what each source turned out to be
+   * @throws Exception
+   *     if the database cannot be inspected
    */
-  Report run(List<Candidate> candidates, ConnectionProvider connectionProvider, VectorStore store,
-      Checkpoint checkpoint) throws Exception {
-    VectorTriggerService triggers = new VectorTriggerService(connectionProvider);
-    // The capture triggers go on the application's own tables, and the trigger part of
-    // ad_db_modified is the one it does not restrict by schema, so installing them moves the
-    // structure checksum. excludeFilter.xml does not help: it keeps them out of the DBSM model
-    // comparison, while the checksum is computed inside the database from pg_catalog alone. A
-    // later update.database would then report local changes nobody can export away.
-    //
-    // Re-stamping settles that, and it is only ours to settle when the structure was already
-    // accepted: otherwise the delta holds somebody else's change as well, and catching that is
-    // what the check is for. The stored checksum has to exist for "accepted" to mean anything --
-    // see hasStampedChecksum.
-    //
-    // This has to be read before the first statement that can alter the schema.
-    boolean structureWasAccepted =
-        triggers.hasStampedChecksum() && !triggers.isDatabaseModified();
-
-    VectorCapability capability = new VectorActivationService(connectionProvider).activate();
-    checkpoint.commit();
+  Report check(List<Candidate> candidates, ConnectionProvider connectionProvider) throws Exception {
+    // Before the first update provisions anything there is no collection table to ask, and every
+    // source is simply waiting for that update. Asking anyway would fail with a missing relation,
+    // which is a worse answer than the true one.
+    boolean provisioned = VectorActivationService.isActivated(connectionProvider);
+    VectorCapability capability = new VectorCapabilityService(connectionProvider).inspect();
 
     List<Line> lines = new ArrayList<>();
     for (Candidate candidate : candidates) {
-      Collection collection = VectorSourceReadiness.collection(connectionProvider, candidate.namespace);
-      Verdict verdict = VectorSourceReadiness.verdict(candidate, collection);
-      if (verdict == Verdict.COLLECTION_MISSING) {
-        // Tenant scope is always on: the search context derives client and organization from the
-        // session and never lets a caller supply them, so a collection that did not require them
-        // would accept records no search could ever reach.
-        store.createCollection(new VectorCollection(candidate.namespace, candidate.dimensions,
-            DistanceMetric.valueOf(candidate.metric), true, true));
-      }
-      // The collection has to exist before the table starts enqueueing into it, and a source that
-      // cannot be delivered has to stop enqueueing at all, so this runs after the verdict and
-      // follows it either way.
-      VectorTriggerService.Deployment deployment = verdict.isUsable()
-          ? triggers.deploy(candidate.id)
-          : triggers.teardown(candidate.id);
-      lines.add(new Line(candidate, collection, verdict, deployment));
-    }
-    checkpoint.commit();
-
-    // Stamping is refused unless the structure really did move, which also fences off the way
-    // ad_db_modified fails: it ends in EXCEPTION WHEN OTHERS THEN RETURN 'N', so an error inside it
-    // is indistinguishable from a clean database. Having just changed the structure, a verdict of
-    // 'N' can only mean the function is not answering -- and a run that genuinely changed nothing
-    // has nothing to stamp either way.
-    if (structureWasAccepted && triggers.isDatabaseModified()) {
-      triggers.acceptDatabaseStructure(describeChange(lines));
-      checkpoint.commit();
+      Collection collection = provisioned
+          ? VectorSourceReadiness.collection(connectionProvider, candidate.namespace)
+          : null;
+      lines.add(new Line(candidate, collection, VectorSourceReadiness.verdict(candidate, collection)));
     }
     return new Report(capability, lines);
-  }
-
-  /** What this run changed, for the record the acceptance leaves behind. */
-  private static String describeChange(List<Line> lines) {
-    int installed = 0;
-    int removed = 0;
-    List<String> sources = new ArrayList<>();
-    for (Line line : lines) {
-      installed += line.deployment.getInstalled();
-      removed += line.deployment.getRemoved();
-      sources.add(line.candidate.name);
-    }
-    return "activating " + sources + ": " + installed + " trigger(s) installed, " + removed
-        + " removed";
   }
 
   // --- turning the report into what the administrator reads -----------------------------------
@@ -198,7 +134,7 @@ public class ActivateVectorSource extends Action {
     outcomes.add(OBMessageUtils.messageBD("ETARC_VectorActivationState") + " "
         + report.capability.getState() + ". " + report.capability.getDiagnostic());
     for (Line line : report.lines) {
-      outcomes.add(line.candidate.name + ": " + render(line) + " " + describe(line.deployment));
+      outcomes.add(line.candidate.name + ": " + render(line));
     }
     return String.join("\n", outcomes);
   }
@@ -207,20 +143,6 @@ public class ActivateVectorSource extends Action {
     String[] params = line.messageParameters();
     return params.length == 0 ? OBMessageUtils.messageBD(line.verdict.getMessageKey())
         : OBMessageUtils.getI18NMessage(line.verdict.getMessageKey(), params);
-  }
-
-  /** Says what happened to the change capture, and stays quiet when nothing did. */
-  private String describe(VectorTriggerService.Deployment deployment) {
-    if (deployment.getInstalled() > 0) {
-      return OBMessageUtils.getI18NMessage("ETARC_VectorTriggersInstalled",
-          new String[] { String.valueOf(deployment.getInstalled()),
-              String.valueOf(deployment.getRemoved()) });
-    }
-    if (deployment.getRemoved() > 0) {
-      return OBMessageUtils.getI18NMessage("ETARC_VectorTriggersRemoved",
-          new String[] { String.valueOf(deployment.getRemoved()) });
-    }
-    return "";
   }
 
   // --- reading what the run needs -------------------------------------------------------------
@@ -232,14 +154,11 @@ public class ActivateVectorSource extends Action {
     final Candidate candidate;
     final Collection collection;
     final Verdict verdict;
-    final VectorTriggerService.Deployment deployment;
 
-    Line(Candidate candidate, Collection collection, Verdict verdict,
-        VectorTriggerService.Deployment deployment) {
+    Line(Candidate candidate, Collection collection, Verdict verdict) {
       this.candidate = candidate;
       this.collection = collection;
       this.verdict = verdict;
-      this.deployment = deployment;
     }
 
     /** Drift is the only verdict that has to say which two values disagree. */
@@ -255,7 +174,7 @@ public class ActivateVectorSource extends Action {
     }
   }
 
-  /** What a whole run amounted to. */
+  /** What a whole check amounted to. */
   static final class Report {
     final VectorCapability capability;
     final List<Line> lines;

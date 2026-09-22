@@ -18,6 +18,8 @@ package com.etendoerp.db.extended.vector;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.util.ArrayList;
+import java.util.List;
 
 import org.openbravo.database.ConnectionProvider;
 
@@ -50,7 +52,58 @@ final class VectorSourceReadiness {
           + "FROM etarc_vector_source_column sc "
           + "WHERE sc.etarc_vector_source_id = ? AND sc.isactive = 'Y'";
 
+  /**
+   * Every configured source, read over JDBC rather than through the DAL.
+   *
+   * <p>The post-update script provisions from the same definition the window reports, and a module
+   * script has no DAL session to read entities with. Keeping one query means the update and the
+   * window can never disagree about what a source is.</p>
+   */
+  private static final String ALL_SOURCES_SQL =
+      "SELECT s.etarc_vector_source_id, s.name, s.namespace, s.distance_metric, "
+          + "  s.isactive, s.isenabled, p.dimensions, "
+          + "  (SELECT count(*) FROM etarc_vector_source_column sc "
+          + "    WHERE sc.etarc_vector_source_id = s.etarc_vector_source_id "
+          + "      AND sc.isactive = 'Y') AS columns, "
+          + "  (SELECT count(*) FROM etarc_vector_source_column sc "
+          + "    WHERE sc.etarc_vector_source_id = s.etarc_vector_source_id "
+          + "      AND sc.isactive = 'Y' AND sc.iscontent = 'Y') AS content_columns "
+          + "FROM etarc_vector_source s "
+          + "LEFT JOIN etarc_vector_embed_provider p "
+          + "  ON p.etarc_vector_embed_provider_id = s.etarc_vector_embed_provider_id "
+          + " AND p.isactive = 'Y' "
+          + "ORDER BY s.etarc_vector_source_id";
+
   private VectorSourceReadiness() {
+  }
+
+  /**
+   * Reads every configured source into the plain values a verdict is made of.
+   *
+   * @param connectionProvider
+   *     connection the sources are read with
+   * @return one candidate per configured source
+   * @throws Exception
+   *     if the sources cannot be read
+   */
+  static List<Candidate> candidates(ConnectionProvider connectionProvider) throws Exception {
+    List<Candidate> candidates = new ArrayList<>();
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(ALL_SOURCES_SQL);
+        ResultSet result = statement.executeQuery()) {
+      while (result.next()) {
+        // wasNull answers for the column read last, so it is asked before anything else is read:
+        // a source without a provider has no dimensions, and that is its own verdict.
+        int width = result.getInt("dimensions");
+        Integer dimensions = result.wasNull() ? null : Integer.valueOf(width);
+        boolean enabled = "Y".equals(result.getString("isactive"))
+            && "Y".equals(result.getString("isenabled"));
+        candidates.add(new Candidate(result.getString("etarc_vector_source_id"),
+            result.getString("name"), result.getString("namespace"),
+            result.getString("distance_metric"), enabled, dimensions,
+            new Columns(result.getInt("columns"), result.getInt("content_columns"))));
+      }
+    }
+    return candidates;
   }
 
   /**
@@ -123,7 +176,7 @@ final class VectorSourceReadiness {
     WITHOUT_PROVIDER("ETARC_VectorSourceWithoutProvider"),
     WITHOUT_COLUMNS("ETARC_VectorSourceWithoutColumns"),
     WITHOUT_CONTENT("ETARC_VectorSourceWithoutContent"),
-    COLLECTION_MISSING("ETARC_VectorCollectionCreated"),
+    COLLECTION_MISSING("ETARC_VectorSourceNotProvisioned"),
     DIMENSION_DRIFT("ETARC_VectorCollectionDimensionDrift"),
     METRIC_DRIFT("ETARC_VectorCollectionMetricDrift"),
     READY("ETARC_VectorSourceAlreadyActive");
@@ -139,10 +192,10 @@ final class VectorSourceReadiness {
     }
 
     /**
-     * Whether the source can be indexed as it stands.
+     * Whether the source is configured well enough to be indexed.
      *
-     * <p>A missing collection counts as usable because activation creates it on the spot; every
-     * other refusal needs an administrator to change the configuration first.</p>
+     * <p>A missing collection counts as usable because the next update creates it; every other
+     * refusal needs an administrator to change the configuration first.</p>
      */
     boolean isUsable() {
       return this == READY || this == COLLECTION_MISSING;

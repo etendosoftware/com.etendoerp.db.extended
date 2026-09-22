@@ -18,7 +18,6 @@ package com.etendoerp.db.extended.vector;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
-import java.sql.Timestamp;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
@@ -357,106 +356,6 @@ public class VectorTriggerService {
       execute("DROP FUNCTION IF EXISTS " + quoteIdentifier(function) + "()");
     }
     return removed;
-  }
-
-  /**
-   * Whether the database structure no longer matches the checksum stamped by the last update.
-   *
-   * <p>Triggers count towards that checksum: {@code ad_db_modified} hashes every trigger that is
-   * neither a referential-integrity nor an audit one, and it does not read excludeFilter.xml,
-   * which only keeps them out of the DBSM model comparison. So changing them dirties the
-   * checksum.</p>
-   */
-  public boolean isDatabaseModified() throws Exception {
-    try (PreparedStatement statement = cp.getPreparedStatement("SELECT ad_db_modified('N') FROM DUAL");
-        ResultSet result = statement.executeQuery()) {
-      return result.next() && "Y".equalsIgnoreCase(result.getString(1));
-    }
-  }
-
-  /**
-   * Whether a structure checksum was ever stamped on this database.
-   *
-   * <p>Without this, {@link #isDatabaseModified()} cannot be read as "the structure is accepted".
-   * {@code ad_db_modified} answers {@code N} when the stored checksum matches <em>and</em> when
-   * there is no stored checksum at all -- its test is {@code aux is null or aux = computed}. A
-   * database restored from a dump that never carried one therefore reports itself unmodified, and
-   * anything already changed in it would be accepted on the first activation. Nothing is lost by
-   * refusing: with no checksum stored, update.database does not object either.</p>
-   *
-   * @return whether {@code AD_SYSTEM_INFO.DB_CHECKSUM} holds a value
-   * @throws Exception
-   *     if the checksum cannot be read
-   */
-  public boolean hasStampedChecksum() throws Exception {
-    try (PreparedStatement statement = cp.getPreparedStatement(
-        "SELECT db_checksum IS NOT NULL FROM ad_system_info");
-        ResultSet result = statement.executeQuery()) {
-      return result.next() && result.getBoolean(1);
-    }
-  }
-
-  /**
-   * Accepts the current database structure as the reference for the next update.
-   *
-   * <p>The module script needs none of this: it runs inside the update, and the core re-stamps the
-   * checksum once every post-update script has run (EPL-1810), so what it generates is accepted by
-   * the update that generated it. A source activated from the window is the case nothing covers:
-   * it changes triggers long after any update, and would leave every later update.database
-   * aborting with "Database has local changes" until somebody forced one.</p>
-   *
-   * <p>{@code ad_db_modified('Y')} writes two things, and only one of them is ours to write. Along
-   * with the structure checksum it moves {@code LAST_DBUPDATE}, and that column is the watermark
-   * the dataset check compares row timestamps against: every dictionary row edited since then is
-   * what makes update.database ask for an export. Letting it move would silence that question for
-   * every dataset table in the instance, which has nothing to do with a trigger being installed.
-   * So the watermark is read first and put back afterwards.</p>
-   *
-   * <p>Only call this when the structure was unmodified beforehand. Re-stamping unconditionally
-   * would quietly accept whatever else someone had changed in the database, and that is precisely
-   * the thing the check exists to catch.</p>
-   *
-   * @param changed
-   *     what this run altered, recorded alongside the checksums so the acceptance can be told
-   *     apart afterwards
-   * @throws Exception
-   *     if the checksum cannot be read or re-stamped
-   */
-  public void acceptDatabaseStructure(String changed) throws Exception {
-    String replaced = storedChecksum();
-    Timestamp watermark = null;
-    try (PreparedStatement statement = cp.getPreparedStatement(
-        "SELECT last_dbupdate FROM ad_system_info");
-        ResultSet result = statement.executeQuery()) {
-      if (result.next()) {
-        watermark = result.getTimestamp(1);
-      }
-    }
-
-    try (PreparedStatement statement = cp.getPreparedStatement("SELECT ad_db_modified('Y') FROM DUAL");
-        ResultSet result = statement.executeQuery()) {
-      result.next();
-    }
-
-    try (PreparedStatement statement = cp.getPreparedStatement(
-        "UPDATE ad_system_info SET last_dbupdate = ?")) {
-      statement.setTimestamp(1, watermark);
-      statement.executeUpdate();
-    }
-
-    // Named in full on purpose. Accepting the structure is the one thing here that can absorb a
-    // change nobody meant to accept, and the checksum it replaced is the only way to tell
-    // afterwards that it happened and what it stood for.
-    log.info("Database structure accepted after {}. Checksum {} replaced by {}.", changed,
-        replaced, storedChecksum());
-  }
-
-  private String storedChecksum() throws Exception {
-    try (PreparedStatement statement = cp.getPreparedStatement(
-        "SELECT db_checksum FROM ad_system_info");
-        ResultSet result = statement.executeQuery()) {
-      return result.next() ? result.getString(1) : null;
-    }
   }
 
   private void execute(String sql) throws Exception {
