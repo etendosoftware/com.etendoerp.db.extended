@@ -18,6 +18,7 @@ package com.etendoerp.db.extended.vector;
 
 import java.sql.Connection;
 import java.sql.DriverManager;
+import java.sql.SQLException;
 import java.util.Properties;
 
 /**
@@ -47,10 +48,10 @@ final class VectorSystemConnection {
    * @param properties
    *     the Openbravo properties the caller was configured with
    * @return the connection, or {@code null} when the installation records no system credentials
-   * @throws Exception
+   * @throws SQLException
    *     if the credentials are there but the connection cannot be opened
    */
-  static Connection open(Properties properties) throws Exception {
+  static Connection open(Properties properties) throws SQLException {
     if (properties == null) {
       return null;
     }

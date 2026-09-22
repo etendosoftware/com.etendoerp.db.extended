@@ -83,11 +83,12 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
     Properties properties = new Properties();
     try (InputStream stream = new FileInputStream(getPropertiesFile())) {
       properties.load(stream);
-      return properties;
     } catch (Exception e) {
+      // Empty rather than null, and the two mean the same thing downstream: with no credentials to
+      // read, the extension is only attempted as the application user.
       log4j.warn("Could not read the properties file; the extension will only be attempted as the "
           + "application user.", e);
-      return null;
     }
+    return properties;
   }
 }

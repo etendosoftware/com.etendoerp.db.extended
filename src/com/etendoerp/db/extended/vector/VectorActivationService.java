@@ -28,9 +28,17 @@ public class VectorActivationService {
   private final ConnectionProvider cp; private final VectorCapabilityService capabilityService;
   private final java.util.Properties systemProperties;
 
+  /**
+   * Creates a service that can only act as the application user.
+   *
+   * @param cp
+   *     connection the storage is created with
+   */
   public VectorActivationService(ConnectionProvider cp) { this(cp, null); }
 
   /**
+   * Creates a service that can create the extension as the database system user.
+   *
    * @param cp
    *     connection the storage is created with, as the application user
    * @param systemProperties
