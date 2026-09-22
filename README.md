@@ -43,7 +43,7 @@ what was measured along the way, is in [doc/checksum-acceptance.md](doc/checksum
 Nothing is installed for an instance that configured no usable source. Having the module installed
 is not asking for pgvector: no extension is created, and no vector object either.
 
-**Search Source → Activate Vector Indexing** answers the question an administrator has *before*
+**Search Source → Check Indexing Readiness** answers the question an administrator has *before*
 running the update: is this source going to produce anything? It writes nothing. It takes several
 records at a time and, for each, either confirms it is ready or names what is stopping it.
 

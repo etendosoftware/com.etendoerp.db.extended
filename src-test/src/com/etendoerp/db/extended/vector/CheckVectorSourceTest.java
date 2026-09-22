@@ -33,7 +33,7 @@ import org.openbravo.database.ConnectionProvider;
 
 import com.etendoerp.db.extended.vector.VectorSourceReadiness.Candidate;
 import com.etendoerp.db.extended.vector.VectorSourceReadiness.Collection;
-import com.etendoerp.db.extended.vector.ActivateVectorSource.Report;
+import com.etendoerp.db.extended.vector.CheckVectorSource.Report;
 import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
 
 /**
@@ -44,7 +44,7 @@ import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
  * something would be back to changing the database from a window, which is what this stopped
  * doing.</p>
  */
-class ActivateVectorSourceTest {
+class CheckVectorSourceTest {
 
   // --- the decision ---------------------------------------------------------------------------
 
@@ -281,7 +281,7 @@ class ActivateVectorSourceTest {
       return statement;
     });
 
-    run.report = new ActivateVectorSource().check(List.of(candidates), cp);
+    run.report = new CheckVectorSource().check(List.of(candidates), cp);
     return run;
   }
 

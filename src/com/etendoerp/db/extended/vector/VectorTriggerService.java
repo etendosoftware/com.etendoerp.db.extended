@@ -38,7 +38,7 @@ import org.openbravo.database.ConnectionProvider;
  * <p>This lives in the runtime source tree rather than beside the module script because both
  * entry points need it and only one of them is a module script. {@code
  * GenerateVectorSourceTriggers} calls {@link #deployAll()} after an update installs dictionary
- * data, when every source has to be rebuilt; {@code ActivateVectorSource} calls {@link
+ * data, when every source has to be rebuilt; {@code CheckVectorSource} calls {@link
  * #deploy(String)} when an administrator changes a source through the window, which must not
  * disturb the sources they did not select. Keeping one implementation matters more than usual
  * here: the trigger names it produces have to agree with the ones the build validation excludes

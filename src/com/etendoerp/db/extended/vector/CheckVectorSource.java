@@ -62,7 +62,7 @@ import com.smf.jobs.Result;
  * means dropping it, and that deletes every vector it holds; whether re-embedding the whole table
  * is worth it is the administrator's call.</p>
  */
-public class ActivateVectorSource extends Action {
+public class CheckVectorSource extends Action {
 
   private static final Logger log = LogManager.getLogger();
 
