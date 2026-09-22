@@ -17,10 +17,14 @@
 package com.etendoerp.db.extended.vector;
 
 import java.sql.PreparedStatement;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
 
 /** Explicit administrator-only lifecycle. It is never invoked by DBSM, startup, or module scripts. */
 public class VectorActivationService {
+  private static final Logger log = LogManager.getLogger();
+
   private final ConnectionProvider cp; private final VectorCapabilityService capabilityService;
   public VectorActivationService(ConnectionProvider cp) { this.cp = cp; capabilityService = new VectorCapabilityService(cp); }
   public VectorCapability activate() {
@@ -57,14 +61,37 @@ public class VectorActivationService {
   private void execute(String sql) throws Exception { try (PreparedStatement ps = cp.getPreparedStatement(sql)) { ps.executeUpdate(); } }
   static VectorException disabled(VectorCapability capability) { return new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, capability.getDiagnostic()); }
 
-  /** Read-only persisted activation check used by all operational entry points. */
+  /**
+   * Read-only persisted activation check used by all operational entry points.
+   *
+   * <p>Asked in two steps, and never in one. Before the first update provisions anything the
+   * activation table does not exist, and querying a missing relation does not merely fail: it
+   * aborts the whole JDBC transaction, so every later statement is refused with "current
+   * transaction is aborted" -- including the ones that read messages, which is how a caller ends up
+   * reporting untranslated keys and a capability it could not inspect. {@code to_regclass} answers
+   * the same question without raising.</p>
+   */
   static boolean isActivated(ConnectionProvider cp) {
+    try {
+      if (!storageExists(cp)) {
+        return false;
+      }
+      try (PreparedStatement ps = cp.getPreparedStatement(
+          "SELECT state = 'ACTIVE' FROM etarc_vector.etarc_vector_activation WHERE id = true");
+          java.sql.ResultSet rs = ps.executeQuery()) {
+        return rs.next() && rs.getBoolean(1);
+      }
+    } catch (Exception e) {
+      log.debug("Could not read the vector activation state.", e);
+      return false;
+    }
+  }
+
+  private static boolean storageExists(ConnectionProvider cp) throws Exception {
     try (PreparedStatement ps = cp.getPreparedStatement(
-        "SELECT state = 'ACTIVE' FROM etarc_vector.etarc_vector_activation WHERE id = true");
+        "SELECT to_regclass('etarc_vector.etarc_vector_activation') IS NOT NULL");
         java.sql.ResultSet rs = ps.executeQuery()) {
       return rs.next() && rs.getBoolean(1);
-    } catch (Exception ignored) {
-      return false;
     }
   }
 }

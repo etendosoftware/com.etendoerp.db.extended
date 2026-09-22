@@ -125,6 +125,30 @@ class CheckVectorSourceTest {
   }
 
   @Test
+  void neverQueriesTheStorageBeforeAskingWhetherItExists() throws Exception {
+    Run run = check(notProvisioned(), source().build());
+
+    int guard = run.indexOf("SELECT to_regclass");
+    assertTrue(guard >= 0,
+        "before the first update the activation table does not exist, and querying a missing "
+            + "relation aborts the whole JDBC transaction: every later statement is refused, so "
+            + "the capability cannot be inspected and even the messages come back as raw keys");
+    for (String sql : run.statements) {
+      assertFalse(sql.contains("etarc_vector.") && !sql.contains("to_regclass"),
+          "nothing may touch the storage until to_regclass has said it is there: " + sql);
+    }
+  }
+
+  @Test
+  void refusesToCallItASuccessWhenTheDatabaseCouldNotBeInspected() throws Exception {
+    Run run = check(uninspectable(), source().build());
+
+    assertFalse(run.report.allReady(),
+        "a database that could not be inspected says nothing about its sources, and reporting "
+            + "that as a success is how a broken environment passes for a working one");
+  }
+
+  @Test
   void reportsEverySourceAsWaitingWhenTheStorageIsNotThereYet() throws Exception {
     Run run = check(notProvisioned(), source().build());
 
@@ -249,24 +273,37 @@ class CheckVectorSourceTest {
     }
   }
 
-  private static boolean provisioned() {
-    return true;
+  /** How the database answers the two things the check asks of it before judging a source. */
+  private enum Db {
+    /** An update has run: the storage is there and the capability reports cleanly. */
+    PROVISIONED,
+    /** No update has run yet, so the storage does not exist. */
+    NOT_PROVISIONED,
+    /** The capability query answers nothing, so the database cannot be judged at all. */
+    UNINSPECTABLE
   }
 
-  /** A database on which no update has provisioned anything yet. */
-  private static boolean notProvisioned() {
-    return false;
+  private static Db provisioned() {
+    return Db.PROVISIONED;
+  }
+
+  private static Db notProvisioned() {
+    return Db.NOT_PROVISIONED;
+  }
+
+  private static Db uninspectable() {
+    return Db.UNINSPECTABLE;
   }
 
   private Run check(Candidate... candidates) throws Exception {
-    return check(true, null, candidates);
+    return check(Db.PROVISIONED, null, candidates);
   }
 
-  private Run check(boolean provisioned, Candidate... candidates) throws Exception {
-    return check(provisioned, null, candidates);
+  private Run check(Db db, Candidate... candidates) throws Exception {
+    return check(db, null, candidates);
   }
 
-  private Run check(boolean provisioned, Collection existing, Candidate... candidates)
+  private Run check(Db db, Collection existing, Candidate... candidates)
       throws Exception {
     Run run = new Run();
     ConnectionProvider cp = mock(ConnectionProvider.class);
@@ -274,7 +311,7 @@ class CheckVectorSourceTest {
     when(cp.getPreparedStatement(anyString())).thenAnswer(invocation -> {
       String sql = invocation.getArgument(0);
       run.statements.add(sql);
-      ResultSet rows = rowsFor(sql, provisioned, existing);
+      ResultSet rows = rowsFor(sql, db, existing);
       PreparedStatement statement = mock(PreparedStatement.class);
       when(statement.executeQuery()).thenReturn(rows);
       when(statement.executeUpdate()).thenReturn(1);
@@ -285,10 +322,13 @@ class CheckVectorSourceTest {
     return run;
   }
 
-  private ResultSet rowsFor(String sql, boolean provisioned, Collection existing)
+  private ResultSet rowsFor(String sql, Db db, Collection existing)
       throws Exception {
     ResultSet rs = mock(ResultSet.class);
-    if (sql.startsWith("SELECT dimensions, metric")) {
+    if (sql.startsWith("SELECT to_regclass")) {
+      when(rs.next()).thenReturn(true);
+      when(rs.getBoolean(1)).thenReturn(db != Db.NOT_PROVISIONED);
+    } else if (sql.startsWith("SELECT dimensions, metric")) {
       when(rs.next()).thenReturn(existing != null);
       if (existing != null) {
         when(rs.getInt(1)).thenReturn(existing.dimensions);
@@ -308,11 +348,12 @@ class CheckVectorSourceTest {
       when(rs.getString(1)).thenReturn("etarc_vsrc_src1_u_00000000");
       when(rs.getString(2)).thenReturn("c_bpartner");
     } else if (sql.contains("installed")) {
-      when(rs.next()).thenReturn(true);
+      // No row at all is how the capability query reports that it could not answer.
+      when(rs.next()).thenReturn(db != Db.UNINSPECTABLE);
       when(rs.getBoolean("installed")).thenReturn(true);
     } else if (sql.contains("state = 'ACTIVE'")) {
-      when(rs.next()).thenReturn(provisioned);
-      when(rs.getBoolean(1)).thenReturn(provisioned);
+      when(rs.next()).thenReturn(db != Db.NOT_PROVISIONED);
+      when(rs.getBoolean(1)).thenReturn(db != Db.NOT_PROVISIONED);
     } else {
       when(rs.next()).thenReturn(false);
     }

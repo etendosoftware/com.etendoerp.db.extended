@@ -184,8 +184,16 @@ public class CheckVectorSource extends Action {
       this.lines = lines;
     }
 
+    /**
+     * Whether the check can say yes.
+     *
+     * <p>The capability counts: a database that could not even be inspected says nothing about its
+     * sources, and reporting that as a success is how a broken environment passes for a working
+     * one.</p>
+     */
     boolean allReady() {
-      return lines.stream().allMatch(line -> line.verdict.isUsable());
+      return capability.getState() != VectorCapabilityState.FAILED
+          && lines.stream().allMatch(line -> line.verdict.isUsable());
     }
   }
 }

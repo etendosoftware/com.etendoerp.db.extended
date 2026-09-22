@@ -20,6 +20,8 @@ package com.etendoerp.db.extended.vector;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
 
 /**
@@ -29,6 +31,8 @@ import org.openbravo.database.ConnectionProvider;
  * is owned by a separate explicit lifecycle introduced after disabled-mode verification.</p>
  */
 public class VectorCapabilityService {
+  private static final Logger log = LogManager.getLogger();
+
   static final String VECTOR_EXTENSION = "vector";
   static final String CAPABILITY_SQL =
       "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = ?) AS available, "
@@ -81,6 +85,9 @@ public class VectorCapabilityService {
             "The PostgreSQL server does not provide the pgvector extension.");
       }
     } catch (Exception exception) {
+      // Logged rather than swallowed: this method exists to diagnose, and the one thing an
+      // administrator cannot act on is a diagnosis that hides why it failed.
+      log.error("Could not inspect the PostgreSQL pgvector capability.", exception);
       return new VectorCapability(VectorCapabilityState.FAILED,
           "Could not inspect the PostgreSQL pgvector capability.");
     }
