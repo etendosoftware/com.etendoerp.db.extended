@@ -79,6 +79,28 @@ answerable before running it, but applying it is a deploy-time act.
   is applied, so a plain script generates the triggers of a source from the configuration the
   update is about to replace — wrong precisely for the sources a module ships.
 
+## The extension is the one thing left that moves the checksum
+
+Measured on this database: dropping the `vector` extension takes the verdict from `Y` to `N`, and
+putting it back takes it to `Y`. pgvector installs 118 functions; 114 are C functions, which the
+hash skips because it only counts those with `probin IS NULL`. The other four are the `avg` and
+`sum` aggregates for `vector` and `halfvec`, they are SQL, they land in the application schema, and
+they are hashed.
+
+That is harmless when the post-update script creates the extension, because the core re-stamps the
+checksum once every post-update script has run, so the update that creates it also accepts it.
+
+It is not harmless when a DBA creates it out of band -- which is the common case, because the
+application role usually may not `CREATE EXTENSION`. The database is then left reporting local
+changes and the next `update.database` refuses to start. The way through is one forced update: the
+delta really is only the extension, and that same update re-stamps the checksum at its end, so it
+is needed once and not again.
+
+**Worth considering:** `CREATE EXTENSION vector SCHEMA etarc_vector` would put those four
+aggregates outside `current_schema()` and make even the out-of-band case invisible. It would mean
+qualifying the vector type and the distance operators everywhere they are used, or setting a
+`search_path`, so it is a change to weigh rather than an obvious win.
+
 ## Still open
 
 `PostUpdateModuleScript` lives only on the core's `epic/ETP-3504` (EPL-1810), not on `develop` or

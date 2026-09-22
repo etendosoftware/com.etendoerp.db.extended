@@ -54,7 +54,11 @@ reported rather than queued as work that can only fail, and a mismatched collect
 repaired: making one match again means dropping it, and that deletes every vector it holds.
 
 The update needs a database role allowed to `CREATE EXTENSION` and to create a schema, because the
-vector storage lives in a schema of its own, `etarc_vector`, rather than in the application's. An
+vector storage lives in a schema of its own, `etarc_vector`, rather than in the application's. When
+the role may not create extensions, a DBA can create it instead — but doing that outside an update
+leaves the database reporting local changes, because four of pgvector's functions are SQL rather
+than C and count towards the structure checksum. One forced update settles it, and that same update
+re-stamps the checksum; see [doc/checksum-acceptance.md](doc/checksum-acceptance.md). An
 instance that indexed something under an earlier version has its tables moved there on the next
 update, with their rows, indexes and foreign key.
 
