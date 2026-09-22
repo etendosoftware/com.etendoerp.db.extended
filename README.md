@@ -53,12 +53,16 @@ before the provider changed holds vectors of a size the new model no longer prod
 reported rather than queued as work that can only fail, and a mismatched collection is never
 repaired: making one match again means dropping it, and that deletes every vector it holds.
 
-The update needs a database role allowed to `CREATE EXTENSION` and to create a schema, because the
-vector storage lives in a schema of its own, `etarc_vector`, rather than in the application's. When
-the role may not create extensions, a DBA can create it instead — but doing that outside an update
-leaves the database reporting local changes, because four of pgvector's functions are SQL rather
-than C and count towards the structure checksum. One forced update settles it, and that same update
-re-stamps the checksum; see [doc/checksum-acceptance.md](doc/checksum-acceptance.md). An
+The update creates the extension as the database system user — the same `bbdd.systemUser` that
+`build.xml` already hands to DBSM on every update — so the application role does not need the
+privilege and a DBA does not have to step in. It falls back to the application role when the
+installation records no system credentials. The role does need to create a schema, because the
+vector storage lives in one of its own, `etarc_vector`, rather than in the application's.
+
+Creating the extension by hand, outside an update, is what to avoid: four of pgvector's functions
+are SQL rather than C and count towards the structure checksum, so the next `update.database`
+refuses to start until one forced run re-stamps it. See
+[doc/checksum-acceptance.md](doc/checksum-acceptance.md). An
 instance that indexed something under an earlier version has its tables moved there on the next
 update, with their rows, indexes and foreign key.
 

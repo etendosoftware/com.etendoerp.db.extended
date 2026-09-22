@@ -59,6 +59,15 @@ class VectorProvisioningServiceTest {
   }
 
   @Test
+  void leavesTheExtensionAloneWhenItIsAlreadyThere() throws Exception {
+    Run run = provision(source().withExtensionAlreadyInstalled());
+
+    assertEquals(0, run.count("CREATE EXTENSION"),
+        "the statement is refused to an unprivileged role, so it must not be issued for nothing");
+    assertEquals(1, run.store.created.size(), "and the rest of the provisioning still happens");
+  }
+
+  @Test
   void createsTheStorageBeforeTheCollectionThatLivesInIt() throws Exception {
     Run run = provision(source());
 
@@ -93,6 +102,12 @@ class VectorProvisioningServiceTest {
     private Integer dimensions = 1536;
     private int columns = 3;
     private int contentColumns = 2;
+    private boolean extensionInstalled = false;
+
+    private SourceRow withExtensionAlreadyInstalled() {
+      extensionInstalled = true;
+      return this;
+    }
 
     private SourceRow withColumns(int total, int content) {
       columns = total;
@@ -207,7 +222,7 @@ class VectorProvisioningServiceTest {
       when(rs.getString("isdeleteenabled")).thenReturn("N");
     } else if (sql.contains("installed")) {
       when(rs.next()).thenReturn(true);
-      when(rs.getBoolean("installed")).thenReturn(true);
+      when(rs.getBoolean("installed")).thenReturn(row.extensionInstalled);
       when(rs.getBoolean("available")).thenReturn(true);
     } else if (sql.contains("state = 'ACTIVE'")) {
       when(rs.next()).thenReturn(true);

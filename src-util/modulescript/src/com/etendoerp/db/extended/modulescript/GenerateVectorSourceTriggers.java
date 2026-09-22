@@ -16,6 +16,10 @@
  */
 package com.etendoerp.db.extended.modulescript;
 
+import java.io.FileInputStream;
+import java.io.InputStream;
+import java.util.Properties;
+
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.modulescript.PostUpdateModuleScript;
@@ -56,7 +60,7 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
   public void execute() {
     try {
       new VectorProvisioningService(getConnectionProvider(),
-          new VectorStoreService(getConnectionProvider())).provision();
+          new VectorStoreService(getConnectionProvider()), systemProperties()).provision();
     } catch (Exception e) {
       // Deliberately not handleError, which fails the update. Semantic search is optional and
       // opt-in, and the reasons it cannot be provisioned are mostly environmental -- the role may
@@ -67,6 +71,23 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
       // retries: provisioning is idempotent.
       log4j.error("Could not provision the vector search capability. The update continues; the "
           + "sources stay unprovisioned and the Search Sources window reports why.", e);
+    }
+  }
+
+  /**
+   * The properties this update was configured with, so the extension can be created as the system
+   * user. They carry a password, so they are read here and handed straight to the provisioning:
+   * nothing logs them and nothing keeps them.
+   */
+  private Properties systemProperties() {
+    Properties properties = new Properties();
+    try (InputStream stream = new FileInputStream(getPropertiesFile())) {
+      properties.load(stream);
+      return properties;
+    } catch (Exception e) {
+      log4j.warn("Could not read the properties file; the extension will only be attempted as the "
+          + "application user.", e);
+      return null;
     }
   }
 }

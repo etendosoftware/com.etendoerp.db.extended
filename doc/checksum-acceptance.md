@@ -90,11 +90,15 @@ they are hashed.
 That is harmless when the post-update script creates the extension, because the core re-stamps the
 checksum once every post-update script has run, so the update that creates it also accepts it.
 
-It is not harmless when a DBA creates it out of band -- which is the common case, because the
-application role usually may not `CREATE EXTENSION`. The database is then left reporting local
-changes and the next `update.database` refuses to start. The way through is one forced update: the
-delta really is only the extension, and that same update re-stamps the checksum at its end, so it
-is needed once and not again.
+So the update creates it, and creates it as the database system user when the application role may
+not -- the same `bbdd.systemUser` that `build.xml` already hands to DBSM on every update. That is
+what keeps the common case harmless: the role usually cannot `CREATE EXTENSION`, and the answer is
+not to make a DBA do it out of band but to do it inside the update that will accept it.
+
+Doing it out of band is what costs. The database is then left reporting local changes and the next
+`update.database` refuses to start. The way through is one forced update: the delta really is only
+the extension, and that same update re-stamps the checksum at its end, so it is needed once and not
+again. An installation that blanked out its system credentials has no other option.
 
 **Worth considering:** `CREATE EXTENSION vector SCHEMA etarc_vector` would put those four
 aggregates outside `current_schema()` and make even the out-of-band case invisible. It would mean

@@ -26,14 +26,29 @@ public class VectorActivationService {
   private static final Logger log = LogManager.getLogger();
 
   private final ConnectionProvider cp; private final VectorCapabilityService capabilityService;
-  public VectorActivationService(ConnectionProvider cp) { this.cp = cp; capabilityService = new VectorCapabilityService(cp); }
+  private final java.util.Properties systemProperties;
+
+  public VectorActivationService(ConnectionProvider cp) { this(cp, null); }
+
+  /**
+   * @param cp
+   *     connection the storage is created with, as the application user
+   * @param systemProperties
+   *     the Openbravo properties, so the extension can be created as the system user when the
+   *     application user may not; {@code null} to only ever try as the application user
+   */
+  public VectorActivationService(ConnectionProvider cp, java.util.Properties systemProperties) {
+    this.cp = cp;
+    this.systemProperties = systemProperties;
+    capabilityService = new VectorCapabilityService(cp);
+  }
   public VectorCapability activate() {
     VectorCapability capability = capabilityService.inspect();
     if (capability.getState() == VectorCapabilityState.UNAVAILABLE) throw disabled(capability);
     try {
       VectorRuntimeSchema.ensure(cp);
       execute("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_activation (id boolean primary key default true, state varchar(16) not null, diagnostic text, updated_at timestamptz not null default now())");
-      execute("CREATE EXTENSION IF NOT EXISTS vector");
+      installExtension();
       execute("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_collection (id bigserial primary key, namespace varchar(128) not null unique, dimensions integer not null, metric varchar(32) not null, client_scoped boolean not null, organization_scoped boolean not null, active boolean not null default true, index_status varchar(16) not null default 'NOT_CREATED')");
       execute("CREATE TABLE IF NOT EXISTS etarc_vector.etarc_vector_record (namespace varchar(128) not null references etarc_vector.etarc_vector_collection(namespace) on delete cascade, external_key varchar(255) not null, client_id varchar(32) not null default '', organization_id varchar(32) not null default '', embedding vector not null, metadata jsonb not null default '{}'::jsonb, created_at timestamptz not null default now(), updated_at timestamptz not null default now(), primary key(namespace, external_key, client_id, organization_id))");
       execute("INSERT INTO etarc_vector.etarc_vector_activation (id, state, diagnostic) VALUES (true, 'ACTIVE', null) ON CONFLICT (id) DO UPDATE SET state = 'ACTIVE', diagnostic = null, updated_at = now()");
@@ -43,6 +58,31 @@ public class VectorActivationService {
       throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "pgvector activation failed; verify extension permissions and retry.", e);
     }
   }
+  /**
+   * Creates the extension, as the system user when the application user may not.
+   *
+   * <p>The privilege is asked for before it is needed rather than after a refusal, because a
+   * refused statement aborts the transaction it ran in and everything after it would be refused
+   * too. Already installed is the common case and costs one catalogue read.</p>
+   */
+  private void installExtension() throws Exception {
+    if (new VectorCapabilityService(cp).inspect().getState() == VectorCapabilityState.ACTIVE) {
+      return;
+    }
+    try (java.sql.Connection system = VectorSystemConnection.open(systemProperties)) {
+      if (system != null) {
+        try (java.sql.Statement statement = system.createStatement()) {
+          statement.execute("CREATE EXTENSION IF NOT EXISTS vector");
+        }
+        log.info("Created the pgvector extension as the database system user.");
+        return;
+      }
+    }
+    // No system credentials recorded: the application user is all there is, and it works when the
+    // role was granted the privilege or a DBA created the extension already.
+    execute("CREATE EXTENSION IF NOT EXISTS vector");
+  }
+
   private void persistFailure() {
     try {
       VectorRuntimeSchema.ensure(cp);

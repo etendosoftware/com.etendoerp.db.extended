@@ -44,6 +44,7 @@ public class VectorProvisioningService {
 
   private final ConnectionProvider cp;
   private final VectorStore store;
+  private final java.util.Properties systemProperties;
 
   /**
    * Creates a service that provisions what the configured sources need.
@@ -54,8 +55,25 @@ public class VectorProvisioningService {
    *     where collections are created
    */
   public VectorProvisioningService(ConnectionProvider cp, VectorStore store) {
+    this(cp, store, null);
+  }
+
+  /**
+   * Creates a service that provisions what the configured sources need.
+   *
+   * @param cp
+   *     connection the provisioning statements are issued with
+   * @param store
+   *     where collections are created
+   * @param systemProperties
+   *     the Openbravo properties, so the extension can be created as the system user when the
+   *     application user may not
+   */
+  public VectorProvisioningService(ConnectionProvider cp, VectorStore store,
+      java.util.Properties systemProperties) {
     this.cp = cp;
     this.store = store;
+    this.systemProperties = systemProperties;
   }
 
   /**
@@ -76,7 +94,7 @@ public class VectorProvisioningService {
   public int provision() throws Exception {
     List<Candidate> candidates = VectorSourceReadiness.candidates(cp);
     if (wantsStorage(candidates)) {
-      new VectorActivationService(cp).activate();
+      new VectorActivationService(cp, systemProperties).activate();
       createMissingCollections(candidates);
     } else {
       log.debug("No search source asks for vector storage; nothing is installed.");
