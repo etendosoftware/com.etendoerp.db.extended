@@ -112,7 +112,17 @@ Reference**, looked up in this order:
 The first one found wins, so a `-D` flag or an exported variable overrides the file.
 
 **API Endpoint** is a base URL, up to and including `/v1` and no further; the path of the call is
-added by the module. Leaving it empty calls OpenAI. Pointing it at an OpenAI-compatible gateway —
+added by the module. It is resolved in the same spirit as the key, most specific first:
+
+1. the **API Endpoint** field on the provider,
+2. `vector.embeddings.endpoint` in `Openbravo.properties`,
+3. `https://api.openai.com/v1`.
+
+An installation that reaches every model through one gateway sets the property once, in
+`gradle.properties` — `prepareConfig` copies it into `Openbravo.properties` — and leaves the field
+empty on each provider. That keeps an environment's address out of a dataset that ships with a
+module, and lets one provider still address something else by filling the field in. Pointing either
+one at an OpenAI-compatible gateway —
 the Etendo LLM proxy, an Azure OpenAI deployment, a corporate gateway — makes the same
 configuration work against any of them. Such a gateway serves several providers and is told which
 one to use in the model name, so there **Embedding Model** takes the form `provider/model`.

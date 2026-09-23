@@ -28,13 +28,25 @@ import java.util.List;
 
 import org.codehaus.jettison.json.JSONArray;
 import org.codehaus.jettison.json.JSONObject;
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.openbravo.base.session.OBPropertiesProvider;
 
 /** Optional OpenAI implementation using the embeddings endpoint. */
 public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
   /** The base every OpenAI-compatible service is addressed by; the path is this class's business. */
+  private static final Logger log = LogManager.getLogger();
+
   private static final String BASE_URL = "https://api.openai.com/v1";
   private static final String EMBEDDINGS_PATH = "/embeddings";
+  /**
+   * Openbravo.properties entry naming the endpoint every provider reaches by default.
+   *
+   * <p>For an installation that talks to one gateway: set it once instead of repeating the URL on
+   * every provider, and keep an environment's address out of a dataset that ships with a module.
+   * A provider that fills in its own API Endpoint still uses that one.</p>
+   */
+  private static final String ENDPOINT_PROPERTY = "vector.embeddings.endpoint";
   private final String apiKeyReference;
   private final String model;
   private final String endpoint;
@@ -74,11 +86,45 @@ public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
    * answer than silently accepting two spellings of one field.</p>
    */
   private static String embeddingsUrl(String base) {
-    String trimmed = base == null || base.trim().isEmpty() ? BASE_URL : base.trim();
+    // The property is only worth reading when the provider left the field empty.
+    return embeddingsUrl(base, isBlank(base) ? instanceEndpoint() : null);
+  }
+
+  /**
+   * Chooses the base to call, most specific first.
+   *
+   * @param base
+   *     the provider's own API Endpoint, if it has one
+   * @param instanceDefault
+   *     the endpoint configured for the whole installation, if there is one
+   * @return the embeddings URL
+   */
+  static String embeddingsUrl(String base, String instanceDefault) {
+    String chosen = base;
+    if (isBlank(chosen)) {
+      chosen = instanceDefault;
+    }
+    String trimmed = isBlank(chosen) ? BASE_URL : chosen.trim();
     while (trimmed.endsWith("/")) {
       trimmed = trimmed.substring(0, trimmed.length() - 1);
     }
     return trimmed + EMBEDDINGS_PATH;
+  }
+
+  private static boolean isBlank(String value) {
+    return value == null || value.trim().isEmpty();
+  }
+
+  /** Read defensively: outside a running application there are no properties, and that is fine. */
+  private static String instanceEndpoint() {
+    try {
+      return OBPropertiesProvider.getInstance().getOpenbravoProperties()
+          .getProperty(ENDPOINT_PROPERTY);
+    } catch (Exception e) {
+      log.debug("No Openbravo.properties to read {} from; falling back to {}.", ENDPOINT_PROPERTY,
+          BASE_URL, e);
+      return null;
+    }
   }
 
   @Override public int batchSize() { return batchSize; }

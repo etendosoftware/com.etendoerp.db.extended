@@ -11,6 +11,7 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.atomic.AtomicReference;
 
 import com.sun.net.httpserver.HttpServer;
@@ -20,6 +21,9 @@ import org.codehaus.jettison.json.JSONObject;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.MockedStatic;
+import org.mockito.Mockito;
+import org.openbravo.base.session.OBPropertiesProvider;
 
 /**
  * Exercises the embeddings request against a real HTTP server instead of a mock.
@@ -150,6 +154,55 @@ class OpenAiEmbeddingProviderTest {
     assertEquals("openai/text-embedding-3-small", received.get(0).getString("model"),
         "a provider-agnostic gateway is told which provider to use in the model name, and the "
             + "name has to arrive the way it was configured");
+  }
+
+  @Test
+  void prefersTheProvidersOwnEndpointOverTheOneConfiguredForTheInstance() {
+    assertEquals("https://own.example/v1/embeddings",
+        OpenAiEmbeddingProvider.embeddingsUrl("https://own.example/v1", "https://shared.example/v1"),
+        "a provider that names its own endpoint is addressing something the instance default is "
+            + "not, so the field wins");
+  }
+
+  @Test
+  void fallsBackToTheEndpointConfiguredForTheInstanceWhenTheProviderNamesNone() {
+    assertEquals("https://shared.example/v1/embeddings",
+        OpenAiEmbeddingProvider.embeddingsUrl("  ", "https://shared.example/v1"),
+        "an installation behind one gateway configures the address once, and a provider left "
+            + "blank uses it");
+  }
+
+  @Test
+  void fallsBackToOpenAiWhenNeitherTheProviderNorTheInstanceNamesAnEndpoint() {
+    assertEquals("https://api.openai.com/v1/embeddings",
+        OpenAiEmbeddingProvider.embeddingsUrl(null, null),
+        "with nothing configured anywhere the provider still has to reach OpenAI");
+  }
+
+  @Test
+  void normalisesATrailingSlashOnTheInstanceEndpointToo() {
+    assertEquals("https://shared.example/v1/embeddings",
+        OpenAiEmbeddingProvider.embeddingsUrl(null, "https://shared.example/v1/"),
+        "the property is written by hand, so it gets the same forgiveness as the field");
+  }
+
+  @Test
+  void readsTheInstanceEndpointFromOpenbravoProperties() throws Exception {
+    response.set(embeddings(0));
+    Properties properties = new Properties();
+    properties.setProperty("vector.embeddings.endpoint", endpoint);
+    OBPropertiesProvider provider = Mockito.mock(OBPropertiesProvider.class);
+    Mockito.when(provider.getOpenbravoProperties()).thenReturn(properties);
+
+    try (MockedStatic<OBPropertiesProvider> statics = Mockito.mockStatic(OBPropertiesProvider.class)) {
+      statics.when(OBPropertiesProvider::getInstance).thenReturn(provider);
+      new OpenAiEmbeddingProvider(KEY_REFERENCE, "test-model", DIMENSIONS, 5, 1000, null, 5)
+          .embed(List.of("a"));
+    }
+
+    assertEquals(1, received.size(),
+        "a provider left without an API Endpoint has to end up at the address Openbravo.properties "
+            + "names, or the default is only a default on paper");
   }
 
   private OpenAiEmbeddingProvider provider(int batchSize) {
