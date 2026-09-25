@@ -14,7 +14,7 @@
  * Contributor(s): Futit Services S.L.
  *************************************************************************
  */
-package com.etendoerp.db.extended.vector;
+package com.etendoerp.db.extended.utils.vector;
 
 import java.sql.PreparedStatement;
 
@@ -35,9 +35,10 @@ import org.openbravo.database.ConnectionProvider;
  * does not cover the capture triggers: those live on the application's own tables, and the trigger
  * query is the one part of the checksum that is not restricted by schema.</p>
  *
- * <p>SYNC: this class is duplicated in {@code src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorRuntimeSchema.java}, used by the
- * {@code GenerateVectorSourceTriggers} post-update script, which runs inside update.database before
- * the runtime sources are compiled. Remember to apply any change here to that copy too.</p>
+ * <p>SYNC: copy of {@code com.etendoerp.db.extended.vector.VectorRuntimeSchema} for the
+ * {@code GenerateVectorSourceTriggers} post-update script: it runs inside update.database before
+ * the runtime sources are compiled, so it can only use classes shipped under {@code src-util}.
+ * Remember to apply any change here to the runtime class too.</p>
  */
 final class VectorRuntimeSchema {
 

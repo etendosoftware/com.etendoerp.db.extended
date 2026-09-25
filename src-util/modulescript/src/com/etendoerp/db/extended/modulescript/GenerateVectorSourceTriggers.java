@@ -24,8 +24,7 @@ import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.modulescript.PostUpdateModuleScript;
 
-import com.etendoerp.db.extended.vector.VectorProvisioningService;
-import com.etendoerp.db.extended.vector.VectorStoreService;
+import com.etendoerp.db.extended.utils.vector.VectorProvisioningService;
 
 /**
  * Materializes PostgreSQL outbox triggers for the enabled generic vector sources.
@@ -49,8 +48,10 @@ import com.etendoerp.db.extended.vector.VectorStoreService;
  * structure it leaves behind. The window no longer does any of this; it reports what a source
  * still needs, and the change is applied by the next update.database.</p>
  *
- * <p>The work itself lives in {@link VectorProvisioningService}, in the runtime source tree, so
- * the window can report from the same definitions this provisions from.</p>
+ * <p>The work itself lives in {@link VectorProvisioningService}. It is the {@code src-util} copy of
+ * the runtime {@code com.etendoerp.db.extended.vector} classes: this script runs inside
+ * update.database before the runtime sources are compiled, so it cannot reach them. Each copy
+ * carries a SYNC note naming the runtime class it has to stay in line with.</p>
  */
 public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
 
@@ -59,8 +60,7 @@ public class GenerateVectorSourceTriggers extends PostUpdateModuleScript {
   @Override
   public void execute() {
     try {
-      new VectorProvisioningService(getConnectionProvider(),
-          new VectorStoreService(getConnectionProvider()), systemProperties()).provision();
+      new VectorProvisioningService(getConnectionProvider(), systemProperties()).provision();
     } catch (Exception e) {
       // Deliberately not handleError, which fails the update. Semantic search is optional and
       // opt-in, and the reasons it cannot be provisioned are mostly environmental -- the role may

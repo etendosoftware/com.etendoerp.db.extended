@@ -14,16 +14,17 @@
  * Contributor(s): Futit Services S.L.
  *************************************************************************
  */
-package com.etendoerp.db.extended.vector;
+package com.etendoerp.db.extended.utils.vector;
 
+import java.sql.PreparedStatement;
 import java.util.List;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
 
-import com.etendoerp.db.extended.vector.VectorSourceReadiness.Candidate;
-import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
+import com.etendoerp.db.extended.utils.vector.VectorSourceReadiness.Candidate;
+import com.etendoerp.db.extended.utils.vector.VectorSourceReadiness.Verdict;
 
 /**
  * Brings the database in line with the configured search sources: the extension and its storage,
@@ -38,18 +39,21 @@ import com.etendoerp.db.extended.vector.VectorSourceReadiness.Verdict;
  * <p>Configuring a source is therefore a two step operation: save it, then run update.database.
  * The scheduled processes take it from there.</p>
  *
- * <p>SYNC: this class is duplicated in
- * {@code src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorProvisioningService.java},
- * which is the copy {@code GenerateVectorSourceTriggers} actually runs: the post-update script runs
- * inside update.database before the runtime sources are compiled. Remember to apply any change here
- * to that copy too.</p>
+ * <p>SYNC: copy of {@code com.etendoerp.db.extended.vector.VectorProvisioningService} for the
+ * {@code GenerateVectorSourceTriggers} post-update script: it runs inside update.database before
+ * the runtime sources are compiled, so it can only use classes shipped under {@code src-util}.
+ * Remember to apply any change here to the runtime class too.</p>
+ *
+ * <p>Unlike the runtime class it does not take a {@code VectorStore}: the store and its search and
+ * upsert types are runtime-only, and provisioning needs a single operation from it, so
+ * {@link #createCollection} carries that one operation instead.</p>
  */
 public class VectorProvisioningService {
 
   private static final Logger log = LogManager.getLogger();
 
   private final ConnectionProvider cp;
-  private final VectorStore store;
+  private final VectorCapabilityService capability;
   private final java.util.Properties systemProperties;
 
   /**
@@ -57,28 +61,13 @@ public class VectorProvisioningService {
    *
    * @param cp
    *     connection the provisioning statements are issued with
-   * @param store
-   *     where collections are created
-   */
-  public VectorProvisioningService(ConnectionProvider cp, VectorStore store) {
-    this(cp, store, null);
-  }
-
-  /**
-   * Creates a service that provisions what the configured sources need.
-   *
-   * @param cp
-   *     connection the provisioning statements are issued with
-   * @param store
-   *     where collections are created
    * @param systemProperties
    *     the Openbravo properties, so the extension can be created as the system user when the
    *     application user may not
    */
-  public VectorProvisioningService(ConnectionProvider cp, VectorStore store,
-      java.util.Properties systemProperties) {
+  public VectorProvisioningService(ConnectionProvider cp, java.util.Properties systemProperties) {
     this.cp = cp;
-    this.store = store;
+    this.capability = new VectorCapabilityService(cp);
     this.systemProperties = systemProperties;
   }
 
@@ -129,9 +118,37 @@ public class VectorProvisioningService {
       // Tenant scope is always on: the search context derives client and organization from the
       // session and never lets a caller supply them, so a collection that did not require them
       // would accept records no search could ever reach.
-      store.createCollection(new VectorCollection(candidate.namespace, candidate.dimensions,
+      createCollection(new VectorCollection(candidate.namespace, candidate.dimensions,
           DistanceMetric.valueOf(candidate.metric), true, true));
       log.info("Created vector collection {} for source {}.", candidate.namespace, candidate.name);
+    }
+  }
+
+  /**
+   * Stores a collection definition, once pgvector is installed and explicitly activated.
+   *
+   * <p>SYNC: copy of {@code VectorStoreService#createCollection} and its
+   * {@code requireActive} check in {@code com.etendoerp.db.extended.vector}. Remember to apply any
+   * change here to those runtime methods too.</p>
+   */
+  private void createCollection(VectorCollection collection) {
+    if (capability.inspect().getState() != VectorCapabilityState.ACTIVE
+        || !VectorActivationService.isActivated(cp)) {
+      throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,
+          "pgvector is not explicitly activated for this database.");
+    }
+    String sql = "INSERT INTO etarc_vector.etarc_vector_collection (namespace, dimensions, metric,"
+        + " client_scoped, organization_scoped) VALUES (?, ?, ?, ?, ?)";
+    try (PreparedStatement ps = cp.getPreparedStatement(sql)) {
+      ps.setString(1, collection.getNamespace());
+      ps.setInt(2, collection.getDimensions());
+      ps.setString(3, collection.getMetric().name());
+      ps.setBoolean(4, collection.isClientScoped());
+      ps.setBoolean(5, collection.isOrganizationScoped());
+      ps.executeUpdate();
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,
+          "Could not create vector collection.", e);
     }
   }
 }

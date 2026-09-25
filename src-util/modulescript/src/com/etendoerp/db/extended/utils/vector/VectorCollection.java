@@ -14,7 +14,7 @@
  * Contributor(s): Futit Services S.L.
  *************************************************************************
  */
-package com.etendoerp.db.extended.vector;
+package com.etendoerp.db.extended.utils.vector;
 
 import java.util.Objects;
 import java.util.regex.Pattern;
@@ -22,9 +22,10 @@ import java.util.regex.Pattern;
 /**
  * Immutable generic vector collection definition.
  *
- * <p>SYNC: this class is duplicated in {@code src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorCollection.java}, used by the
- * {@code GenerateVectorSourceTriggers} post-update script, which runs inside update.database before
- * the runtime sources are compiled. Remember to apply any change here to that copy too.</p>
+ * <p>SYNC: copy of {@code com.etendoerp.db.extended.vector.VectorCollection} for the
+ * {@code GenerateVectorSourceTriggers} post-update script: it runs inside update.database before
+ * the runtime sources are compiled, so it can only use classes shipped under {@code src-util}.
+ * Remember to apply any change here to the runtime class too.</p>
  */
 public final class VectorCollection {
   private static final Pattern NAMESPACE = Pattern.compile("^[A-Za-z][A-Za-z0-9_.-]{0,127}$");

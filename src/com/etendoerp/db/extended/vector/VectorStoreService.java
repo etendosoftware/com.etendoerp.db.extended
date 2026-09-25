@@ -24,6 +24,10 @@ public class VectorStoreService implements VectorStore {
   private final ConnectionProvider cp; private final VectorCapabilityService capability;
   private boolean activationVerified;
   public VectorStoreService(ConnectionProvider cp) { this.cp = cp; capability = new VectorCapabilityService(cp); }
+  // SYNC: createCollection and requireActive are duplicated in
+  // src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorProvisioningService.java
+  // (createCollection), used by the GenerateVectorSourceTriggers post-update script. Remember to
+  // apply any change here to that copy too.
   public void createCollection(VectorCollection collection) {
     requireActive(); String sql = "INSERT INTO etarc_vector.etarc_vector_collection (namespace, dimensions, metric, client_scoped, organization_scoped) VALUES (?, ?, ?, ?, ?)";
     try (PreparedStatement ps = cp.getPreparedStatement(sql)) { ps.setString(1, collection.getNamespace()); ps.setInt(2, collection.getDimensions()); ps.setString(3, collection.getMetric().name()); ps.setBoolean(4, collection.isClientScoped()); ps.setBoolean(5, collection.isOrganizationScoped()); ps.executeUpdate(); } catch (Exception e) { throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED, "Could not create vector collection.", e); }
@@ -98,6 +102,9 @@ public class VectorStoreService implements VectorStore {
   }
   public void delete(String namespace, String key) { requireActive(); try(PreparedStatement ps=cp.getPreparedStatement("DELETE FROM etarc_vector.etarc_vector_record WHERE namespace = ? AND external_key = ?")){ps.setString(1,namespace);ps.setString(2,key);ps.executeUpdate();}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not delete vector record.",e);} }
   public void deleteCollection(String namespace) { requireActive(); try(PreparedStatement ps=cp.getPreparedStatement("DELETE FROM etarc_vector.etarc_vector_collection WHERE namespace = ?")){ps.setString(1,namespace);ps.executeUpdate();}catch(Exception e){throw new VectorException(VectorErrorCode.PGVECTOR_NOT_ENABLED,"Could not delete vector collection.",e);} }
+  // SYNC: duplicated in the createCollection of
+  // src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorProvisioningService.java.
+  // Remember to apply any change here to that copy too.
   /**
    * Verifies once per service instance that pgvector is installed and explicitly activated.
    *

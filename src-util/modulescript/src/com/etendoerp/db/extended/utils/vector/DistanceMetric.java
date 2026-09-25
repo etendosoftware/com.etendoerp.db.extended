@@ -14,14 +14,15 @@
  * Contributor(s): Futit Services S.L.
  *************************************************************************
  */
-package com.etendoerp.db.extended.vector;
+package com.etendoerp.db.extended.utils.vector;
 
 /**
  * Whitelist of PostgreSQL distance operators.
  *
- * <p>SYNC: this class is duplicated in {@code src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/DistanceMetric.java}, used by the
- * {@code GenerateVectorSourceTriggers} post-update script, which runs inside update.database before
- * the runtime sources are compiled. Remember to apply any change here to that copy too.</p>
+ * <p>SYNC: copy of {@code com.etendoerp.db.extended.vector.DistanceMetric} for the
+ * {@code GenerateVectorSourceTriggers} post-update script: it runs inside update.database before
+ * the runtime sources are compiled, so it can only use classes shipped under {@code src-util}.
+ * Remember to apply any change here to the runtime class too.</p>
  */
 public enum DistanceMetric {
   COSINE("<=>", "vector_cosine_ops"), L2("<->", "vector_l2_ops"), INNER_PRODUCT("<#>", "vector_ip_ops");

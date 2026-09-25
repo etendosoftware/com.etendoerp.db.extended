@@ -14,7 +14,7 @@
  * Contributor(s): Futit Services S.L.
  *************************************************************************
  */
-package com.etendoerp.db.extended.vector;
+package com.etendoerp.db.extended.utils.vector;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -22,9 +22,6 @@ import java.util.ArrayList;
 import java.util.List;
 
 import org.openbravo.database.ConnectionProvider;
-
-import com.etendoerp.db.extended.data.VectorEmbedProvider;
-import com.etendoerp.db.extended.data.VectorSource;
 
 /**
  * Whether a source can be indexed as it stands, and why not when it cannot.
@@ -35,32 +32,16 @@ import com.etendoerp.db.extended.data.VectorSource;
  * rows. One definition means the two can never disagree about what ready means, and the verdict
  * an administrator reads is the same in both places.</p>
  *
- * <p>SYNC: this class is duplicated in {@code src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorSourceReadiness.java}, used by the
- * {@code GenerateVectorSourceTriggers} post-update script, which runs inside update.database before
- * the runtime sources are compiled. Remember to apply any change here to that copy too.</p>
+ * <p>SYNC: copy of {@code com.etendoerp.db.extended.vector.VectorSourceReadiness} for the
+ * {@code GenerateVectorSourceTriggers} post-update script: it runs inside update.database before
+ * the runtime sources are compiled, so it can only use classes shipped under {@code src-util}.
+ * Remember to apply any change here to the runtime class too.</p>
  */
 final class VectorSourceReadiness {
 
   /** The collection as stored, so it can be compared with what the source now asks for. */
   private static final String COLLECTION_SQL =
       "SELECT dimensions, metric FROM etarc_vector.etarc_vector_collection WHERE namespace = ?";
-
-  /**
-   * Counts the columns exactly as the consumer reads them, so nothing can call a source ready when
-   * delivery would reject it.
-   *
-   * @see DictionaryVectorOutboxConsumer
-   */
-  private static final String COLUMN_COUNT_SQL =
-      "SELECT count(*), count(*) FILTER (WHERE sc.iscontent = 'Y') "
-          + "FROM etarc_vector_source_column sc "
-          + "WHERE sc.etarc_vector_source_id = ? AND sc.isactive = 'Y'";
-
-  /** Asked separately because it is a fact about the indexed table, not about the source. */
-  private static final String KEY_COLUMN_SQL =
-      "SELECT count(*) FROM ad_column k "
-          + "JOIN etarc_vector_source s ON s.ad_table_id = k.ad_table_id "
-          + "WHERE s.etarc_vector_source_id = ? AND k.iskey = 'Y' AND k.isactive = 'Y'";
 
   /**
    * Every configured source, read over JDBC rather than through the DAL.
@@ -158,40 +139,6 @@ final class VectorSourceReadiness {
       return Verdict.METRIC_DRIFT;
     }
     return Verdict.READY;
-  }
-
-  /** Reads a source into the plain values a verdict is made of, detached from the DAL session. */
-  static Candidate candidate(ConnectionProvider connectionProvider, VectorSource source) throws Exception {
-    VectorEmbedProvider provider = source.getEtarcVectorEmbedProvider();
-    int columns = 0;
-    int contentColumns = 0;
-    try (PreparedStatement statement = connectionProvider.getPreparedStatement(COLUMN_COUNT_SQL)) {
-      statement.setString(1, source.getId());
-      try (ResultSet result = statement.executeQuery()) {
-        if (result.next()) {
-          columns = result.getInt(1);
-          contentColumns = result.getInt(2);
-        }
-      }
-    }
-    boolean hasKey = false;
-    try (PreparedStatement statement = connectionProvider.getPreparedStatement(KEY_COLUMN_SQL)) {
-      statement.setString(1, source.getId());
-      try (ResultSet result = statement.executeQuery()) {
-        hasKey = result.next() && result.getInt(1) > 0;
-      }
-    }
-    // Both flags, and the provider's own: a deactivated source is not instrumented however
-    // enabled it says it is, and delivery resolves the provider with isactive = 'Y', so an
-    // inactive one is no provider at all. Reading either differently here would have the window
-    // call a source ready that the update then leaves alone, or worse, instrument.
-    boolean usable = Boolean.TRUE.equals(source.isActive())
-        && Boolean.TRUE.equals(source.isEnabled());
-    boolean hasProvider = provider != null && Boolean.TRUE.equals(provider.isActive());
-    return new Candidate(source.getId(), source.getName(), source.getNamespace(),
-        source.getDistanceMetric(), usable,
-        hasProvider ? provider.getDimensions().intValue() : null,
-        new Columns(columns, contentColumns, hasKey));
   }
 
   static Collection collection(ConnectionProvider connectionProvider, String namespace) throws Exception {

@@ -15,7 +15,7 @@
  *************************************************************************
  */
 
-package com.etendoerp.db.extended.vector;
+package com.etendoerp.db.extended.utils.vector;
 
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -30,9 +30,10 @@ import org.openbravo.database.ConnectionProvider;
  * <p>This service deliberately performs no extension installation and does not execute DDL. Activation
  * is owned by a separate explicit lifecycle introduced after disabled-mode verification.</p>
  *
- * <p>SYNC: this class is duplicated in {@code src-util/modulescript/src/com/etendoerp/db/extended/utils/vector/VectorCapabilityService.java}, used by the
- * {@code GenerateVectorSourceTriggers} post-update script, which runs inside update.database before
- * the runtime sources are compiled. Remember to apply any change here to that copy too.</p>
+ * <p>SYNC: copy of {@code com.etendoerp.db.extended.vector.VectorCapabilityService} for the
+ * {@code GenerateVectorSourceTriggers} post-update script: it runs inside update.database before
+ * the runtime sources are compiled, so it can only use classes shipped under {@code src-util}.
+ * Remember to apply any change here to the runtime class too.</p>
  */
 public class VectorCapabilityService {
   private static final Logger log = LogManager.getLogger();
