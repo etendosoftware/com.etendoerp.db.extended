@@ -1,4 +1,9 @@
-# Partition Constraint Management - Architecture Guide
+# Architecture Guide: partitioned table constraint management
+
+> **Scope.** This guide covers the partitioning side of the module: how constraints on a
+> partitioned table are analysed, backed up and recreated. The optional pgvector capability is a
+> separate subsystem and is described in [README.md](README.md); its internals live in the class
+> javadoc of `VectorOutboxService`, `VectorTriggerService` and `VectorReindexService`.
 
 ## Overview
 
@@ -331,38 +336,3 @@ Enable debug logging to trace processing flow:
 
 <logger name="com.etendoerp.db.extended.utils" level="DEBUG"/>
 ```
-
-## Future Enhancements
-
-### Planned Improvements
-
-- Parallel processing for large table sets
-- Enhanced backup compression
-- Real-time constraint validation
-- Performance metrics dashboard
-
-### Extensibility Roadmap
-
-- Plugin architecture for custom processors
-- REST API for external integration
-- Configuration management UI
-- Automated testing framework
-
----
-
-## For Those Who Come After...
-
-This system was designed with maintainability and extensibility in mind. Each component has a single, well-defined
-responsibility and clear interfaces. The comprehensive JavaDoc documentation and this architectural guide should provide
-you with everything needed to understand, modify, and extend this system.
-
-When making changes:
-
-1. Follow the established patterns
-2. Maintain the separation of concerns
-3. Update documentation accordingly
-4. Add appropriate tests
-5. Consider backward compatibility
-
-The refactoring from a 76-method monolithic class to this modular architecture was done to improve maintainability and
-comply with code quality standards. The new structure makes the system more testable, understandable, and extensible.

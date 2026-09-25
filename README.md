@@ -11,49 +11,157 @@ structures such as partitioned tables with intelligent constraint management.
 - **XML-Based Configuration**: Integration with Etendo's table definition system
 - **Trigger Automation**: Automatic partition column population in child tables
 - **Python Tools**: Command-line utilities to **partition** and **unpartition** database tables
+- **Semantic search over any table**: an optional, off-by-default pgvector capability that indexes
+  the columns a dictionary configuration names, keeps them up to date through a transactional
+  outbox, and answers nearest-neighbour queries scoped to the session's tenant
 
-## Optional pgvector capability (ETP-5077)
+## Optional pgvector capability
 
-pgvector is optional and disabled by default. Installing this module, compiling Etendo, running
-`smartbuild`, `update.database`, or starting the application must never install the PostgreSQL extension or
-create vector objects. A caller must explicitly invoke `VectorActivationService.activate()` after confirming
-that the server offers pgvector and that the caller has extension-creation permission.
+pgvector is optional and off by default. Installing this module, compiling Etendo, running
+`smartbuild` or `update.database`, or starting the application never installs the PostgreSQL
+extension and never creates a vector object. Turning it on is a deliberate administrator action,
+and until it is taken every vector operation returns the controlled `PGVECTOR_NOT_ENABLED` error.
 
-Before activation, or when pgvector is unavailable, every vector operation returns the controlled
-`PGVECTOR_NOT_ENABLED` error. The API is entity-agnostic: consumers provide a namespace, external key, numeric
-vector, JSON object metadata, and optional client/organization scope. It exposes no UI/NEO endpoint and does not
-implement RAG.
+The API itself is entity-agnostic: a caller supplies a namespace, an external key, a numeric
+vector, JSON metadata and an optional client/organization scope. No entity class is involved, and
+this module implements no RAG and publishes no REST endpoint of its own — a consuming module such
+as `com.etendoerp.go` does that.
 
-Enabled generic sources enqueue changes in `ETARC_VECTOR_OUTBOX`. The system-only background process **Process
-Vector Outbox** drains up to 100 pending events per execution, so it can be scheduled through Classic Process
-Request without any entity-specific configuration. It first requeues events left in `PROCESSING` for at least 15
-minutes, then runs `VectorOutboxService` with namespace-owned `VectorOutboxConsumer` implementations. The consumer
-fetches its source data and generates embeddings; it should use an idempotent upsert keyed by
-`VectorOutboxEvent.getRecordId()`. The dispatcher delivers events at least once and records `DONE` or `FAILED`.
-Failed events require an explicit requeue after the provider or source configuration is corrected; they are not
-retried automatically by the scheduled process.
+### Turning it on
 
-Schedule **Process Vector Outbox** once at System level, not once per client. The process drains the shared outbox
-and each event preserves its own client and organization scope when the vector record is written. A run skipped
-because another instance is active is reported by the scheduler as `Skipped`, not as an error.
+Configuring a search source takes two steps: save it, then run `update.database`. The second step
+is where the extension, the runtime storage, the collection of each source and the change capture
+triggers are created. From then on the scheduled processes do the rest.
 
-The activation lifecycle creates the generic storage objects dynamically; no vector-typed column belongs in
-`src-db/database/model`. The versioned `excludeFilter.xml` excludes those runtime tables, generated source
-triggers/functions, and pgvector extension objects from DBSM exports. Exact search supports cosine, L2, and
-inner-product distance. HNSW creation is an explicit operation; exact search remains available without an index.
+They are created there and nowhere else, because all of it is DDL. DDL performed while the
+application is running moves the structure checksum, the next `update.database` refuses to run over
+it, and getting past that would mean accepting the whole structure on the administrator's behalf --
+including whatever else had been changed in the database and not yet exported. Done from inside the
+update, the run that makes the change is the run that accepts it. Why this was not obvious, and
+what was measured along the way, is in [doc/checksum-acceptance.md](doc/checksum-acceptance.md).
 
-`DictionaryVectorOutboxConsumer` is the generic configured-source consumer. It resolves the source's provider,
-currently OpenAI embeddings, from the system configuration and reads the API-key reference through
-`Openbravo.properties`. `VectorSearchService.searchAsJson(namespace, text, topK, metadataFilter)` is the matching
-generic query facade: it embeds the query text with the configured provider, uses the collection metric, and returns
-JSON matches with the external `id`, distance, indexed `fields`, and full metadata. Its client and organization
-filters are mandatory and are derived exclusively from the active `OBContext`; callers cannot supply tenant scope.
-No entity class is required for either operation.
+Nothing is installed for an instance that configured no usable source. Having the module installed
+is not asking for pgvector: no extension is created, and no vector object either.
 
-For a module-level global search, use the overload that accepts a collection of namespaces. The consuming module
-chooses those namespaces (for example, according to its own access configuration), while DB Extended resolves their
-sources and returns matches with their namespace. It rejects a mixed set of provider type, embedding model,
-dimension, or distance metric, because distances from incompatible embedding profiles cannot be ranked together.
+**Search Source → Check Indexing Readiness** answers the question an administrator has *before*
+running the update: is this source going to produce anything? It writes nothing. It takes several
+records at a time and, for each, either confirms it is ready or names what is stopping it.
+
+That check matters because a source can be broken in ways that only surface much later. One with no
+content column is accepted by the dictionary and fails on every delivery; a collection created
+before the provider changed holds vectors of a size the new model no longer produces. Both are
+reported rather than queued as work that can only fail, and a mismatched collection is never
+repaired: making one match again means dropping it, and that deletes every vector it holds.
+
+The update creates the extension as the database system user — the same `bbdd.systemUser` that
+`build.xml` already hands to DBSM on every update — so the application role does not need the
+privilege and a DBA does not have to step in. It falls back to the application role when the
+installation records no system credentials. The role does need to create a schema, because the
+vector storage lives in one of its own, `etarc_vector`, rather than in the application's.
+
+Creating the extension by hand, outside an update, is what to avoid: four of pgvector's functions
+are SQL rather than C and count towards the structure checksum, so the next `update.database`
+refuses to start until one forced run re-stamps it. See
+[doc/checksum-acceptance.md](doc/checksum-acceptance.md). An
+instance that indexed something under an earlier version has its tables moved there on the next
+update, with their rows, indexes and foreign key.
+
+### Indexing what a table already held
+
+Triggers only capture what changes from the moment they are installed, so a source configured over
+a table that already has rows indexes nothing until those rows are walked. **Search Source →
+Request Reindex** asks for that walk; the scheduled process performs it in bounded chunks, keyset
+by primary key, committing each one, so a table of millions of rows neither holds the session nor
+fills the queue faster than delivery drains it. A source keeps a single request for its whole
+life, so asking again restarts the one it has, and the button says what that costs before doing
+it.
+
+### Delivery
+
+An enabled source enqueues its changes in `ETARC_VECTOR_OUTBOX`. The system-level background
+process **Process Vector Outbox** drains it and needs no entity-specific configuration. One run
+does four things in order:
+
+1. retires events that have exhausted their provider retry limit and have been `PROCESSING` for at
+   least 15 minutes,
+2. requeues the remaining stale `PROCESSING` ones, which is how a run interrupted mid-flight is
+   recovered,
+3. delivers up to 100 pending events, grouped by source and embedded one chunk per provider
+   request,
+4. purges terminal events older than 30 days.
+
+Schedule it once at System level, not once per client: the outbox is shared and each event carries
+its own client and organization scope to the vector record. A run skipped because another instance
+is active is reported by the scheduler as `Skipped`, not as an error.
+
+An event ends in one of five states. `DONE` and `FAILED` are the obvious two; `SUPERSEDED` is an
+event discarded because the source configuration changed after it was enqueued, so re-embedding it
+would store a vector nobody asked for. `FAILED` is not retried by the scheduled process once the
+retry limit is spent — **Requeue Failed Vector Events** puts those back once the cause is fixed.
+
+### The embedding provider
+
+`DictionaryVectorOutboxConsumer` is the generic consumer for configured sources. It resolves the
+provider from the dictionary and reads the API key from the reference named in **API Key
+Reference**, looked up in this order:
+
+1. a JVM system property,
+2. an environment variable,
+3. `Openbravo.properties`.
+
+The first one found wins, so a `-D` flag or an exported variable overrides the file.
+
+**API Endpoint** is a base URL, up to and including `/v1` and no further; the path of the call is
+added by the module. It is resolved in the same spirit as the key, most specific first:
+
+1. the **API Endpoint** field on the provider,
+2. `vector.embeddings.endpoint` in `Openbravo.properties`,
+3. `https://api.openai.com/v1`.
+
+An installation that reaches every model through one gateway sets the property once, in
+`gradle.properties` — `prepareConfig` copies it into `Openbravo.properties` — and leaves the field
+empty on each provider. That keeps an environment's address out of a dataset that ships with a
+module, and lets one provider still address something else by filling the field in. Pointing either
+one at an OpenAI-compatible gateway —
+the Etendo LLM proxy, an Azure OpenAI deployment, a corporate gateway — makes the same
+configuration work against any of them. Such a gateway serves several providers and is told which
+one to use in the model name, so there **Embedding Model** takes the form `provider/model`.
+
+Writing to an instrumented table costs one outbox insert per row whose watched content actually
+changed, and nothing measurable otherwise — a column nobody watches is not even considered, because
+the trigger is declared `AFTER UPDATE OF` that column. A table with no ready source carries no
+trigger at all. The numbers and the method are in
+[doc/vector-write-path-performance.md](doc/vector-write-path-performance.md).
+
+Text leaves the tenant on every embedding call. **Max Input Characters** truncates a record before
+it is sent, which bounds the request but also means a long record is embedded from its beginning
+only.
+
+### Searching
+
+`VectorSearchService` is the query facade. `searchAsJson` takes one namespace or a collection of
+them, embeds the query text with the configured provider, uses the collection's metric and returns
+JSON matches with the external `id`, the distance, a normalised `score` in `[0, 1]`, the indexed
+`fields` and the full metadata. An overload filters by score range. `searchTargetsAsJson` searches
+configured target keys instead, applying each target's Display Logic filter.
+
+Client and organization filters are mandatory and come exclusively from the active `OBContext`; a
+caller cannot supply tenant scope. Searching several namespaces at once is rejected when their
+provider type, model, dimension or metric differ, because distances from incompatible embedding
+profiles cannot be ranked against each other.
+
+Exact search supports cosine, L2 and inner product, and is available without any index. HNSW
+creation is a separate explicit operation.
+
+### What is not in the model
+
+The storage is created by the post-update module script rather than by the model, because the
+`vector` type does not exist until the extension does, so no vector-typed column belongs in
+`src-db/database/model`. The versioned `excludeFilter.xml` keeps those runtime tables, the
+generated source triggers and functions, and the pgvector extension objects out of DBSM exports.
+Note that the database structure checksum does not read that file: it is computed inside the
+database from `pg_catalog` alone. That is why the storage and the triggers are created from the
+update rather than from a window — see [doc/checksum-acceptance.md](doc/checksum-acceptance.md).
 
 ## 🏗️ Architecture Overview
 
@@ -66,7 +174,7 @@ The module follows a modular architecture with specialized components:
 - **`SqlBuilder`**: Dynamic SQL generation for partition-aware operations
 - **`TriggerManager`**: Automated trigger creation for partition column population
 
-*📖 For detailed architecture information, see [Architecture Guide](#-architecture-guide) below.*
+*📖 For the partitioning internals in depth, see [ARCHITECTURE_GUIDE.md](ARCHITECTURE_GUIDE.md).*
 
 ---
 
@@ -76,6 +184,16 @@ The module follows a modular architecture with specialized components:
 - PostgreSQL
 - Virtualenv (`python3 -m venv`)
 - DBSM Version 1.2.0 (Change this value in artifacts.list.COMPILATION.gradle file)
+
+For the optional vector capability:
+
+- **pgvector 0.5.0 or newer.** That is where HNSW arrived, and the module builds HNSW indexes with
+  `vector_cosine_ops`, `vector_l2_ops` and `vector_ip_ops`. Nothing here uses `halfvec`,
+  `sparsevec` or `binary_quantize`; `excludeFilter.xml` names them so that a server that does have
+  them keeps them out of DBSM exports, and on an older one those entries simply match nothing.
+- A database role allowed to run `CREATE EXTENSION` and to create a schema, for
+  `update.database` only.
+- Developed and tested against pgvector 0.8.6 on PostgreSQL 16.
 
 ---
 
@@ -174,262 +292,20 @@ continues to operate correctly.
 
 ## 📚 Architecture Guide
 
-This section provides comprehensive architectural information for developers who need to understand, maintain, or extend
-the partition constraint management system.
+The partitioning internals — the six components and what each owns, the decision matrix, the
+backup and rollback strategy, the PostgreSQL specifics, and where to hook new constraint types —
+are in [ARCHITECTURE_GUIDE.md](ARCHITECTURE_GUIDE.md), in more detail than a README should carry.
 
-### System Purpose
-
-The partition constraint management system addresses the complex challenges of maintaining database referential
-integrity when working with PostgreSQL table partitioning in the Etendo framework. It automatically manages the
-recreation of primary keys and foreign keys when table definitions change, ensuring that partitioned tables maintain
-proper constraint relationships.
-
-### Component Architecture
-
-```
-    ┌─────────────────────────────────────────────────────────────────┐
-    │                    PartitionedConstraintsHandling               │
-    │                        (Main Coordinator)                       │
-    │  ┌─────────────────────────────────────────────────────────────┐│
-    │  │ • Load configurations from ETARC_TABLE_CONFIG               ││
-    │  │ • Orchestrate processing workflow                           ││
-    │  │ • Handle errors and logging                                 ││
-    │  │ • Report processing results                                 ││
-    │  └─────────────────────────────────────────────────────────────┘│
-    └─────────────────────────────────────────────────────────────────┘
-          │ coordinates │ coordinates │ coordinates │ coordinates |
-          ▼             ▼             ▼             ▼             ▼
-┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌──────────────┐
-│BackupManager│ │XmlTableProc-│ │ConstraintPr-│ │ SqlBuilder  │ │TriggerMgr    │
-│             │ │essor        │ │ocessor      │ │             │ │              │
-│• Backup ops │ │• XML parse  │ │• Constraint │ │• SQL gen    │ │• Trigger mgmt│
-│• Cleanup    │ │• FK detect  │ │• Table info │ │• Template   │ │• Auto-pop    │
-│• Metadata   │ │• File search│ │• Validation │ │• Type map   │ │• Cleanup     │
-└─────────────┘ └─────────────┘ └─────────────┘ └─────────────┘ └──────────────┘
-```
-
-### Data Processing Flow
-
-```
-1. Configuration Loading
-   ETARC_TABLE_CONFIG → loadTableConfigs() → List<Map<String, String>>
-
-2. For Each Table Configuration:
-   ┌─ XML Analysis (XmlTableProcessor)
-   │  ├─ Find table XML files
-   │  ├─ Check for definition changes  
-   │  └─ Detect external FK references
-   │
-   ├─ Table Analysis (ConstraintProcessor)
-   │  ├─ Check partitioning status
-   │  ├─ Get primary key columns
-   │  └─ Determine child table relationships
-   │
-   ├─ Decision Logic (PartitionedConstraintsHandling)
-   │  ├─ Apply skip conditions
-   │  └─ Determine processing necessity
-   │
-   ├─ SQL Generation (SqlBuilder + ConstraintProcessor)
-   │  ├─ Generate ALTER statements
-   │  ├─ Generate constraint SQL
-   │  └─ Include trigger SQL if needed
-   │
-   └─ Execution (BackupManager)
-      ├─ Create table backup
-      ├─ Execute SQL statements
-      └─ Log results
-```
-
-### Component Responsibilities
-
-#### 1. PartitionedConstraintsHandling (Main Coordinator)
-
-- **Responsibility**: Orchestrates the entire constraint management process
-- **Methods**: 11 methods (SonarQube compliant)
-- **Pattern**: Coordinator Pattern with Template Method structure
-
-#### 2. BackupManager (Data Protection)
-
-- **Responsibility**: Ensures data safety through comprehensive backup strategy
-- **Features**: Automatic infrastructure, retention policies, metadata tracking
-- **Database Objects**: `etarc_backups` schema, `backup_metadata` tables
-
-#### 3. XmlTableProcessor (Definition Analysis)
-
-- **Responsibility**: Analyzes XML table definitions and detects changes
-- **Security**: XXE attack protection, secure parsing
-- **Locations**: Searches across module directories for table definitions
-
-#### 4. ConstraintProcessor (Constraint Intelligence)
-
-- **Responsibility**: Central intelligence for constraint analysis and SQL coordination
-- **Features**: PostgreSQL partitioning detection, primary key analysis, foreign key discovery
-
-#### 5. SqlBuilder (SQL Generation)
-
-- **Responsibility**: Generates precise SQL statements for constraint modifications
-- **Strategy**: Template-based SQL with partition-aware logic
-- **Types**: Primary key operations, foreign key operations, ALTER statements
-
-#### 6. TriggerManager (Automation)
-
-- **Responsibility**: Creates triggers for automatic partition column population
-- **Pattern**: Analyzes XML → Creates PL/pgSQL functions → Implements triggers
-- **Naming**: `etarc_populate_<tablename>_<partition_field>()` functions
-
-### Processing Decision Matrix
-
-| Condition                                | Action  | Reason                       |
-|------------------------------------------|---------|------------------------------|
-| Configuration incomplete                 | Skip    | Missing required information |
-| No XML changes + Not first partition run | Skip    | No changes to process        |
-| XML changes detected                     | Process | Table definition modified    |
-| First partition run                      | Process | Constraints need recreation  |
-| External FK references found             | Process | Other tables affected        |
-
-### PostgreSQL Partitioning Specifics
-
-#### Key Differences
-
-- **Partitioned PK**: Must include both natural PK and partition key
-- **Non-Partitioned PK**: Uses only the natural primary key
-- **Foreign Keys**: Must reference all columns in target table's primary key
-
-#### Example SQL Generation
-
-```sql
--- Non-partitioned PK
-ALTER TABLE table_name ADD CONSTRAINT pk_name PRIMARY KEY (id);
-
--- Partitioned PK  
-ALTER TABLE table_name ADD CONSTRAINT pk_name PRIMARY KEY (id, partition_col);
-
--- Trigger Function for Auto-Population
-CREATE OR REPLACE FUNCTION etarc_populate_tablename_partcol()
-RETURNS TRIGGER AS $$
-BEGIN
-    IF NEW.partition_col IS NULL THEN
-        SELECT partition_col INTO NEW.partition_col
-        FROM parent_table
-        WHERE parent_table.pk = NEW.fk_col;
-    END IF;
-    RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-```
-
-### Configuration Schema
-
-#### ETARC_TABLE_CONFIG Structure
-
-```sql
-CREATE TABLE ETARC_TABLE_CONFIG (
-    AD_TABLE_ID VARCHAR(32),     -- References AD_TABLE
-    AD_COLUMN_ID VARCHAR(32)     -- References AD_COLUMN (partition column)
-);
-```
-
-#### Resolved Configuration
-
-```java
-Map<String, String> config = {
-    "tableName":"C_ORDER",           // From AD_TABLE.TABLENAME
-    "columnName":"DATEORDERED",      // From AD_COLUMN.COLUMNNAME  
-    "pkColumnName":"C_ORDER_ID"      // From AD_COLUMN where ISKEY='Y'
-    }
-```
-
-### Error Handling & Safety
-
-#### Defensive Programming
-
-- Safe existence checks for database objects
-- Graceful degradation on non-critical failures
-- Exception isolation between table processing
-
-#### Backup Strategy
-
-- Always backup before modifications
-- Continue processing even if backup fails
-- Retention policy: 5 backups per table, 7 days max age
-
-#### Logging Strategy
-
-- **INFO**: Normal operations, skip reasons, processing summaries
-- **WARN**: Recoverable issues, incomplete configurations
-- **ERROR**: Processing failures, SQL execution errors
-
-### Performance Considerations
-
-#### Optimization Features
-
-- Quick partitioning check to skip unnecessary processing
-- Batch processing with timing measurements
-- Efficient XML file caching and parsing
-- Per-table timing and summary reporting
-
-### Extension Points
-
-#### Adding New Constraint Types
-
-1. Extend `SqlBuilder` with new templates
-2. Update `ConstraintProcessor` analysis logic
-3. Add corresponding methods to `FkContext` interface
-
-#### Custom Backup Strategies
-
-1. Extend `BackupManager` with new backup methods
-2. Implement custom retention policies
-3. Add backup verification logic
-
-### Development Guidelines
-
-#### For Future Developers ("For Those Who Come After...")
-
-When working with this system:
-
-1. **Follow Established Patterns**: Each component has a single responsibility
-2. **Maintain Separation of Concerns**: Don't mix backup logic with SQL generation
-3. **Update Documentation**: Keep JavaDoc and this guide current
-4. **Add Appropriate Tests**: Unit tests for components, integration tests for workflows
-5. **Consider Backward Compatibility**: Changes should not break existing configurations
-
-#### Testing Strategies
-
-- **Unit Testing**: Mock `ConnectionProvider` for database independence
-- **Integration Testing**: Test with real PostgreSQL database
-- **Performance Testing**: Validate large dataset processing
-
-#### Common Troubleshooting
-
-1. **Missing XML Files**: Check module structure and file paths
-2. **Constraint Recreation Failures**: Verify table exists and check PostgreSQL logs
-3. **Backup Operations Failing**: Verify database permissions and disk space
-4. **Performance Issues**: Monitor connection pool and check for large table scans
-
-### Refactoring History
-
-This system was refactored from a monolithic 76-method class to a modular 6-component architecture:
-
-- **Before**: Single class with 76 methods (116% over SonarQube limit)
-- **After**: Main coordinator with 11 methods + 5 specialized utility classes
-- **Benefit**: 85% reduction in main class complexity, improved maintainability
-
-The refactoring maintains all original functionality while dramatically improving code organization, testability, and
-maintainability.
-
----
+The vector capability is described above; its own internals are readable from
+`VectorOutboxService` (delivery), `VectorTriggerService` (change capture) and
+`VectorReindexService` (backfill), each of which carries the reasoning in its class javadoc.
 
 ## 📖 Additional Resources
 
-- **[REFACTORING_SUMMARY.md](REFACTORING_SUMMARY.md)**: Detailed refactoring information and benefits
-- **[ARCHITECTURE_GUIDE.md](ARCHITECTURE_GUIDE.md)**: Complete architectural documentation for developers
-- **JavaDoc**: Comprehensive inline documentation for all classes and methods
-- **Source Code**: Well-commented code with examples and usage patterns
-
-For detailed implementation information, refer to the comprehensive JavaDoc documentation in each class.
-
----
+- [ARCHITECTURE_GUIDE.md](ARCHITECTURE_GUIDE.md) — the partitioning internals in more depth.
+- Administrator and consultant documentation lives at
+  [docs.etendo.software](https://docs.etendo.software), not in this repository.
+- The history of the module is its git history; this file describes what the module does now.
 
 ## 🏷️ Version Information
 

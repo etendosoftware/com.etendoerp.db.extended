@@ -1,0 +1,43 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<data>
+<!--11B50A53D196460399DD648E47EB77AE--><OBUIAPP_PROCESS>
+<!--11B50A53D196460399DD648E47EB77AE-->  <OBUIAPP_PROCESS_ID><![CDATA[11B50A53D196460399DD648E47EB77AE]]></OBUIAPP_PROCESS_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--11B50A53D196460399DD648E47EB77AE-->  <VALUE><![CDATA[ETARC_CheckVectorSource]]></VALUE>
+<!--11B50A53D196460399DD648E47EB77AE-->  <NAME><![CDATA[Check Indexing Readiness]]></NAME>
+<!--11B50A53D196460399DD648E47EB77AE-->  <DESCRIPTION><![CDATA[Reports whether the selected sources are ready to be indexed by the next update.database]]></DESCRIPTION>
+<!--11B50A53D196460399DD648E47EB77AE-->  <HELP><![CDATA[Reports whether the selected sources are ready to be indexed, and what is stopping the ones that are not. It changes nothing in the database. Everything a source needs -- the pgvector extension, the runtime storage, its collection and its change capture triggers -- is created by the next update.database, because creating them while the application runs makes that update refuse to start. So the order is: configure the source, press this to check it, then run update.database. Selecting every row is a sensible way to use it, and running it again is always harmless.]]></HELP>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ACCESSLEVEL><![CDATA[4]]></ACCESSLEVEL>
+<!--11B50A53D196460399DD648E47EB77AE-->  <CLASSNAME><![CDATA[com.etendoerp.db.extended.vector.CheckVectorSource]]></CLASSNAME>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISBACKGROUND><![CDATA[N]]></ISBACKGROUND>
+<!--11B50A53D196460399DD648E47EB77AE-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--11B50A53D196460399DD648E47EB77AE-->  <UIPATTERN><![CDATA[A]]></UIPATTERN>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISMULTIRECORD><![CDATA[Y]]></ISMULTIRECORD>
+<!--11B50A53D196460399DD648E47EB77AE-->  <IS_EXPLICIT_ACCESS><![CDATA[N]]></IS_EXPLICIT_ACCESS>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISGRIDLEGACY><![CDATA[N]]></ISGRIDLEGACY>
+<!--11B50A53D196460399DD648E47EB77AE-->  <ISCANADDRECORDSTOSELECTOR><![CDATA[N]]></ISCANADDRECORDSTOSELECTOR>
+<!--11B50A53D196460399DD648E47EB77AE--></OBUIAPP_PROCESS>
+
+<!--725CA3F95FF24C41AD02DD6C218C3AAD--><OBUIAPP_PROCESS>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <OBUIAPP_PROCESS_ID><![CDATA[725CA3F95FF24C41AD02DD6C218C3AAD]]></OBUIAPP_PROCESS_ID>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <VALUE><![CDATA[ETARC_RequestVectorReindex]]></VALUE>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <NAME><![CDATA[Request Reindex]]></NAME>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <DESCRIPTION><![CDATA[Asks for the records the source already held to be indexed]]></DESCRIPTION>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <HELP><![CDATA[The triggers only capture what changes from the moment they are installed, so a source configured over a table that already has rows indexes nothing until those rows are walked. Select the sources and press this button to ask for that walk; the scheduled process does it, in bounded chunks, so a table of millions of rows neither holds your session nor fills the queue faster than delivery drains it. The message tells you roughly how many records you just asked for. A source has one request for its whole life, so asking again starts it over and the counters of the previous walk are lost. A walk already in progress is left alone, and a source that could not be delivered is refused rather than queued.]]></HELP>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <ACCESSLEVEL><![CDATA[4]]></ACCESSLEVEL>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <CLASSNAME><![CDATA[com.etendoerp.db.extended.vector.RequestVectorReindex]]></CLASSNAME>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <ISBACKGROUND><![CDATA[N]]></ISBACKGROUND>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <UIPATTERN><![CDATA[A]]></UIPATTERN>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <ISMULTIRECORD><![CDATA[Y]]></ISMULTIRECORD>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <IS_EXPLICIT_ACCESS><![CDATA[N]]></IS_EXPLICIT_ACCESS>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <ISGRIDLEGACY><![CDATA[N]]></ISGRIDLEGACY>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD-->  <ISCANADDRECORDSTOSELECTOR><![CDATA[N]]></ISCANADDRECORDSTOSELECTOR>
+<!--725CA3F95FF24C41AD02DD6C218C3AAD--></OBUIAPP_PROCESS>
+
+</data>

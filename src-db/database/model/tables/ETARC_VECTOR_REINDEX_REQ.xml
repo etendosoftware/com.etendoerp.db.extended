@@ -1,6 +1,6 @@
 <?xml version="1.0"?>
   <database name="TABLE ETARC_VECTOR_REINDEX_REQ">
-    <table name="ETARC_VECTOR_REINDEX_REQ" primaryKey="ETARC_VEC_REINDEX_REQUEST_PK">
+    <table name="ETARC_VECTOR_REINDEX_REQ" primaryKey="ETARC_VECTOR_REINDEX_REQ_PK">
       <column name="ETARC_VECTOR_REINDEX_REQ_ID" primaryKey="true" required="true" type="VARCHAR" size="32" autoIncrement="false">
         <default/>
         <onCreateDefault/>
@@ -38,14 +38,26 @@
         <onCreateDefault/>
       </column>
       <column name="CONFIG_VERSION" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
-        <default/>
+        <default><![CDATA[1]]></default>
         <onCreateDefault/>
       </column>
-      <column name="STATUS" primaryKey="false" required="true" type="VARCHAR" size="16" autoIncrement="false">
+      <column name="STATUS" primaryKey="false" required="true" type="VARCHAR" size="60" autoIncrement="false">
         <default><![CDATA[PENDING]]></default>
         <onCreateDefault/>
       </column>
       <column name="LAST_ERROR" primaryKey="false" required="false" type="VARCHAR" size="2000" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="LAST_RECORD_ID" primaryKey="false" required="false" type="VARCHAR" size="32" autoIncrement="false">
+        <default/>
+        <onCreateDefault/>
+      </column>
+      <column name="ENQUEUED_COUNT" primaryKey="false" required="true" type="DECIMAL" size="10,0" autoIncrement="false">
+        <default><![CDATA[0]]></default>
+        <onCreateDefault><![CDATA[0]]></onCreateDefault>
+      </column>
+      <column name="TOTAL_COUNT" primaryKey="false" required="false" type="DECIMAL" size="10,0" autoIncrement="false">
         <default/>
         <onCreateDefault/>
       </column>

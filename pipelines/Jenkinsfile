@@ -157,6 +157,57 @@ spec:
                   if (env.GIT_BRANCH.startsWith(env.DEVELOP_BRANCH) || ((env.GIT_BRANCH.startsWith("feature") || env.GIT_BRANCH.startsWith("epic")) && !(env.GIT_BRANCH.contains("-Y")))) {
                       env.CLASSIC_BRANCH = env.DEVELOP_BRANCH
                   }
+
+                  // A module branch is tested against the core the work actually belongs to, not
+                  // against develop by default. A module feature often depends on core changes
+                  // that are still on the epic -- this one needs PostUpdateModuleScript, which the
+                  // core carries on epic/ETP-3504 (EPL-1810) and not yet on develop -- and
+                  // building against develop then fails for a reason that has nothing to do with
+                  // the branch under test.
+                  //
+                  // So: the core branch of the same name if it exists, else the epic the task
+                  // belongs to, else whatever the rules above chose. The epic is asked of Jira
+                  // rather than written down here, so it keeps being right after this ticket.
+                  if (env.GIT_BRANCH.startsWith("feature") || env.GIT_BRANCH.startsWith("epic")) {
+                      def preferred = []
+                      preferred << env.GIT_BRANCH
+                      if (env.GIT_BRANCH.startsWith("feature")) {
+                          def taskName = env.GIT_BRANCH.replaceAll("feature/", "").replaceAll("-Y\\d+", "")
+                          // Bound here rather than in environment on purpose: a credential this job
+                          // cannot see would fail the build before it starts, and the epic is a
+                          // preference, not a requirement. Without it the rules below still choose.
+                          def epicKey = ''
+                          try {
+                              withCredentials([string(credentialsId: 'jira-access-token', variable: 'JIRA_TOKEN'),
+                                               string(credentialsId: 'jira-url', variable: 'JIRA_URL')]) {
+                                  epicKey = sh(
+                                      script: "bash ./pipelines/utils/jira/jira-utils.sh ${taskName} \"\$JIRA_URL\" \"\$JIRA_TOKEN\" 2>/dev/null || true",
+                                      returnStdout: true).trim()
+                              }
+                          } catch (Exception e) {
+                              echo "No Jira credentials available here, so the epic is not looked up: ${e.message}"
+                          }
+                          if (epicKey) {
+                              echo "Epic of ${taskName}: ${epicKey}"
+                              preferred << (env.GIT_BRANCH.contains("-Y")
+                                  ? "epic/${epicKey}-Y${env.GIT_BRANCH.split('-Y')[1]}"
+                                  : "epic/${epicKey}")
+                          } else {
+                              echo "No epic resolved for ${taskName}."
+                          }
+                      }
+                      for (String candidate : preferred) {
+                          def exists = sh(
+                              script: "git ls-remote --heads ${CORE_URL_REPO} ${candidate} | wc -l",
+                              returnStdout: true).trim()
+                          if (exists != "0") {
+                              echo "Classic branch ${env.CLASSIC_BRANCH} -> ${candidate}"
+                              env.CLASSIC_BRANCH = candidate
+                              break
+                          }
+                          echo "Core has no ${candidate}"
+                      }
+                  }
                   echo "---------------------- Clonning Classic Repo ----------------------"
                   sh "sudo apt update && sudo apt install -y python3-venv"
                   sh "git clone --branch ${CLASSIC_BRANCH} ${CORE_URL_REPO}"

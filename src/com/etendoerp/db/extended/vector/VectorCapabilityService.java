@@ -20,6 +20,8 @@ package com.etendoerp.db.extended.vector;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
 
+import org.apache.logging.log4j.LogManager;
+import org.apache.logging.log4j.Logger;
 import org.openbravo.database.ConnectionProvider;
 
 /**
@@ -29,12 +31,15 @@ import org.openbravo.database.ConnectionProvider;
  * is owned by a separate explicit lifecycle introduced after disabled-mode verification.</p>
  */
 public class VectorCapabilityService {
+  private static final Logger log = LogManager.getLogger();
+
   static final String VECTOR_EXTENSION = "vector";
   static final String CAPABILITY_SQL =
       "SELECT EXISTS (SELECT 1 FROM pg_available_extensions WHERE name = ?) AS available, "
           + "EXISTS (SELECT 1 FROM pg_extension WHERE extname = ?) AS installed";
 
   private final ConnectionProvider connectionProvider;
+  private VectorCapability activeCapability;
 
   public VectorCapabilityService(ConnectionProvider connectionProvider) {
     this.connectionProvider = connectionProvider;
@@ -46,28 +51,45 @@ public class VectorCapabilityService {
    * @return the detected capability or a safe failed-state diagnostic when inspection cannot complete
    */
   public VectorCapability inspect() {
+    if (activeCapability != null) {
+      return activeCapability;
+    }
+    VectorCapability capability = queryCapability();
+    if (capability.getState() == VectorCapabilityState.ACTIVE) {
+      // Only the ACTIVE state is remembered. Activation moves in one direction, so a cached ACTIVE
+      // cannot go stale, whereas caching AVAILABLE or UNAVAILABLE would keep reporting the feature
+      // as off after an administrator turns it on. Every other state is re-inspected.
+      activeCapability = capability;
+    }
+    return capability;
+  }
+
+  private VectorCapability queryCapability() {
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(CAPABILITY_SQL)) {
       statement.setString(1, VECTOR_EXTENSION);
       statement.setString(2, VECTOR_EXTENSION);
       try (ResultSet resultSet = statement.executeQuery()) {
         if (!resultSet.next()) {
           return new VectorCapability(VectorCapabilityState.FAILED,
-              "Could not inspect the PostgreSQL pgvector capability.");
+              "the pgvector capability could not be inspected; see the log for the reason.");
         }
         if (resultSet.getBoolean("installed")) {
           return new VectorCapability(VectorCapabilityState.ACTIVE,
-              "The pgvector extension is installed in this database.");
+              "the extension is installed in this database.");
         }
         if (resultSet.getBoolean("available")) {
           return new VectorCapability(VectorCapabilityState.AVAILABLE,
-              "The pgvector extension is available but has not been activated in this database.");
+              "the PostgreSQL server provides pgvector, but this database does not have the extension yet. \nThe next update.database creates it.");
         }
         return new VectorCapability(VectorCapabilityState.UNAVAILABLE,
-            "The PostgreSQL server does not provide the pgvector extension.");
+            "the PostgreSQL server does not provide pgvector, so no update can install it here. \nInstall the pgvector package on the server first.");
       }
     } catch (Exception exception) {
+      // Logged rather than swallowed: this method exists to diagnose, and the one thing an
+      // administrator cannot act on is a diagnosis that hides why it failed.
+      log.error("Could not inspect the PostgreSQL pgvector capability.", exception);
       return new VectorCapability(VectorCapabilityState.FAILED,
-          "Could not inspect the PostgreSQL pgvector capability.");
+          "the pgvector capability could not be inspected; see the log for the reason.");
     }
   }
 }
