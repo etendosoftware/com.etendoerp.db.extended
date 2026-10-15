@@ -22,6 +22,11 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
+import java.time.format.DateTimeParseException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
@@ -220,9 +225,38 @@ public final class OpenAiEmbeddingProvider implements VectorEmbeddingProvider {
     boolean ok = status >= 200 && status < 300;
     String body = read(ok ? connection.getInputStream() : connection.getErrorStream());
     if (!ok) {
-      throw failed("OpenAI embedding request failed with HTTP " + status + ".", null);
+      throw new VectorProviderException(status, retryAfter(connection.getHeaderField("Retry-After")),
+          "OpenAI embedding request failed with HTTP " + status + ".");
     }
     return body;
+  }
+
+  /**
+   * Reads a {@code Retry-After} header, which carries either a number of seconds or an HTTP date.
+   *
+   * @param header
+   *     the header value, or {@code null} when the provider did not send one
+   * @return how long the provider asked to wait, or {@code null} when it did not say or the value
+   *     cannot be read
+   */
+  static Duration retryAfter(String header) {
+    if (isBlank(header)) {
+      return null;
+    }
+    String value = header.trim();
+    try {
+      long seconds = Long.parseLong(value);
+      return seconds < 0 ? null : Duration.ofSeconds(seconds);
+    } catch (NumberFormatException notSeconds) {
+      try {
+        Duration wait = Duration.between(ZonedDateTime.now(ZoneOffset.UTC),
+            ZonedDateTime.parse(value, DateTimeFormatter.RFC_1123_DATE_TIME));
+        return wait.isNegative() ? Duration.ZERO : wait;
+      } catch (DateTimeParseException notADate) {
+        log.debug("Ignoring an unreadable Retry-After header: {}", value);
+        return null;
+      }
+    }
   }
 
   /**

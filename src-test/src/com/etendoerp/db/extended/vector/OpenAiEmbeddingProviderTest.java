@@ -2,13 +2,19 @@ package com.etendoerp.db.extended.vector;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertArrayEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.InetSocketAddress;
+import java.net.SocketTimeoutException;
 import java.nio.charset.StandardCharsets;
+import java.time.Duration;
+import java.time.ZoneOffset;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -41,6 +47,9 @@ class OpenAiEmbeddingProviderTest {
   private String endpoint;
   private final List<JSONObject> received = new ArrayList<>();
   private final AtomicReference<String> response = new AtomicReference<>();
+  private final AtomicReference<Integer> status = new AtomicReference<>(200);
+  private final AtomicReference<String> retryAfter = new AtomicReference<>();
+  private final AtomicReference<Long> delayMillis = new AtomicReference<>(0L);
 
   @BeforeEach
   void startServer() throws Exception {
@@ -53,8 +62,12 @@ class OpenAiEmbeddingProviderTest {
       } catch (Exception e) {
         throw new java.io.IOException(e);
       }
+      sleep(delayMillis.get());
       byte[] body = response.get().getBytes(StandardCharsets.UTF_8);
-      exchange.sendResponseHeaders(200, body.length);
+      if (retryAfter.get() != null) {
+        exchange.getResponseHeaders().add("Retry-After", retryAfter.get());
+      }
+      exchange.sendResponseHeaders(status.get(), body.length);
       try (OutputStream out = exchange.getResponseBody()) {
         out.write(body);
       }
@@ -203,6 +216,72 @@ class OpenAiEmbeddingProviderTest {
     assertEquals(1, received.size(),
         "a provider left without an API Endpoint has to end up at the address Openbravo.properties "
             + "names, or the default is only a default on paper");
+  }
+
+  @Test
+  void carriesTheStatusAndRetryAfterOfAThrottledRequest() {
+    response.set("{\"error\":{\"message\":\"Rate limit reached\"}}");
+    status.set(429);
+    retryAfter.set("30");
+
+    VectorProviderException failure = assertThrows(VectorProviderException.class,
+        () -> provider(25).embed(List.of("a")));
+
+    assertEquals(429, failure.getHttpStatus(),
+        "the status has to travel as data: whether to retry must not depend on parsing a message");
+    assertEquals(Duration.ofSeconds(30), failure.getRetryAfter());
+    assertTrue(failure.getMessage().contains("HTTP 429"));
+  }
+
+  @Test
+  void readsRetryAfterWrittenAsAnHttpDate() {
+    response.set("{}");
+    status.set(429);
+    retryAfter.set(DateTimeFormatter.RFC_1123_DATE_TIME.format(
+        ZonedDateTime.now(ZoneOffset.UTC).plusSeconds(120)));
+
+    VectorProviderException failure = assertThrows(VectorProviderException.class,
+        () -> provider(25).embed(List.of("a")));
+
+    long seconds = failure.getRetryAfter().getSeconds();
+    assertTrue(seconds > 100 && seconds <= 120, "Retry-After may also be a date; got " + seconds + "s");
+  }
+
+  @Test
+  void carriesTheStatusOfAnAuthenticationFailureWithoutRetryAfter() {
+    response.set("{}");
+    status.set(401);
+
+    VectorProviderException failure = assertThrows(VectorProviderException.class,
+        () -> provider(25).embed(List.of("a")));
+
+    assertEquals(401, failure.getHttpStatus());
+    assertNull(failure.getRetryAfter());
+  }
+
+  @Test
+  void reportsATimeoutWithTheIoFailureAsItsCause() {
+    response.set(embeddings(0));
+    delayMillis.set(2500L);
+
+    VectorException failure = assertThrows(VectorException.class,
+        () -> new OpenAiEmbeddingProvider(KEY_REFERENCE, "test-model", DIMENSIONS, 1, 1000, endpoint, 5)
+            .embed(List.of("a")));
+
+    assertTrue(failure.getCause() instanceof SocketTimeoutException,
+        "a timeout has no status, so the delivery policy recognises it by its cause; got "
+            + failure.getCause());
+  }
+
+  private static void sleep(long millis) {
+    if (millis <= 0) {
+      return;
+    }
+    try {
+      Thread.sleep(millis);
+    } catch (InterruptedException e) {
+      Thread.currentThread().interrupt();
+    }
   }
 
   private OpenAiEmbeddingProvider provider(int batchSize) {
