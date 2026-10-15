@@ -160,8 +160,8 @@
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <COLUMNNAME><![CDATA[Retry_Limit]]></COLUMNNAME>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <NAME><![CDATA[Retry Limit]]></NAME>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <PRINTNAME><![CDATA[Retries]]></PRINTNAME>
-<!--691E029B96BE4E99A53A5DFA29EA4427-->  <HELP><![CDATA[How many times a failed event is handed back to delivery before it is left alone. It stops a permanent failure -- a model that no longer exists, a revoked key -- from being retried forever at the provider's expense. An event that reached the limit stays failed and visible in the Outbox Monitor, where it can be sent back to the queue once the cause is fixed.]]></HELP>
-<!--691E029B96BE4E99A53A5DFA29EA4427-->  <DESCRIPTION><![CDATA[Delivery attempts before an event stops being recovered automatically]]></DESCRIPTION>
+<!--691E029B96BE4E99A53A5DFA29EA4427-->  <HELP><![CDATA[Total delivery attempts for an event whose failure can pass on its own (HTTP 408, 429 or 5xx, a timeout, a network error). Each retry waits longer: 60 s, doubling up to 1 hour, or the provider's Retry-After when it asks for more. The attempt that reaches the limit marks the event Failed. Permanent failures, such as a rejected API key, a bad request or an unknown model, fail at once whatever the limit. A failed event stays visible in the Outbox Monitor and can be requeued once the cause is fixed.]]></HELP>
+<!--691E029B96BE4E99A53A5DFA29EA4427-->  <DESCRIPTION><![CDATA[Total delivery attempts before a transiently failing event is marked Failed]]></DESCRIPTION>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--691E029B96BE4E99A53A5DFA29EA4427-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
 <!--691E029B96BE4E99A53A5DFA29EA4427--></AD_ELEMENT>
@@ -202,7 +202,7 @@
 <!--92D166460563451F8867E4FB1B0C7458-->  <COLUMNNAME><![CDATA[Timeout_Seconds]]></COLUMNNAME>
 <!--92D166460563451F8867E4FB1B0C7458-->  <NAME><![CDATA[Request Timeout]]></NAME>
 <!--92D166460563451F8867E4FB1B0C7458-->  <PRINTNAME><![CDATA[Timeout (s)]]></PRINTNAME>
-<!--92D166460563451F8867E4FB1B0C7458-->  <HELP><![CDATA[How long a single embedding request may take before it is abandoned. It bounds one request, not the whole delivery run: the event it belonged to is marked as failed and retried later, up to the retry limit. Too low a value turns a slow provider into a stream of failures; too high a one holds a delivery thread while the queue grows.]]></HELP>
+<!--92D166460563451F8867E4FB1B0C7458-->  <HELP><![CDATA[How long a single embedding request may take before it is abandoned. It bounds one request, not the whole delivery run: the event it belonged to goes back to Pending and is retried after a growing wait, up to the retry limit. Too low a value turns a slow provider into a stream of retries; too high a one holds a delivery thread while the queue grows.]]></HELP>
 <!--92D166460563451F8867E4FB1B0C7458-->  <DESCRIPTION><![CDATA[Seconds to wait for an embedding response before failing the event]]></DESCRIPTION>
 <!--92D166460563451F8867E4FB1B0C7458-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--92D166460563451F8867E4FB1B0C7458-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -271,7 +271,7 @@
 <!--B3FC90E786544144947C36C1274ECF70-->  <COLUMNNAME><![CDATA[Last_Error]]></COLUMNNAME>
 <!--B3FC90E786544144947C36C1274ECF70-->  <NAME><![CDATA[Last Error]]></NAME>
 <!--B3FC90E786544144947C36C1274ECF70-->  <PRINTNAME><![CDATA[Last Error]]></PRINTNAME>
-<!--B3FC90E786544144947C36C1274ECF70-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which.]]></HELP>
+<!--B3FC90E786544144947C36C1274ECF70-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which. While a transient failure is being retried it also carries the progress, for example: Attempt 1 of 3 failed, retrying in 60s.]]></HELP>
 <!--B3FC90E786544144947C36C1274ECF70-->  <DESCRIPTION><![CDATA[Message of the most recent failed attempt]]></DESCRIPTION>
 <!--B3FC90E786544144947C36C1274ECF70-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--B3FC90E786544144947C36C1274ECF70-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
@@ -423,7 +423,7 @@
 <!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <NAME><![CDATA[Attempt Count]]></NAME>
 <!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <PRINTNAME><![CDATA[Attempts]]></PRINTNAME>
 <!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <DESCRIPTION><![CDATA[Delivery attempts so far]]></DESCRIPTION>
-<!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <HELP><![CDATA[Compared against the retry limit of the source provider to decide whether an abandoned event is recovered or retired.]]></HELP>
+<!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <HELP><![CDATA[Delivery attempts so far, counted when a run claims the event. Compared against the retry limit of the source provider to decide whether a transient failure is retried or marked Failed, and whether an abandoned event is recovered or retired.]]></HELP>
 <!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
 <!--E4BC10484AFF47EC9DAA2B2E9F1D6DCA--></AD_ELEMENT>
@@ -450,7 +450,7 @@
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <COLUMNNAME><![CDATA[Status]]></COLUMNNAME>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <NAME><![CDATA[Status]]></NAME>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <PRINTNAME><![CDATA[Status]]></PRINTNAME>
-<!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting, PROCESSING has been claimed by a run, DONE was embedded and stored, FAILED gave up after the provider retry limit, and SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
+<!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting for the scheduled process; a PENDING event with Next Attempt At set failed for a reason that can pass on its own and is waiting out its backoff. PROCESSING has been claimed by a run, DONE was embedded and stored, and FAILED either failed for a reason retrying cannot fix (a rejected key, a bad request, missing configuration) or spent the provider retry limit. SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <DESCRIPTION><![CDATA[Lifecycle state of the record]]></DESCRIPTION>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
 <!--ECF37626DC264CC8A31CCCFDFACB8A6D-->  <ISGLOSSARY><![CDATA[N]]></ISGLOSSARY>
