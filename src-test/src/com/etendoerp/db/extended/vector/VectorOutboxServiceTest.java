@@ -2,6 +2,8 @@ package com.etendoerp.db.extended.vector;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
@@ -11,10 +13,13 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.net.ConnectException;
 import java.net.MalformedURLException;
 import java.net.SocketTimeoutException;
+import java.net.UnknownHostException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.SQLException;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
@@ -279,6 +284,72 @@ class VectorOutboxServiceTest {
   }
 
   @Test
+  void treatsAForbiddenAnswerAsPermanent() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.prepareFailure = new VectorProviderException(403, null, "forbidden");
+
+    service(1, consumer).processPending(100);
+
+    single(FAILED_UPDATE);
+    assertTrue(executed(RETRY_UPDATE).isEmpty(), "a key without permission does not gain it by waiting");
+    assertTrue(executed(BUDGET_QUERY).isEmpty(), "a permanent failure needs no retry budget");
+  }
+
+  @Test
+  void classifiesTheEdgesOfTheClientAndServerErrorRanges() {
+    assertFalse(VectorDeliveryRetryPolicy.isTransient(new VectorProviderException(404, null, "not found")));
+    assertFalse(VectorDeliveryRetryPolicy.isTransient(new VectorProviderException(499, null, "client closed")),
+        "the last 4xx is still the request's fault");
+    assertTrue(VectorDeliveryRetryPolicy.isTransient(new VectorProviderException(500, null, "server error")),
+        "the first 5xx is the provider's");
+    assertTrue(VectorDeliveryRetryPolicy.isTransient(new VectorProviderException(599, null, "network timeout")));
+  }
+
+  @Test
+  void treatsAnUnreachableProviderAsTransientWhereverItSitsInTheCauseChain() {
+    assertTrue(VectorDeliveryRetryPolicy.isTransient(wrapped(new ConnectException("refused"))),
+        "a refused connection is the network, not the request");
+    assertTrue(VectorDeliveryRetryPolicy.isTransient(wrapped(new UnknownHostException("api.example"))),
+        "a DNS hiccup passes on its own");
+  }
+
+  @Test
+  void treatsAFailureThatIsNotAProviderCallAsPermanent() {
+    assertFalse(VectorDeliveryRetryPolicy.isTransient(
+        new VectorException(VectorErrorCode.VECTOR_EMBEDDING_OPERATION_FAILED, "no content column")),
+        "a configuration problem carries neither a status nor an I/O cause");
+    assertFalse(VectorDeliveryRetryPolicy.isTransient(wrapped(new SQLException("relation does not exist"))),
+        "a database error is not something a later attempt repairs");
+  }
+
+  @Test
+  void failsATransientFailureWhoseRetryBudgetCannotBeFound() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.prepareFailure = new VectorProviderException(503, null, "unavailable");
+    budgetRowMissing = true;
+
+    assertDoesNotThrow(() -> service(1, consumer).processPending(100));
+
+    assertTrue(executed(RETRY_UPDATE).isEmpty(), "an event that is gone has nothing to retry");
+    assertTrue(((String) single(FAILED_UPDATE).parameters.get(1)).startsWith("Retry limit of 3 attempts exhausted"),
+        "with no row the default limit is taken as spent");
+  }
+
+  @Test
+  void reportsAnUnreadableRetryBudgetAsAnOutboxFailure() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.prepareFailure = new VectorProviderException(503, null, "unavailable");
+    budgetFailure = new SQLException("connection lost");
+
+    VectorException failure = assertThrows(VectorException.class,
+        () -> service(1, consumer).processPending(100));
+
+    assertEquals(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED, failure.getCode());
+    assertTrue(executed(RETRY_UPDATE).isEmpty() && executed(FAILED_UPDATE).isEmpty(),
+        "without the budget no outcome may be guessed");
+  }
+
+  @Test
   void onlyLoadsEventsWhoseBackoffHasElapsed() {
     service(1, new RecordingConsumer(25)).processPending(100);
 
@@ -316,6 +387,30 @@ class VectorOutboxServiceTest {
     Executed requeue = single(REQUEUE_UPDATE);
     assertTrue(!requeue.sql.contains("ad_client_id = ?"));
     assertEquals(List.of("FAILED", "source-1", 10), List.copyOf(requeue.parameters.values()));
+  }
+
+  @Test
+  void scopesTheRequeueToAClientAlone() {
+    service(0, new RecordingConsumer(25)).requeueFailed(10, "client-1", null);
+
+    Executed requeue = single(REQUEUE_UPDATE);
+    assertTrue(requeue.sql.contains("ad_client_id = ?"));
+    assertTrue(!requeue.sql.contains("etarc_vector_source_id = ?"), "no source was selected");
+    assertEquals(List.of("FAILED", "client-1", 10), List.copyOf(requeue.parameters.values()));
+  }
+
+  @Test
+  void requeuesStaleProcessingEventsWithinTheirBudgetWithoutResettingIt() {
+    service(0, new RecordingConsumer(25)).requeueStaleProcessing(Duration.ofMinutes(15), 50);
+
+    Executed requeue = single(REQUEUE_UPDATE);
+    assertEquals(List.of("PROCESSING", 900L, VectorOutboxService.DEFAULT_RETRY_LIMIT, 50),
+        List.copyOf(requeue.parameters.values()),
+        "the age and the retry limit have to bind after the status, in the order the SQL reads them");
+    assertTrue(requeue.sql.contains("next_attempt_at = NULL"), "a recovered event is eligible at once");
+    assertTrue(!requeue.sql.contains("attempt_count = 0"),
+        "recovery must not hand back the budget, or an event that kills the run loops forever");
+    assertTrue(requeue.sql.contains("attempt_count < "), "only events with attempts left are recovered");
   }
 
   @Test
@@ -406,6 +501,10 @@ class VectorOutboxServiceTest {
 
   /** Rows matched by an outcome guarded on PROCESSING; zero means the event changed hands. */
   private int outcomeRowCount = 1;
+  /** The retry-budget query finds no row, as when the event was deleted meanwhile. */
+  private boolean budgetRowMissing;
+  /** What the retry-budget query throws, or {@code null} when it answers. */
+  private SQLException budgetFailure;
   /** Attempts the event has used, counting the one that just failed. */
   private int attempts = 1;
   private int retryLimit = 3;
@@ -458,6 +557,10 @@ class VectorOutboxServiceTest {
     return last;
   }
 
+  private static VectorException wrapped(Throwable cause) {
+    return new VectorException(VectorErrorCode.VECTOR_EMBEDDING_OPERATION_FAILED, "wrapped", cause);
+  }
+
   private VectorOutboxService service(int pendingEvents, VectorOutboxConsumer consumer) {
     return service(pendingEvents, consumer, 1L);
   }
@@ -491,9 +594,11 @@ class VectorOutboxServiceTest {
     doAnswer(bind).when(statement).setInt(anyInt(), anyInt());
     doAnswer(bind).when(statement).setLong(anyInt(), anyLong());
     when(statement.executeUpdate()).thenReturn(sql.contains("AND status = 'PROCESSING'") ? outcomeRowCount : 1);
-    if (sql.contains(BUDGET_QUERY)) {
+    if (sql.contains(BUDGET_QUERY) && budgetFailure != null) {
+      when(statement.executeQuery()).thenThrow(budgetFailure);
+    } else if (sql.contains(BUDGET_QUERY)) {
       ResultSet budget = mock(ResultSet.class);
-      when(budget.next()).thenReturn(true, false);
+      when(budget.next()).thenReturn(!budgetRowMissing, false);
       when(budget.getInt(1)).thenReturn(attempts);
       when(budget.getInt(2)).thenReturn(retryLimit);
       when(statement.executeQuery()).thenReturn(budget);
