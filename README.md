@@ -106,9 +106,11 @@ from the exception types in the cause chain — never from the wording of the me
 
 | Failure | Kind | What happens |
 |---------|------|--------------|
+| HTTP 408 | transient | back to `PENDING` after a backoff |
 | HTTP 429 | transient | back to `PENDING` after a backoff, honouring `Retry-After` |
 | HTTP 5xx | transient | back to `PENDING` after a backoff |
 | Timeout, connection or other I/O error (no HTTP answer) | transient | back to `PENDING` after a backoff |
+| Malformed endpoint URL | permanent | `FAILED` at once (an I/O error, but no retry repairs a bad API Endpoint) |
 | HTTP 401 / 403 | permanent | `FAILED` at once |
 | Any other HTTP 4xx (bad payload, unknown model…) | permanent | `FAILED` at once |
 | Anything else (missing source, no content column, database error) | permanent | `FAILED` at once |
@@ -123,7 +125,8 @@ date), that is used instead, up to 24 hours. `NEXT_ATTEMPT_AT` empty means "deli
 run", so newly enqueued events and rows that predate the column need no value. Retries stop at the
 `Retry Limit` of the source's provider (3 when the source has none): the attempt that reaches it
 marks the event `FAILED` with `Retry limit of N attempts exhausted. Last error: …`. While waiting,
-`Last Error` says which attempt failed and when the next one is due.
+`Last Error` says which attempt failed and how long the wait is, relative to that failure
+(`Attempt 1 of 3 failed, retrying in 120s. …`); the absolute moment is in `NEXT_ATTEMPT_AT`.
 
 A whole chunk shares one embedding request, so one throttled request sends every event of the chunk
 back to `PENDING`, each with its own attempt count.

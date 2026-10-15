@@ -35,6 +35,14 @@ import org.openbravo.database.ConnectionProvider;
  */
 public class VectorOutboxService {
   private static final int MAX_ERROR_LENGTH = 2000;
+  /**
+   * Restricts an outcome update to an event this run still holds.
+   *
+   * <p>A delivery that outlives the stale threshold can be recovered and re-claimed by another node
+   * while it is still running here. Without the guard, the late outcome written here would
+   * overwrite the newer claim and whatever that node records.</p>
+   */
+  private static final String PROCESSING_GUARD = "AND status = 'PROCESSING'";
 
   private static final String PENDING_EVENTS_SQL =
       "SELECT o.etarc_vector_outbox_id, o.etarc_vector_source_id, o.config_version, s.namespace, o.record_id, "
@@ -346,7 +354,8 @@ public class VectorOutboxService {
 
   private void markDone(String eventId) {
     update("UPDATE etarc_vector_outbox SET status = 'DONE', processed_at = now() AT TIME ZONE 'UTC', last_error = NULL, "
-        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
+        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ? "
+        + PROCESSING_GUARD, eventId);
   }
 
   /**
@@ -402,7 +411,7 @@ public class VectorOutboxService {
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(
         "UPDATE etarc_vector_outbox SET status = 'PENDING', last_error = ?, next_attempt_at = "
             + "now() AT TIME ZONE 'UTC' + (? * interval '1 second'), updated = now() AT TIME ZONE 'UTC', "
-            + "updatedby = '0' WHERE etarc_vector_outbox_id = ?")) {
+            + "updatedby = '0' WHERE etarc_vector_outbox_id = ? " + PROCESSING_GUARD)) {
       statement.setString(1, truncate(message));
       statement.setLong(2, delay.getSeconds());
       statement.setString(3, eventId);
@@ -416,7 +425,7 @@ public class VectorOutboxService {
   private void markFailed(String eventId, String message) {
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(
         "UPDATE etarc_vector_outbox SET status = 'FAILED', last_error = ?, updated = now() AT TIME ZONE 'UTC', "
-            + "updatedby = '0' WHERE etarc_vector_outbox_id = ?")) {
+            + "updatedby = '0' WHERE etarc_vector_outbox_id = ? " + PROCESSING_GUARD)) {
       statement.setString(1, truncate(message));
       statement.setString(2, eventId);
       statement.executeUpdate();

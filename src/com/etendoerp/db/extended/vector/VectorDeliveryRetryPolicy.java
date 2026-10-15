@@ -17,6 +17,7 @@
 package com.etendoerp.db.extended.vector;
 
 import java.io.IOException;
+import java.net.MalformedURLException;
 import java.time.Duration;
 
 /**
@@ -24,12 +25,13 @@ import java.time.Duration;
  *
  * <p>Only failures that can pass on their own are retried:</p>
  * <ul>
- * <li>HTTP 429 and any 5xx: the provider is throttling or briefly unavailable;</li>
+ * <li>HTTP 408, 429 and any 5xx: the provider timed out, is throttling or is briefly
+ * unavailable;</li>
  * <li>a timeout or any other I/O failure with no HTTP answer: the network, not the request.</li>
  * </ul>
  *
  * <p>Everything else is permanent: any other 4xx means the request itself is wrong and sending it
- * again gets the same answer, and a failure that is not a provider call at all (a missing source, a
+ * again gets the same answer, a malformed endpoint URL is an I/O failure that no retry repairs, and a failure that is not a provider call at all (a missing source, a
  * database error) is a configuration problem. That includes 401 and 403 on purpose: a rejected API
  * key does not fix itself, so retrying only spends provider calls. Once the key is corrected the
  * events are put back with a requeue, scoped to the affected client or source if needed.</p>
@@ -45,15 +47,23 @@ final class VectorDeliveryRetryPolicy {
   /** A Retry-After is honoured up to this, so a malformed or hostile value cannot park an event. */
   static final Duration MAX_RETRY_AFTER = Duration.ofHours(24);
 
+  /** How deep the cause chain is walked, so a cyclic or absurdly nested chain cannot loop. */
+  private static final int MAX_CAUSE_DEPTH = 20;
+
   private VectorDeliveryRetryPolicy() {
   }
 
   /** Whether the failure can pass on its own, so the event deserves another attempt. */
   static boolean isTransient(Throwable failure) {
-    for (Throwable cause = failure; cause != null; cause = next(cause)) {
+    int depth = 0;
+    for (Throwable cause = failure; cause != null && depth < MAX_CAUSE_DEPTH;
+        cause = next(cause), depth++) {
       if (cause instanceof VectorProviderException) {
         int status = ((VectorProviderException) cause).getHttpStatus();
-        return status == 429 || status >= 500;
+        return status == 408 || status == 429 || status >= 500;
+      }
+      if (cause instanceof MalformedURLException) {
+        return false;
       }
       if (cause instanceof IOException) {
         return true;
@@ -85,7 +95,9 @@ final class VectorDeliveryRetryPolicy {
   }
 
   private static Duration retryAfter(Throwable failure) {
-    for (Throwable cause = failure; cause != null; cause = next(cause)) {
+    int depth = 0;
+    for (Throwable cause = failure; cause != null && depth < MAX_CAUSE_DEPTH;
+        cause = next(cause), depth++) {
       if (cause instanceof VectorProviderException) {
         return ((VectorProviderException) cause).getRetryAfter();
       }

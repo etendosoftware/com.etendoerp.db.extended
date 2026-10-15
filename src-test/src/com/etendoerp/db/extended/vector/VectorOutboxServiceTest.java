@@ -10,6 +10,7 @@ import static org.mockito.Mockito.doAnswer;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
+import java.net.MalformedURLException;
 import java.net.SocketTimeoutException;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
@@ -170,6 +171,68 @@ class VectorOutboxServiceTest {
   }
 
   @Test
+  void treatsARequestTimeoutAnswerAsTransient() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.prepareFailure = new VectorProviderException(408, null, "request timeout");
+
+    service(1, consumer).processPending(100);
+
+    single(RETRY_UPDATE);
+    assertTrue(executed(FAILED_UPDATE).isEmpty(), "a 408 is the provider giving up on a slow request, not a bad one");
+  }
+
+  @Test
+  void treatsAMalformedEndpointAsPermanentAlthoughItIsAnIoFailure() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.prepareFailure = new VectorException(VectorErrorCode.VECTOR_EMBEDDING_OPERATION_FAILED,
+        "Could not request an OpenAI embedding.", new MalformedURLException("no protocol: api.example"));
+
+    service(1, consumer).processPending(100);
+
+    single(FAILED_UPDATE);
+    assertTrue(executed(RETRY_UPDATE).isEmpty(), "a misconfigured endpoint does not fix itself between runs");
+  }
+
+  @Test
+  void retriesEveryEventOfAThrottledChunkWithItsOwnBudget() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.prepareFailure = new VectorProviderException(429, null, "throttled");
+
+    service(3, consumer).processPending(100);
+
+    List<Object> retried = new ArrayList<>();
+    for (Executed retry : executed(RETRY_UPDATE)) {
+      retried.add(retry.parameters.get(3));
+    }
+    assertEquals(List.of("event-0", "event-1", "event-2"), retried,
+        "the chunk shares one request, so one 429 sends every event of it back to the queue");
+    List<Object> budgets = new ArrayList<>();
+    for (Executed budget : executed(BUDGET_QUERY)) {
+      budgets.add(budget.parameters.get(2));
+    }
+    assertEquals(List.of("event-0", "event-1", "event-2"), budgets,
+        "each event is retried against its own attempt count, not the chunk's");
+  }
+
+  @Test
+  void onlyRecordsTheOutcomeOfAnEventItStillHoldsInProcessing() {
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.failOn = "event-1";
+    consumer.consumeFailure = new VectorProviderException(503, null, "unavailable");
+
+    service(3, consumer).processPending(100);
+    consumer.failOn = "event-2";
+    consumer.consumeFailure = new VectorProviderException(400, null, "bad payload");
+    service(3, consumer).processPending(100);
+
+    // A stale-recovery can hand the event to another node; overwriting its outcome would lose it.
+    String guard = "WHERE etarc_vector_outbox_id = ? AND status = 'PROCESSING'";
+    assertTrue(executed(RETRY_UPDATE).get(0).sql.contains(guard));
+    assertTrue(executed(FAILED_UPDATE).get(0).sql.contains(guard));
+    assertTrue(executed(DONE_UPDATE).get(0).sql.contains(guard));
+  }
+
+  @Test
   void failsTheEventOnceTheRetryLimitIsExhausted() {
     RecordingConsumer consumer = new RecordingConsumer(25);
     consumer.prepareFailure = new VectorProviderException(429, null, "throttled");
@@ -255,6 +318,7 @@ class VectorOutboxServiceTest {
   private static final String BUDGET_QUERY = "SELECT attempt_count";
   private static final String RETRY_UPDATE = "SET status = 'PENDING', last_error = ?, next_attempt_at";
   private static final String FAILED_UPDATE = "SET status = 'FAILED', last_error = ?";
+  private static final String DONE_UPDATE = "SET status = 'DONE'";
   private static final String REQUEUE_UPDATE = "SET status = 'PENDING', last_error = NULL";
 
   /** Attempts the event has used, counting the one that just failed. */

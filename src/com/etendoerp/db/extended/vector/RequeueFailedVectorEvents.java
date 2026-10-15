@@ -59,7 +59,8 @@ public class RequeueFailedVectorEvents extends BaseProcessActionHandler {
       log.error("Requeuing failed vector events failed", e);
       OBDal.getInstance().rollbackAndClose();
       try {
-        result.put("message", message("error", e.getMessage()));
+        result.put("message", message("error",
+            e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage()));
       } catch (Exception messageFailure) {
         log.error("Could not report the requeue failure", messageFailure);
       }
