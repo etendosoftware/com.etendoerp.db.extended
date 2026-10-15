@@ -27,9 +27,11 @@ import org.openbravo.service.db.DalConnectionProvider;
 /**
  * Puts failed indexing events back in the queue.
  *
- * <p>Failed events are never retried on their own: whatever broke, broke for a reason, and
- * redelivering it on a timer would spend provider calls reproducing the same failure. Recovery is
- * therefore an explicit decision, taken once the provider or source configuration is corrected.</p>
+ * <p>Failed events are never retried on their own: a transient failure was already retried with a
+ * backoff before it got here, so what is left either broke for a reason retrying cannot fix (a
+ * rejected API key, a bad payload) or kept failing until the retry limit was spent. Recovery is
+ * therefore an explicit decision, taken once the provider or source configuration is corrected.
+ * {@link RequeueFailedVectorEvents} takes the same decision for one client or one source.</p>
  *
  * <p>It also resets the attempt counter, because this is that deliberate decision and the event is
  * entitled to a full budget again. Core follows the same shape in

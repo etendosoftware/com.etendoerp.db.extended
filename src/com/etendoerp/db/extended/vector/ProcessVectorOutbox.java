@@ -30,8 +30,10 @@ import org.openbravo.service.db.DalConnectionProvider;
  *
  * <p>The process is intentionally independent from any indexed entity. It recovers events left in
  * {@code PROCESSING} by an interrupted execution, then delivers a bounded batch of pending events.
- * Failed events are not retried automatically: an administrator must requeue them after correcting
- * the underlying provider or source configuration.</p>
+ * A delivery that fails for a reason that can pass on its own (HTTP 429, 5xx, a timeout) goes back
+ * to {@code PENDING} with a backoff until the provider retry limit is spent; see
+ * {@link VectorDeliveryRetryPolicy}. Failed events are not retried automatically: an administrator
+ * must requeue them after correcting the underlying provider or source configuration.</p>
  */
 public class ProcessVectorOutbox extends DalBaseProcess {
   static final int DEFAULT_BATCH_SIZE = 100;

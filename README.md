@@ -96,8 +96,52 @@ is active is reported by the scheduler as `Skipped`, not as an error.
 
 An event ends in one of five states. `DONE` and `FAILED` are the obvious two; `SUPERSEDED` is an
 event discarded because the source configuration changed after it was enqueued, so re-embedding it
-would store a vector nobody asked for. `FAILED` is not retried by the scheduled process once the
-retry limit is spent — **Requeue Failed Vector Events** puts those back once the cause is fixed.
+would store a vector nobody asked for.
+
+#### Retries
+
+Every claim counts one attempt (`ATTEMPT_COUNT`). When a delivery fails, the failure is classified
+from the HTTP status the provider answered with (carried as data by `VectorProviderException`) and
+from the exception types in the cause chain — never from the wording of the message:
+
+| Failure | Kind | What happens |
+|---------|------|--------------|
+| HTTP 429 | transient | back to `PENDING` after a backoff, honouring `Retry-After` |
+| HTTP 5xx | transient | back to `PENDING` after a backoff |
+| Timeout, connection or other I/O error (no HTTP answer) | transient | back to `PENDING` after a backoff |
+| HTTP 401 / 403 | permanent | `FAILED` at once |
+| Any other HTTP 4xx (bad payload, unknown model…) | permanent | `FAILED` at once |
+| Anything else (missing source, no content column, database error) | permanent | `FAILED` at once |
+
+401 and 403 are permanent on purpose: a rejected API key is a configuration error that does not fix
+itself, so retrying it only spends provider calls. Correct the key, then requeue.
+
+A transient failure sets `NEXT_ATTEMPT_AT` (UTC, like every timestamp the module writes) and the
+event is not picked up again before that moment. The wait is 60 s doubled on every attempt
+(60 s, 120 s, 240 s…) up to 1 hour; when the provider sent a longer `Retry-After` (seconds or an HTTP
+date), that is used instead, up to 24 hours. `NEXT_ATTEMPT_AT` empty means "deliver on the next
+run", so newly enqueued events and rows that predate the column need no value. Retries stop at the
+`Retry Limit` of the source's provider (3 when the source has none): the attempt that reaches it
+marks the event `FAILED` with `Retry limit of N attempts exhausted. Last error: …`. While waiting,
+`Last Error` says which attempt failed and when the next one is due.
+
+A whole chunk shares one embedding request, so one throttled request sends every event of the chunk
+back to `PENDING`, each with its own attempt count.
+
+#### Requeuing failed events
+
+`FAILED` is not retried by the scheduled process. Once the cause is fixed, put the events back with
+either of:
+
+- **Requeue Failed Vector Events** (background process, run through a Process Request): every
+  failed event, up to 1000 per run.
+- **Search Indexes › Requeue Failed Vector Events** (menu, Process Definition): the same, optionally
+  scoped by **Client** and/or **Source**. Leave both empty to requeue everything. Since the
+  provider — and so its API key — is configured per source, after fixing a key requeue that source
+  alone.
+
+Both reset the attempt counter, so the events get a full retry budget again, and clear
+`NEXT_ATTEMPT_AT`, so they are delivered on the next run.
 
 ### The embedding provider
 
