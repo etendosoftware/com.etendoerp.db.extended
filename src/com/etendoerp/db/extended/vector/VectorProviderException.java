@@ -29,6 +29,8 @@ public class VectorProviderException extends VectorException {
   private final transient Duration retryAfter;
 
   /**
+   * Creates the exception for a provider request that did not succeed.
+   *
    * @param httpStatus
    *     the status the provider answered with
    * @param retryAfter
@@ -43,6 +45,7 @@ public class VectorProviderException extends VectorException {
     this.retryAfter = retryAfter;
   }
 
+  /** The HTTP status the provider answered with. */
   public int getHttpStatus() { return httpStatus; }
 
   /** How long the provider asked to wait, or {@code null} when it did not say. */
