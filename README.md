@@ -132,6 +132,10 @@ marks the event `FAILED` with `Retry limit of N attempts exhausted. Last error: 
 A whole chunk shares one embedding request, so one throttled request sends every event of the chunk
 back to `PENDING`, each with its own attempt count.
 
+An outcome — `DONE`, a scheduled retry or `FAILED` — is written only while the event is still
+`PROCESSING`. A delivery that outlives the 15-minute stale threshold can be recovered and claimed
+again by another run; its late result is then dropped instead of overwriting the newer claim.
+
 #### Requeuing failed events
 
 `FAILED` is not retried by the scheduled process. Once the cause is fixed, put the events back with
@@ -142,7 +146,9 @@ either of:
 - **Search Indexes › Requeue Failed Vector Events** (menu, Process Definition): the same, optionally
   scoped by **Client** and/or **Source**. Leave both empty to requeue everything. Since the
   provider — and so its API key — is configured per source, after fixing a key requeue that source
-  alone.
+  alone. It is a System-level process (run it as System Administrator); in the Process Definition
+  window it is named **Requeue Failed Vector Events (scoped)**, and its message reports how many
+  events it requeued — run it again when that reaches the 1000-per-run limit.
 
 Both reset the attempt counter, so the events get a full retry budget again, and clear
 `NEXT_ATTEMPT_AT`, so they are delivered on the next run.
