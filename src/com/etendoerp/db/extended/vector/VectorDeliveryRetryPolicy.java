@@ -31,8 +31,9 @@ import java.time.Duration;
  * </ul>
  *
  * <p>Everything else is permanent: any other 4xx means the request itself is wrong and sending it
- * again gets the same answer, a malformed endpoint URL is an I/O failure that no retry repairs, and a failure that is not a provider call at all (a missing source, a
- * database error) is a configuration problem. That includes 401 and 403 on purpose: a rejected API
+ * again gets the same answer, a malformed endpoint URL is an I/O failure that no retry repairs,
+ * and a failure that is not a provider call at all (a missing source, a database error) is a
+ * configuration problem. That includes 401 and 403 on purpose: a rejected API
  * key does not fix itself, so retrying only spends provider calls. Once the key is corrected the
  * events are put back with a requeue, scoped to the affected client or source if needed.</p>
  *

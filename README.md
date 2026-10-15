@@ -126,7 +126,8 @@ run", so newly enqueued events and rows that predate the column need no value. R
 `Retry Limit` of the source's provider (3 when the source has none): the attempt that reaches it
 marks the event `FAILED` with `Retry limit of N attempts exhausted. Last error: …`. While waiting,
 `Last Error` says which attempt failed and how long the wait is, relative to that failure
-(`Attempt 1 of 3 failed, retrying in 120s. …`); the absolute moment is in `NEXT_ATTEMPT_AT`.
+(`Attempt 1 of 3 failed, retrying in 60s. …`, or longer when the provider sent a
+`Retry-After`); the absolute moment is in `NEXT_ATTEMPT_AT`.
 
 A whole chunk shares one embedding request, so one throttled request sends every event of the chunk
 back to `PENDING`, each with its own attempt count.
