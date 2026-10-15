@@ -37,6 +37,8 @@ import org.openbravo.base.session.OBPropertiesProvider;
  * <p>What matters here is the shape of the conversation with the provider: how many requests leave
  * for a given number of inputs, and how the answers are matched back. Both used to be impossible to
  * assert without a provider account, which is why the delivery path had no coverage at all.</p>
+ *
+ * @covers com.etendoerp.db.extended.vector.OpenAiEmbeddingProvider
  */
 class OpenAiEmbeddingProviderTest {
 
@@ -271,6 +273,55 @@ class OpenAiEmbeddingProviderTest {
     assertTrue(failure.getCause() instanceof SocketTimeoutException,
         "a timeout has no status, so the delivery policy recognises it by its cause; got "
             + failure.getCause());
+  }
+
+  // ---------------------------------------------------------------- Retry-After parsing
+
+  @Test
+  void readsRetryAfterInSeconds() {
+    assertEquals(Duration.ofSeconds(45), OpenAiEmbeddingProvider.retryAfter(" 45 "));
+  }
+
+  @Test
+  void ignoresANegativeRetryAfter() {
+    assertNull(OpenAiEmbeddingProvider.retryAfter("-5"),
+        "a negative wait is not a wait; the header is treated as absent so the backoff decides");
+  }
+
+  @Test
+  void ignoresAnUnreadableRetryAfter() {
+    assertNull(OpenAiEmbeddingProvider.retryAfter("soon"));
+  }
+
+  @Test
+  void ignoresARetryAfterTooLargeToBeANumberOfSeconds() {
+    assertNull(OpenAiEmbeddingProvider.retryAfter("99999999999999999999999"),
+        "a value that overflows a long is neither seconds nor a date, so it is ignored");
+  }
+
+  @Test
+  void ignoresABlankOrMissingRetryAfter() {
+    assertNull(OpenAiEmbeddingProvider.retryAfter(null));
+    assertNull(OpenAiEmbeddingProvider.retryAfter("   "));
+  }
+
+  @Test
+  void readsAnHttpDateInThePastAsNoWaitAtAll() {
+    String past = DateTimeFormatter.RFC_1123_DATE_TIME.format(
+        ZonedDateTime.now(ZoneOffset.UTC).minusHours(1));
+
+    assertEquals(Duration.ZERO, OpenAiEmbeddingProvider.retryAfter(past),
+        "a date already gone means the provider accepts again now, never a negative delay");
+  }
+
+  @Test
+  void readsAnHttpDateInTheFutureAsTheTimeLeftUntilIt() {
+    String future = DateTimeFormatter.RFC_1123_DATE_TIME.format(
+        ZonedDateTime.now(ZoneOffset.UTC).plusSeconds(600));
+
+    long seconds = OpenAiEmbeddingProvider.retryAfter(future).getSeconds();
+
+    assertTrue(seconds > 590 && seconds <= 600, "expected about 600s, got " + seconds + "s");
   }
 
   private static void sleep(long millis) {

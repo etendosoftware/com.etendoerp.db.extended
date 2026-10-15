@@ -1,5 +1,6 @@
 package com.etendoerp.db.extended.vector;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.any;
@@ -30,6 +31,12 @@ import org.openbravo.database.ConnectionProvider;
  * <p>These are the guarantees the delivery path rests on and none of them is visible in the data
  * afterwards: a chunk that was split wrongly, a claim that was never made durable or a failure that
  * could not be recorded all look the same once the run is over.</p>
+ *
+ * <p>The bounds of {@link VectorDeliveryRetryPolicy#delay(int, Throwable)} are asserted directly,
+ * since a run through the service only ever reaches the first few attempts.</p>
+ *
+ * @covers com.etendoerp.db.extended.vector.VectorOutboxService
+ * @covers com.etendoerp.db.extended.vector.VectorDeliveryRetryPolicy
  */
 class VectorOutboxServiceTest {
 
@@ -311,6 +318,82 @@ class VectorOutboxServiceTest {
     assertEquals(List.of("FAILED", "source-1", 10), List.copyOf(requeue.parameters.values()));
   }
 
+  @Test
+  void leavesAnEventAloneWhenItsOutcomeFindsItNoLongerProcessing() {
+    // Stale recovery or another node took the event over, so every guarded outcome matches no row.
+    outcomeRowCount = 0;
+    RecordingConsumer consumer = new RecordingConsumer(25);
+    consumer.failOn = "event-1";
+    consumer.consumeFailure = new VectorProviderException(503, null, "unavailable");
+    service(3, consumer).processPending(100);
+    consumer.failOn = "event-2";
+    consumer.consumeFailure = new VectorProviderException(400, null, "bad payload");
+
+    assertDoesNotThrow(() -> service(3, consumer).processPending(100),
+        "losing the event to its new owner is expected, not an error that aborts the run");
+
+    assertEquals(List.of("event-0", "event-2", "event-0", "event-1"), consumer.consumed,
+        "the rest of the chunk is still delivered after an outcome that matched nothing");
+    assertEquals(4, executed(DONE_UPDATE).size());
+    assertEquals(1, executed(RETRY_UPDATE).size(), "an unmatched retry is not written a second time");
+    assertEquals(1, executed(FAILED_UPDATE).size(),
+        "an unmatched retry must not fall back to failing the event either");
+    assertEquals(RETRY_UPDATE, lastWriteFor("event-1", 0), "nothing is written for event-1 after its retry");
+    assertEquals(FAILED_UPDATE, lastWriteFor("event-2", 1), "nothing is written for event-2 after its failure");
+  }
+
+  // ---------------------------------------------------------------- retry delay bounds
+
+  @Test
+  void delayDoublesTheBaseBackoffPerAttempt() {
+    Throwable io = new SocketTimeoutException("timeout");
+
+    assertEquals(Duration.ofSeconds(60), VectorDeliveryRetryPolicy.delay(1, io));
+    assertEquals(Duration.ofSeconds(120), VectorDeliveryRetryPolicy.delay(2, io));
+    assertEquals(Duration.ofSeconds(480), VectorDeliveryRetryPolicy.delay(4, io));
+  }
+
+  @Test
+  void delayCapsTheBackoffAtOneHour() {
+    assertEquals(Duration.ofHours(1), VectorDeliveryRetryPolicy.delay(7, null),
+        "60s * 2^6 = 64 minutes, which is past the one-hour ceiling");
+  }
+
+  @Test
+  void delayCapsTheExponentSoAHugeAttemptDoesNotOverflow() {
+    assertEquals(Duration.ofHours(1), VectorDeliveryRetryPolicy.delay(Integer.MAX_VALUE, null),
+        "an unbounded shift would overflow into a negative or zero delay");
+  }
+
+  @Test
+  void delayKeepsTheBackoffWhenRetryAfterIsShorter() {
+    assertEquals(Duration.ofSeconds(120), VectorDeliveryRetryPolicy.delay(2,
+        new VectorProviderException(429, Duration.ofSeconds(10), "throttled")),
+        "the provider's minimum never shortens the backoff");
+  }
+
+  @Test
+  void delayHonoursARetryAfterLongerThanTheBackoff() {
+    assertEquals(Duration.ofMinutes(90), VectorDeliveryRetryPolicy.delay(1,
+        new VectorProviderException(429, Duration.ofMinutes(90), "throttled")),
+        "Retry-After may exceed the backoff ceiling: only its own 24h cap applies");
+  }
+
+  @Test
+  void delayCapsRetryAfterAtTwentyFourHours() {
+    assertEquals(Duration.ofHours(24), VectorDeliveryRetryPolicy.delay(1,
+        new VectorProviderException(429, Duration.ofDays(30), "throttled")),
+        "a hostile or malformed Retry-After must not park an event for a month");
+  }
+
+  @Test
+  void delayReadsRetryAfterFromDeeperInTheCauseChain() {
+    Throwable wrapped = new VectorException(VectorErrorCode.VECTOR_EMBEDDING_OPERATION_FAILED, "wrapped",
+        new VectorProviderException(503, Duration.ofSeconds(900), "unavailable"));
+
+    assertEquals(Duration.ofSeconds(900), VectorDeliveryRetryPolicy.delay(1, wrapped));
+  }
+
   // ---------------------------------------------------------------- fixtures
 
   private static final String PENDING_QUERY = "o.event_type";
@@ -321,6 +404,8 @@ class VectorOutboxServiceTest {
   private static final String DONE_UPDATE = "SET status = 'DONE'";
   private static final String REQUEUE_UPDATE = "SET status = 'PENDING', last_error = NULL";
 
+  /** Rows matched by an outcome guarded on PROCESSING; zero means the event changed hands. */
+  private int outcomeRowCount = 1;
   /** Attempts the event has used, counting the one that just failed. */
   private int attempts = 1;
   private int retryLimit = 3;
@@ -348,6 +433,29 @@ class VectorOutboxServiceTest {
     List<Executed> matches = executed(fragment);
     assertEquals(1, matches.size(), "expected exactly one statement containing: " + fragment);
     return matches.get(0);
+  }
+
+  /**
+   * The outcome fragment of the last write that bound the event, within its {@code run}-th delivery
+   * (each run starts at its pending-events query).
+   */
+  private String lastWriteFor(String eventId, int run) {
+    int seen = -1;
+    String last = null;
+    for (Executed statement : statements) {
+      if (statement.sql.contains(PENDING_QUERY)) {
+        seen++;
+      } else if (seen == run && !statement.sql.contains(BUDGET_QUERY)
+          && statement.parameters.containsValue(eventId)) {
+        last = statement.sql;
+      }
+    }
+    for (String outcome : List.of(DONE_UPDATE, RETRY_UPDATE, FAILED_UPDATE, CLAIM)) {
+      if (last != null && last.contains(outcome)) {
+        return outcome;
+      }
+    }
+    return last;
   }
 
   private VectorOutboxService service(int pendingEvents, VectorOutboxConsumer consumer) {
@@ -382,7 +490,7 @@ class VectorOutboxServiceTest {
     doAnswer(bind).when(statement).setString(anyInt(), any());
     doAnswer(bind).when(statement).setInt(anyInt(), anyInt());
     doAnswer(bind).when(statement).setLong(anyInt(), anyLong());
-    when(statement.executeUpdate()).thenReturn(1);
+    when(statement.executeUpdate()).thenReturn(sql.contains("AND status = 'PROCESSING'") ? outcomeRowCount : 1);
     if (sql.contains(BUDGET_QUERY)) {
       ResultSet budget = mock(ResultSet.class);
       when(budget.next()).thenReturn(true, false);
