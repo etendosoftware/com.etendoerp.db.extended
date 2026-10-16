@@ -259,7 +259,7 @@
 <!--155853AC020D44C8A466FB93983C1C24-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--155853AC020D44C8A466FB93983C1C24-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--155853AC020D44C8A466FB93983C1C24-->  <NAME><![CDATA[Last Error]]></NAME>
-<!--155853AC020D44C8A466FB93983C1C24-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which.]]></HELP>
+<!--155853AC020D44C8A466FB93983C1C24-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which. While a transient failure is being retried it also carries the progress, for example: Attempt 1 of 3 failed, retrying in 60s.]]></HELP>
 <!--155853AC020D44C8A466FB93983C1C24-->  <DESCRIPTION><![CDATA[Message of the most recent failed attempt]]></DESCRIPTION>
 <!--155853AC020D44C8A466FB93983C1C24-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--155853AC020D44C8A466FB93983C1C24-->  <AD_TAB_ID><![CDATA[1A0E2A9EBE434812ACC7001502E5DD43]]></AD_TAB_ID>
@@ -671,7 +671,7 @@
 <!--4591A190ADC3465E885619C2439553FA-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--4591A190ADC3465E885619C2439553FA-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--4591A190ADC3465E885619C2439553FA-->  <NAME><![CDATA[Last Error]]></NAME>
-<!--4591A190ADC3465E885619C2439553FA-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which.]]></HELP>
+<!--4591A190ADC3465E885619C2439553FA-->  <HELP><![CDATA[What the provider or the database answered the last time this failed. It is the first thing to read when events pile up: a revoked key, a model that no longer exists and a source with no content column all stop delivery, and only this says which. While a transient failure is being retried it also carries the progress, for example: Attempt 1 of 3 failed, retrying in 60s.]]></HELP>
 <!--4591A190ADC3465E885619C2439553FA-->  <DESCRIPTION><![CDATA[Message of the most recent failed attempt]]></DESCRIPTION>
 <!--4591A190ADC3465E885619C2439553FA-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--4591A190ADC3465E885619C2439553FA-->  <AD_TAB_ID><![CDATA[26FEBADA5D4C4D13995B4BB3FBD1594F]]></AD_TAB_ID>
@@ -785,7 +785,7 @@
 <!--5628BAE983464BF595C6BEE6ED73C5C4-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--5628BAE983464BF595C6BEE6ED73C5C4-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--5628BAE983464BF595C6BEE6ED73C5C4-->  <NAME><![CDATA[Status]]></NAME>
-<!--5628BAE983464BF595C6BEE6ED73C5C4-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting, PROCESSING has been claimed by a run, DONE was embedded and stored, FAILED gave up after the provider retry limit, and SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
+<!--5628BAE983464BF595C6BEE6ED73C5C4-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting for the scheduled process; a PENDING event with Next Attempt At set failed for a reason that can pass on its own and is waiting out its backoff. PROCESSING has been claimed by a run, DONE was embedded and stored, and FAILED either failed for a reason retrying cannot fix (a rejected key, a bad request, missing configuration) or spent the provider retry limit. SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
 <!--5628BAE983464BF595C6BEE6ED73C5C4-->  <DESCRIPTION><![CDATA[Lifecycle state of the record]]></DESCRIPTION>
 <!--5628BAE983464BF595C6BEE6ED73C5C4-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--5628BAE983464BF595C6BEE6ED73C5C4-->  <AD_TAB_ID><![CDATA[1A0E2A9EBE434812ACC7001502E5DD43]]></AD_TAB_ID>
@@ -948,6 +948,32 @@
 <!--74DF9124B65B40BC932003AFB077AF3D-->  <EM_OBUIAPP_SHOWSUMMARY><![CDATA[N]]></EM_OBUIAPP_SHOWSUMMARY>
 <!--74DF9124B65B40BC932003AFB077AF3D--></AD_FIELD>
 
+<!--74E824EB7D034B148AAA19DA472517E2--><AD_FIELD>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <AD_FIELD_ID><![CDATA[74E824EB7D034B148AAA19DA472517E2]]></AD_FIELD_ID>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <NAME><![CDATA[Next Attempt At]]></NAME>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <AD_TAB_ID><![CDATA[7B93B8DDF07A4DFD9648C3607E3353AD]]></AD_TAB_ID>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <AD_COLUMN_ID><![CDATA[757B596CF4D04BA1B3EB9B9A55A5F565]]></AD_COLUMN_ID>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <IGNOREINWAD><![CDATA[N]]></IGNOREINWAD>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISDISPLAYED><![CDATA[Y]]></ISDISPLAYED>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <DISPLAYLENGTH><![CDATA[0]]></DISPLAYLENGTH>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISREADONLY><![CDATA[Y]]></ISREADONLY>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <SEQNO><![CDATA[45]]></SEQNO>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISSAMELINE><![CDATA[N]]></ISSAMELINE>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISFIELDONLY><![CDATA[N]]></ISFIELDONLY>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISENCRYPTED><![CDATA[N]]></ISENCRYPTED>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <SHOWINRELATION><![CDATA[N]]></SHOWINRELATION>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISFIRSTFOCUSEDFIELD><![CDATA[N]]></ISFIRSTFOCUSEDFIELD>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <STARTINODDCOLUMN><![CDATA[N]]></STARTINODDCOLUMN>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <STARTNEWLINE><![CDATA[N]]></STARTNEWLINE>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <ISSHOWNINSTATUSBAR><![CDATA[N]]></ISSHOWNINSTATUSBAR>
+<!--74E824EB7D034B148AAA19DA472517E2-->  <EM_OBUIAPP_SHOWSUMMARY><![CDATA[N]]></EM_OBUIAPP_SHOWSUMMARY>
+<!--74E824EB7D034B148AAA19DA472517E2--></AD_FIELD>
+
 <!--7AB17B2D94334D7BA0F616C70CABB621--><AD_FIELD>
 <!--7AB17B2D94334D7BA0F616C70CABB621-->  <AD_FIELD_ID><![CDATA[7AB17B2D94334D7BA0F616C70CABB621]]></AD_FIELD_ID>
 <!--7AB17B2D94334D7BA0F616C70CABB621-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
@@ -1064,7 +1090,7 @@
 <!--82065EA7B16348C8852187E6A7BB6F07-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--82065EA7B16348C8852187E6A7BB6F07-->  <NAME><![CDATA[Request Timeout]]></NAME>
 <!--82065EA7B16348C8852187E6A7BB6F07-->  <DESCRIPTION><![CDATA[Seconds to wait for an embedding response before failing the event]]></DESCRIPTION>
-<!--82065EA7B16348C8852187E6A7BB6F07-->  <HELP><![CDATA[How long a single embedding request may take before it is abandoned. It bounds one request, not the whole delivery run: the event it belonged to is marked as failed and retried later, up to the retry limit. Too low a value turns a slow provider into a stream of failures; too high a one holds a delivery thread while the queue grows.]]></HELP>
+<!--82065EA7B16348C8852187E6A7BB6F07-->  <HELP><![CDATA[How long a single embedding request may take before it is abandoned. It bounds one request, not the whole delivery run: the event it belonged to goes back to Pending and is retried after a growing wait, up to the retry limit. Too low a value turns a slow provider into a stream of retries; too high a one holds a delivery thread while the queue grows.]]></HELP>
 <!--82065EA7B16348C8852187E6A7BB6F07-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--82065EA7B16348C8852187E6A7BB6F07-->  <AD_TAB_ID><![CDATA[B326F7FDCE394523A8E0393425B88EDC]]></AD_TAB_ID>
 <!--82065EA7B16348C8852187E6A7BB6F07-->  <AD_COLUMN_ID><![CDATA[456969FA595E4F19BCE8027EEA49D74D]]></AD_COLUMN_ID>
@@ -1346,7 +1372,7 @@
 <!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <NAME><![CDATA[Status]]></NAME>
-<!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting, PROCESSING has been claimed by a run, DONE was embedded and stored, FAILED gave up after the provider retry limit, and SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
+<!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <HELP><![CDATA[Where the event is in delivery. PENDING is waiting for the scheduled process; a PENDING event with Next Attempt At set failed for a reason that can pass on its own and is waiting out its backoff. PROCESSING has been claimed by a run, DONE was embedded and stored, and FAILED either failed for a reason retrying cannot fix (a rejected key, a bad request, missing configuration) or spent the provider retry limit. SUPERSEDED was discarded because the source configuration changed after the event was enqueued and re-embedding it would have stored a vector nobody asked for. Only the scheduled process writes this: a claim is an update guarded by the previous status, so editing it by hand can hand one event to two runs at once.]]></HELP>
 <!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <DESCRIPTION><![CDATA[Lifecycle state of the record]]></DESCRIPTION>
 <!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--A6B543727AEA4B338B4B3EE4309EB6A5-->  <AD_TAB_ID><![CDATA[26FEBADA5D4C4D13995B4BB3FBD1594F]]></AD_TAB_ID>
@@ -1770,8 +1796,8 @@
 <!--D735DE9F1089479C99B7447DAFF5E33A-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
 <!--D735DE9F1089479C99B7447DAFF5E33A-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--D735DE9F1089479C99B7447DAFF5E33A-->  <NAME><![CDATA[Retry Limit]]></NAME>
-<!--D735DE9F1089479C99B7447DAFF5E33A-->  <DESCRIPTION><![CDATA[Delivery attempts before an event stops being recovered automatically]]></DESCRIPTION>
-<!--D735DE9F1089479C99B7447DAFF5E33A-->  <HELP><![CDATA[How many times a failed event is handed back to delivery before it is left alone. It stops a permanent failure -- a model that no longer exists, a revoked key -- from being retried forever at the provider's expense. An event that reached the limit stays failed and visible in the Outbox Monitor, where it can be sent back to the queue once the cause is fixed.]]></HELP>
+<!--D735DE9F1089479C99B7447DAFF5E33A-->  <DESCRIPTION><![CDATA[Total delivery attempts before a transiently failing event is marked Failed]]></DESCRIPTION>
+<!--D735DE9F1089479C99B7447DAFF5E33A-->  <HELP><![CDATA[Total delivery attempts for an event whose failure can pass on its own (HTTP 408, 429 or 5xx, a timeout, a network error). Each retry waits longer: 60 s, doubling up to 1 hour, or the provider's Retry-After when it asks for more. The attempt that reaches the limit marks the event Failed. Permanent failures, such as a rejected API key, a bad request or an unknown model, fail at once whatever the limit. A failed event stays visible in the Outbox Monitor and can be requeued once the cause is fixed.]]></HELP>
 <!--D735DE9F1089479C99B7447DAFF5E33A-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--D735DE9F1089479C99B7447DAFF5E33A-->  <AD_TAB_ID><![CDATA[B326F7FDCE394523A8E0393425B88EDC]]></AD_TAB_ID>
 <!--D735DE9F1089479C99B7447DAFF5E33A-->  <AD_COLUMN_ID><![CDATA[28615452A5D8456D940541E577DC0E78]]></AD_COLUMN_ID>
@@ -1846,6 +1872,32 @@
 <!--DAE3993B1DA24F508BE5DA265C43E26F-->  <ISSHOWNINSTATUSBAR><![CDATA[N]]></ISSHOWNINSTATUSBAR>
 <!--DAE3993B1DA24F508BE5DA265C43E26F-->  <EM_OBUIAPP_SHOWSUMMARY><![CDATA[N]]></EM_OBUIAPP_SHOWSUMMARY>
 <!--DAE3993B1DA24F508BE5DA265C43E26F--></AD_FIELD>
+
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6--><AD_FIELD>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <AD_FIELD_ID><![CDATA[DF72C5544EAF40CFBC5843A7B42CC4D6]]></AD_FIELD_ID>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <AD_CLIENT_ID><![CDATA[0]]></AD_CLIENT_ID>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <AD_ORG_ID><![CDATA[0]]></AD_ORG_ID>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <NAME><![CDATA[Next Attempt At]]></NAME>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <AD_TAB_ID><![CDATA[26FEBADA5D4C4D13995B4BB3FBD1594F]]></AD_TAB_ID>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <AD_COLUMN_ID><![CDATA[757B596CF4D04BA1B3EB9B9A55A5F565]]></AD_COLUMN_ID>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <IGNOREINWAD><![CDATA[N]]></IGNOREINWAD>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISDISPLAYED><![CDATA[Y]]></ISDISPLAYED>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <DISPLAYLENGTH><![CDATA[0]]></DISPLAYLENGTH>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISREADONLY><![CDATA[Y]]></ISREADONLY>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <SEQNO><![CDATA[75]]></SEQNO>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISSAMELINE><![CDATA[N]]></ISSAMELINE>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISFIELDONLY><![CDATA[N]]></ISFIELDONLY>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISENCRYPTED><![CDATA[N]]></ISENCRYPTED>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <SHOWINRELATION><![CDATA[N]]></SHOWINRELATION>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISFIRSTFOCUSEDFIELD><![CDATA[N]]></ISFIRSTFOCUSEDFIELD>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <AD_MODULE_ID><![CDATA[502453E6AD584DF4A0527C156FA0E800]]></AD_MODULE_ID>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <STARTINODDCOLUMN><![CDATA[N]]></STARTINODDCOLUMN>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <STARTNEWLINE><![CDATA[N]]></STARTNEWLINE>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <ISSHOWNINSTATUSBAR><![CDATA[N]]></ISSHOWNINSTATUSBAR>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6-->  <EM_OBUIAPP_SHOWSUMMARY><![CDATA[N]]></EM_OBUIAPP_SHOWSUMMARY>
+<!--DF72C5544EAF40CFBC5843A7B42CC4D6--></AD_FIELD>
 
 <!--E7EB0D83EC0942BDBD95FFB43B703D50--><AD_FIELD>
 <!--E7EB0D83EC0942BDBD95FFB43B703D50-->  <AD_FIELD_ID><![CDATA[E7EB0D83EC0942BDBD95FFB43B703D50]]></AD_FIELD_ID>
@@ -2055,7 +2107,7 @@
 <!--F4A6318768B14F5B87EDD366D9E918CB-->  <ISACTIVE><![CDATA[Y]]></ISACTIVE>
 <!--F4A6318768B14F5B87EDD366D9E918CB-->  <NAME><![CDATA[Attempt Count]]></NAME>
 <!--F4A6318768B14F5B87EDD366D9E918CB-->  <DESCRIPTION><![CDATA[Delivery attempts so far]]></DESCRIPTION>
-<!--F4A6318768B14F5B87EDD366D9E918CB-->  <HELP><![CDATA[Compared against the retry limit of the source provider to decide whether an abandoned event is recovered or retired.]]></HELP>
+<!--F4A6318768B14F5B87EDD366D9E918CB-->  <HELP><![CDATA[Delivery attempts so far, counted when a run claims the event. Compared against the retry limit of the source provider to decide whether a transient failure is retried or marked Failed, and whether an abandoned event is recovered or retired.]]></HELP>
 <!--F4A6318768B14F5B87EDD366D9E918CB-->  <ISCENTRALLYMAINTAINED><![CDATA[Y]]></ISCENTRALLYMAINTAINED>
 <!--F4A6318768B14F5B87EDD366D9E918CB-->  <AD_TAB_ID><![CDATA[26FEBADA5D4C4D13995B4BB3FBD1594F]]></AD_TAB_ID>
 <!--F4A6318768B14F5B87EDD366D9E918CB-->  <AD_COLUMN_ID><![CDATA[F348C8D408C84218A3079F29DDEBAFD5]]></AD_COLUMN_ID>

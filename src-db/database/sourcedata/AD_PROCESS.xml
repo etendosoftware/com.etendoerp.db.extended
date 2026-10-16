@@ -8,7 +8,7 @@
 <!--62158FA877E24D709EDD472862F376BB-->  <VALUE><![CDATA[ETARC_ProcessVectorRequeueFailed]]></VALUE>
 <!--62158FA877E24D709EDD472862F376BB-->  <NAME><![CDATA[Requeue Failed Vector Events]]></NAME>
 <!--62158FA877E24D709EDD472862F376BB-->  <DESCRIPTION><![CDATA[Puts failed indexing events back in the queue.]]></DESCRIPTION>
-<!--62158FA877E24D709EDD472862F376BB-->  <HELP><![CDATA[Failed events are never retried on their own, because redelivering them on a timer would spend provider calls reproducing the same failure. Run this once the provider or source configuration is corrected. The attempt counter is reset, so the events get a full budget again. Read the Last Error column of the Outbox Monitor window first to see what broke.]]></HELP>
+<!--62158FA877E24D709EDD472862F376BB-->  <HELP><![CDATA[Failed events are never retried on their own: transient failures were already retried until the provider retry limit was spent, and the rest (such as a rejected API key) would only fail again. Run this once the provider or source configuration is corrected. The attempt counter is reset, so the events get a full budget again. Read the Last Error column of the Outbox Monitor window first to see what broke.]]></HELP>
 <!--62158FA877E24D709EDD472862F376BB-->  <ACCESSLEVEL><![CDATA[4]]></ACCESSLEVEL>
 <!--62158FA877E24D709EDD472862F376BB-->  <ISUSERSTARTABLE><![CDATA[Y]]></ISUSERSTARTABLE>
 <!--62158FA877E24D709EDD472862F376BB-->  <ISREPORT><![CDATA[N]]></ISREPORT>
@@ -33,7 +33,7 @@
 <!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <VALUE><![CDATA[ETARC_ProcessVectorOutbox]]></VALUE>
 <!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <NAME><![CDATA[Process Vector Outbox]]></NAME>
 <!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <DESCRIPTION><![CDATA[Processes pending generic vector indexing events.]]></DESCRIPTION>
-<!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <HELP><![CDATA[Recovers stale processing events and processes up to 100 pending vector outbox events. Failed events require an explicit requeue after the underlying configuration is corrected.]]></HELP>
+<!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <HELP><![CDATA[Recovers stale processing events and processes up to 100 pending vector outbox events. A delivery that fails for a reason that can pass on its own (provider throttling, a provider error, a timeout) is retried with a growing wait until the provider retry limit is spent. Failed events require an explicit requeue after the underlying configuration is corrected.]]></HELP>
 <!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <ACCESSLEVEL><![CDATA[4]]></ACCESSLEVEL>
 <!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <ISUSERSTARTABLE><![CDATA[Y]]></ISUSERSTARTABLE>
 <!--D7E0D3DCCE314B52A0F927F1ECA9B0B7-->  <ISREPORT><![CDATA[N]]></ISREPORT>

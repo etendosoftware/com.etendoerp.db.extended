@@ -35,6 +35,14 @@ import org.openbravo.database.ConnectionProvider;
  */
 public class VectorOutboxService {
   private static final int MAX_ERROR_LENGTH = 2000;
+  /**
+   * Restricts an outcome update to an event this run still holds.
+   *
+   * <p>A delivery that outlives the stale threshold can be recovered and re-claimed by another node
+   * while it is still running here. Without the guard, the late outcome written here would
+   * overwrite the newer claim and whatever that node records.</p>
+   */
+  private static final String PROCESSING_GUARD = "AND status = 'PROCESSING'";
 
   private static final String PENDING_EVENTS_SQL =
       "SELECT o.etarc_vector_outbox_id, o.etarc_vector_source_id, o.config_version, s.namespace, o.record_id, "
@@ -42,6 +50,9 @@ public class VectorOutboxService {
           + "FROM etarc_vector_outbox o "
           + "JOIN etarc_vector_source s ON s.etarc_vector_source_id = o.etarc_vector_source_id "
           + "WHERE o.isactive = 'Y' AND o.status = 'PENDING' "
+          // An event retried after a transient failure waits for its backoff; NULL means now, so
+          // newly enqueued events and rows that predate the column need no value.
+          + "AND (o.next_attempt_at IS NULL OR o.next_attempt_at <= now() AT TIME ZONE 'UTC') "
           + "AND NOT EXISTS (SELECT 1 FROM etarc_vector_outbox newer WHERE newer.etarc_vector_source_id = o.etarc_vector_source_id "
           + "AND newer.record_id = o.record_id AND newer.status = 'PENDING' AND (newer.created > o.created OR (newer.created = o.created AND newer.etarc_vector_outbox_id > o.etarc_vector_outbox_id))) "
           + "AND NOT EXISTS (SELECT 1 FROM etarc_vector_outbox processing WHERE processing.etarc_vector_source_id = o.etarc_vector_source_id "
@@ -193,7 +204,7 @@ public class VectorOutboxService {
       // What prepare resolves is shared by the chunk, so its failure is every event's failure.
       transactionBoundary.rollback();
       for (VectorOutboxEvent event : claimed) {
-        markFailed(event.getId(), e);
+        recordFailure(event.getId(), e);
       }
       transactionBoundary.commit();
       return 0;
@@ -205,10 +216,10 @@ public class VectorOutboxService {
         markDone(event.getId());
         processed++;
       } catch (Exception e) {
-        // A consumer failing on a database error leaves the transaction aborted, so markFailed
-        // could not write and the event stayed PROCESSING with no trace of the cause.
+        // A consumer failing on a database error leaves the transaction aborted, so the failure
+        // could not be written and the event stayed PROCESSING with no trace of the cause.
         transactionBoundary.rollback();
-        markFailed(event.getId(), e);
+        recordFailure(event.getId(), e);
       }
       transactionBoundary.commit();
     }
@@ -226,7 +237,26 @@ public class VectorOutboxService {
    * @return the number of events requeued
    */
   public int requeueFailed(int maxEvents) {
-    return requeue("FAILED", maxEvents, null, true, false);
+    return requeueFailed(maxEvents, null, null);
+  }
+
+  /**
+   * Requeues failed events of one client, one source, or both.
+   *
+   * <p>A failure is usually local: one tenant's provider key was wrong, one source had no content
+   * column. Requeuing everything after fixing one of them would also resend the events of every
+   * other tenant that still fails for its own reason.</p>
+   *
+   * @param maxEvents
+   *     upper bound of events requeued in this call
+   * @param clientId
+   *     only events of this client, or {@code null} for every client
+   * @param sourceId
+   *     only events of this source, or {@code null} for every source
+   * @return the number of events requeued
+   */
+  public int requeueFailed(int maxEvents, String clientId, String sourceId) {
+    return requeue("FAILED", maxEvents, null, true, false, clientId, sourceId);
   }
 
   /**
@@ -241,7 +271,7 @@ public class VectorOutboxService {
     if (minimumAge == null || minimumAge.isNegative() || minimumAge.isZero()) {
       throw new IllegalArgumentException("minimumAge must be positive");
     }
-    return requeue("PROCESSING", maxEvents, minimumAge, false, true);
+    return requeue("PROCESSING", maxEvents, minimumAge, false, true, null, null);
   }
 
   /**
@@ -301,7 +331,7 @@ public class VectorOutboxService {
 
   private boolean claim(String eventId) {
     return update("UPDATE etarc_vector_outbox SET status = 'PROCESSING', attempt_count = attempt_count + 1, "
-        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ? AND status = 'PENDING'",
+        + "next_attempt_at = NULL, updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ? AND status = 'PENDING'",
         eventId) == 1;
   }
 
@@ -324,14 +354,79 @@ public class VectorOutboxService {
 
   private void markDone(String eventId) {
     update("UPDATE etarc_vector_outbox SET status = 'DONE', processed_at = now() AT TIME ZONE 'UTC', last_error = NULL, "
-        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ?", eventId);
+        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0' WHERE etarc_vector_outbox_id = ? "
+        + PROCESSING_GUARD, eventId);
   }
 
-  private void markFailed(String eventId, Exception error) {
+  /**
+   * Records why a delivery failed and decides what happens to the event next.
+   *
+   * <p>A failure used to be terminal on the first attempt, so a provider throttling for a minute
+   * turned whole chunks into FAILED events nobody retried. A transient failure now puts the event
+   * back in the queue after a backoff, until the provider's retry limit is spent; a permanent one
+   * still fails it at once. See {@link VectorDeliveryRetryPolicy} for which is which.</p>
+   */
+  private void recordFailure(String eventId, Exception error) {
+    if (!VectorDeliveryRetryPolicy.isTransient(error)) {
+      markFailed(eventId, errorMessage(error));
+      return;
+    }
+    int[] budget = attemptBudget(eventId);
+    int attempts = budget[0];
+    int retryLimit = budget[1];
+    if (attempts >= retryLimit) {
+      markFailed(eventId, "Retry limit of " + retryLimit + " attempts exhausted. Last error: "
+          + errorMessage(error));
+      return;
+    }
+    Duration delay = VectorDeliveryRetryPolicy.delay(attempts, error);
+    scheduleRetry(eventId, "Attempt " + attempts + " of " + retryLimit + " failed, retrying in "
+        + delay.getSeconds() + "s. " + errorMessage(error), delay);
+  }
+
+  /**
+   * Reads the attempts the event has used, the one that just failed included since the claim
+   * counted it, and the retry limit of its source's provider.
+   */
+  private int[] attemptBudget(String eventId) {
+    String sql = "SELECT attempt_count, " + RETRY_LIMIT_SQL
+        + " FROM etarc_vector_outbox WHERE etarc_vector_outbox_id = ?";
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(sql)) {
+      statement.setInt(1, DEFAULT_RETRY_LIMIT);
+      statement.setString(2, eventId);
+      try (ResultSet result = statement.executeQuery()) {
+        if (!result.next()) {
+          // The event is gone, so there is nothing to retry; failing it updates nothing.
+          return new int[] { DEFAULT_RETRY_LIMIT, DEFAULT_RETRY_LIMIT };
+        }
+        return new int[] { result.getInt(1), result.getInt(2) };
+      }
+    } catch (Exception e) {
+      throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,
+          "Could not read the retry budget of a vector outbox event.", e);
+    }
+  }
+
+  private void scheduleRetry(String eventId, String message, Duration delay) {
+    try (PreparedStatement statement = connectionProvider.getPreparedStatement(
+        "UPDATE etarc_vector_outbox SET status = 'PENDING', last_error = ?, next_attempt_at = "
+            + "now() AT TIME ZONE 'UTC' + (? * interval '1 second'), updated = now() AT TIME ZONE 'UTC', "
+            + "updatedby = '0' WHERE etarc_vector_outbox_id = ? " + PROCESSING_GUARD)) {
+      statement.setString(1, truncate(message));
+      statement.setLong(2, delay.getSeconds());
+      statement.setString(3, eventId);
+      statement.executeUpdate();
+    } catch (Exception updateFailure) {
+      throw new VectorException(VectorErrorCode.VECTOR_OUTBOX_OPERATION_FAILED,
+          "Could not schedule the retry of a vector outbox event.", updateFailure);
+    }
+  }
+
+  private void markFailed(String eventId, String message) {
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(
         "UPDATE etarc_vector_outbox SET status = 'FAILED', last_error = ?, updated = now() AT TIME ZONE 'UTC', "
-            + "updatedby = '0' WHERE etarc_vector_outbox_id = ?")) {
-      statement.setString(1, errorMessage(error));
+            + "updatedby = '0' WHERE etarc_vector_outbox_id = ? " + PROCESSING_GUARD)) {
+      statement.setString(1, truncate(message));
       statement.setString(2, eventId);
       statement.executeUpdate();
     } catch (Exception updateFailure) {
@@ -382,20 +477,29 @@ public class VectorOutboxService {
   }
 
   private int requeue(String status, int maxEvents, Duration minimumAge, boolean resetAttempts,
-      boolean withinAttemptLimit) {
+      boolean withinAttemptLimit, String clientId, String sourceId) {
     if (maxEvents < 1) {
       throw new IllegalArgumentException(MAX_EVENTS_MUST_BE_POSITIVE);
     }
     String ageCondition = minimumAge == null ? "" : " AND updated < now() AT TIME ZONE 'UTC' - (? * interval '1 second')";
     String attemptReset = resetAttempts ? ", attempt_count = 0" : "";
     String attemptCondition = withinAttemptLimit ? " AND attempt_count < " + RETRY_LIMIT_SQL : "";
-    String sql = "UPDATE etarc_vector_outbox SET status = 'PENDING', last_error = NULL, updated = now() AT TIME ZONE 'UTC', "
-        + "updatedby = '0'" + attemptReset + " WHERE etarc_vector_outbox_id IN (SELECT etarc_vector_outbox_id "
-        + "FROM etarc_vector_outbox WHERE status = ?" + ageCondition + attemptCondition
-        + " ORDER BY updated, etarc_vector_outbox_id LIMIT ?)";
+    String clientCondition = clientId == null ? "" : " AND ad_client_id = ?";
+    String sourceCondition = sourceId == null ? "" : " AND etarc_vector_source_id = ?";
+    String sql = "UPDATE etarc_vector_outbox SET status = 'PENDING', last_error = NULL, next_attempt_at = NULL, "
+        + "updated = now() AT TIME ZONE 'UTC', updatedby = '0'" + attemptReset
+        + " WHERE etarc_vector_outbox_id IN (SELECT etarc_vector_outbox_id "
+        + "FROM etarc_vector_outbox WHERE status = ?" + clientCondition + sourceCondition + ageCondition
+        + attemptCondition + " ORDER BY updated, etarc_vector_outbox_id LIMIT ?)";
     try (PreparedStatement statement = connectionProvider.getPreparedStatement(sql)) {
       statement.setString(1, status);
       int parameter = 2;
+      if (clientId != null) {
+        statement.setString(parameter++, clientId);
+      }
+      if (sourceId != null) {
+        statement.setString(parameter++, sourceId);
+      }
       if (minimumAge != null) {
         statement.setLong(parameter++, minimumAge.getSeconds());
       }
@@ -421,7 +525,10 @@ public class VectorOutboxService {
   }
 
   private static String errorMessage(Exception error) {
-    String message = error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+    return error.getMessage() == null ? error.getClass().getSimpleName() : error.getMessage();
+  }
+
+  private static String truncate(String message) {
     return message.length() <= MAX_ERROR_LENGTH ? message : message.substring(0, MAX_ERROR_LENGTH);
   }
 }
